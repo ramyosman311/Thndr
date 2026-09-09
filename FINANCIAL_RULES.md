@@ -130,33 +130,85 @@ from allocation math, not from the user.
 
 ## Smart Inflow Allocator Rules
 
-Implemented in `backend/app/domain/inflow_allocator.py`.
+Implemented in `backend/app/domain/inflow_allocator.py` (Phase 7).
+**Smart Inflow Allocator ≠ Rebalancing Engine**: it only answers "if I
+receive X EGP of new cash, where should it go?" — never "how should
+existing holdings be sold to reach target?" It never sells, never
+executes a trade, and never modifies holdings, targets, or configuration;
+calling it is fully read-only (verified directly — row counts before and
+after are identical).
 
-**Inputs:** new cash amount, current holdings, current prices, allocation
-targets, maximum allocations, `allow_new_buy` flags, priorities.
+**Inputs:** new cash amount (`Decimal`, must be `> 0`), the CURRENT
+investable portfolio value (from the Portfolio Engine, Phase 5 — the
+denominator used is the same `denominator_value` the Portfolio/Allocation
+Engines already compute, so this never duplicates that logic), and one
+`InflowCandidate` per active strategy bucket (current value,
+target/maximum percent, `allow_new_buy`, priority, and whether it holds
+the excluded emergency asset).
 
-**Output per recommendation:** asset/group, recommended amount, current
-weight, target weight, deficit, and a human-readable reason.
+**Denominator treatment — the incoming cash is never added to the
+denominator before target gaps are computed.** Target gaps and maximum
+capacities are calculated against the investable value as it stood
+*before* the new cash arrived; only after deciding where money goes is an
+optional "projected" percentage computed, using investable value plus
+whatever was actually allocated (never the requested amount, and never
+the unallocated remainder — cash that wasn't placed anywhere doesn't
+join any bucket's total).
 
-**Rules:**
+**Eligibility and status, in this order** (see `InflowStatus` in
+`inflow_allocator.py`):
 
-1. Never sell. The allocator only distributes new incoming cash.
-2. Never allocate above a category's `maximum_percent`.
-3. Prioritize underweight categories (current weight furthest below target),
-   using `priority` to break ties or order sequencing.
-4. Respect `allow_new_buy` — a category with `allow_new_buy = false`
-   receives zero, regardless of how underweight it is.
-5. A category with `target = 0` and `allow_new_buy = false` (e.g. Gold in
-   the example above) receives zero new cash.
-6. Individual Stocks (or any grouped category) respect their **combined**
-   maximum — the sum across the group's members must not exceed the
-   group's `maximum_percent`.
-7. The emergency asset is excluded from allocation when
-   `emergency_excluded = true`.
-8. A configured "free cash" / unallocated target is respected — cash is not
-   force-allocated past it.
-9. Every recommendation includes a reason explaining why that amount was
-   chosen (e.g. "underweight vs target by X%", "at maximum, skipped").
+1. The bucket holding the configured emergency asset (when
+   `emergency_excluded=true`) → `EMERGENCY_EXCLUDED`, zero allocation,
+   and no misleading percentage (its `current_percent` is `null`, not a
+   number computed against a denominator that excludes it — same
+   principle as the Phase 6 risk-allocation fix).
+2. Zero/negative investable portfolio value → `NO_CAPACITY` (nothing to
+   compute a gap against).
+3. No `target_percent` configured at all → `NO_TARGET`. This is the
+   **maximum-only case** (e.g. Individual Stocks: maximum=15%, no
+   target): it is treated purely as a constraint, never a destination —
+   no target is ever invented for it, even when well under its maximum.
+4. `allow_new_buy = false` → `BUY_DISABLED`, regardless of any gap.
+5. `target_gap = target_value - current_value <= 0` → `AT_TARGET`
+   (exactly zero) or `OVER_TARGET` (negative); zero allocation either way.
+6. A configured `maximum_percent` further caps the usable capacity: if
+   `remaining_capacity = maximum_value - current_value <= 0` →
+   `MAXIMUM_LIMIT`, zero allocation ("maximum already reached" and
+   "maximum breached" both land here); if it's positive but less than
+   the raw target gap, capacity is capped at `remaining_capacity` and
+   still labeled `MAXIMUM_LIMIT`.
+7. Otherwise the bucket has positive capacity, labeled `TARGET_GAP`.
+
+**Allocation order:** eligible buckets (positive capacity) are sorted by
+the configured `priority` ascending (lower number = higher priority),
+then by `bucket_name` as a deterministic, data-driven tiebreaker — never
+a hardcoded "this asset always wins." Cash is handed out greedily in that
+order until either the cash runs out or every eligible bucket's capacity
+is exhausted. A bucket that had positive capacity but didn't receive
+money this run (cash ran out before its turn) keeps its `TARGET_GAP`/
+`MAXIMUM_LIMIT` status rather than being relabeled — only a bucket that
+actually received `allocated_amount > 0` is reported `ELIGIBLE`.
+
+**Unallocated cash is never forced into a destination.** If eligible
+target gaps and maximum capacities can't absorb the full requested
+amount, the remainder is returned as `unallocated_cash` — never pushed
+into Emergency Cash, Gold, or a maximum-only bucket just to make the
+total add up. `requested_cash == allocated_cash + unallocated_cash`
+holds exactly (Decimal arithmetic; presentation-layer rounding for
+`allocated_cash` uses cumulative rounding across buckets so the rounded
+amounts still sum exactly, and `unallocated_cash` is derived as
+`requested - allocated` after rounding rather than rounded
+independently, so the visible total never drifts by a rounding cent).
+
+**Strategy validation is reused, not duplicated:** the allocator calls
+the Strategy Engine's `validate_strategy` (Phase 6) directly and reports
+its `status`/`is_valid` alongside the recommendations. The current seeded
+strategy (targets summing to 85%) is reported as
+`INCOMPLETE_TARGET_ALLOCATION` in the same response that still correctly
+allocates cash to BWA, AZN, and Free Cash — the allocator never invents a
+destination for the missing 15%, and never waits for the strategy to be
+"complete" before doing its job on the buckets that are configured.
 
 ## Rebalancing Engine Rules
 

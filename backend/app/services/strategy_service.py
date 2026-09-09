@@ -15,7 +15,6 @@ from decimal import ROUND_HALF_UP, Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.strategy_validation import AllocationRuleInput, validate_strategy
-from app.models import Asset
 from app.repositories.portfolio_repository import (
     get_active_allocation_targets,
     get_active_assets,
@@ -23,6 +22,7 @@ from app.repositories.portfolio_repository import (
     get_portfolio_config,
 )
 from app.schemas.strategy import AllocationRuleOut, RuleFieldErrorOut, StrategyValidationOut
+from app.services.portfolio_shared import find_emergency_bucket_id
 
 _PRESENTATION_QUANT = Decimal("0.01")
 
@@ -33,17 +33,6 @@ class PortfolioNotConfiguredError(Exception):
 
 def _round(value: Decimal) -> Decimal:
     return value.quantize(_PRESENTATION_QUANT, rounding=ROUND_HALF_UP)
-
-
-def _find_emergency_bucket_id(assets: list[Asset], emergency_asset_id):
-    """Which strategy bucket (if any) holds the configured emergency asset
-    — determined purely from configuration relationships, never a name."""
-    if emergency_asset_id is None:
-        return None
-    for asset in assets:
-        if asset.id == emergency_asset_id:
-            return asset.strategy_bucket_id
-    return None
 
 
 def _rule_to_out(rule: AllocationRuleInput) -> AllocationRuleOut:
@@ -68,7 +57,7 @@ async def get_strategy_validation(session: AsyncSession) -> StrategyValidationOu
     assets = await get_active_assets(session)
 
     target_by_bucket_id = {target.strategy_bucket_id: target for target in targets}
-    emergency_bucket_id = _find_emergency_bucket_id(assets, config.emergency_asset_id)
+    emergency_bucket_id = find_emergency_bucket_id(assets, config.emergency_asset_id)
 
     rules: list[AllocationRuleInput] = []
     for bucket in buckets:

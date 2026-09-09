@@ -4,8 +4,9 @@
 
 This document specifies the planned REST API surface. Implemented so far:
 `GET /api/health` (**Phase 2**), `GET /api/portfolio/summary` and
-`GET /api/portfolio/allocation` (**Phase 5**), and
-`GET /api/portfolio/strategy/validation` (**Phase 6**). The rest arrive
+`GET /api/portfolio/allocation` (**Phase 5**),
+`GET /api/portfolio/strategy/validation` (**Phase 6**), and
+`POST /api/cash-flow/allocate` (**Phase 7**). The rest arrive
 incrementally with their owning phases. This is the contract those phases
 implement against.
 
@@ -232,11 +233,70 @@ Returns recommendations only. Never executes trades.
 ### Cash Flow / Smart Inflow
 
 ```
-POST /api/cash-flow/allocate
+POST /api/cash-flow/allocate   (implemented, Phase 7)
 ```
-Returns a recommended allocation of new cash across assets/categories, with
-a `reason` per recommendation. Never sells; never exceeds `maximum_percent`;
-respects `allow_new_buy`; excludes the emergency asset when configured.
+Read-only: calculates a recommendation only — never creates a
+transaction, never modifies a holding, never executes a trade. `404`
+with a `detail` message if no `portfolio_configs` row exists yet; `422`
+(standard FastAPI/Pydantic validation) if `amount` is missing, not a
+valid decimal, or `<= 0`.
+
+Request:
+```json
+{ "amount": "1000.00" }
+```
+
+Response (values shown are the exact result of running this against the
+seeded strategy with a single 1000 EGP TMGH holding as investable value):
+```jsonc
+{
+  "requested_cash": "1000.00",
+  "allocated_cash": "850.00",
+  "unallocated_cash": "150.00",
+  "strategy_status": "INCOMPLETE_TARGET_ALLOCATION",  // reuses the Strategy Engine (Phase 6), not re-validated here
+  "strategy_is_valid": false,
+  "recommendations": [
+    {
+      "strategy_bucket_id": "...", "bucket_name": "Growth / Investment Funds",
+      "current_value": "0.00", "current_percent": "0.00",
+      "target_percent": "55.00", "maximum_percent": null, "allow_new_buy": true, "priority": 1,
+      "target_gap": "550.00", "maximum_capacity": null,
+      "eligible": true, "allocated_amount": "550.00", "status": "ELIGIBLE",
+      "projected_value": "550.00", "projected_percent": "29.73"
+    },
+    {
+      "strategy_bucket_id": "...", "bucket_name": "Individual Stocks",
+      "current_value": "1000.00", "current_percent": "100.00",
+      "target_percent": null, "maximum_percent": "15.00", "allow_new_buy": true, "priority": 3,
+      "target_gap": null, "maximum_capacity": "-850.00",
+      "eligible": false, "allocated_amount": "0", "status": "NO_TARGET",
+      "projected_value": "1000.00", "projected_percent": "54.05"
+    }
+    // ... one entry per active strategy bucket
+  ]
+}
+```
+
+**Status codes** (`recommendations[].status`): `ELIGIBLE` (actually
+funded this run), `TARGET_GAP` (positive gap, but not funded this run —
+cash ran out first), `MAXIMUM_LIMIT` (a configured maximum caps or blocks
+capacity), `BUY_DISABLED` (`allow_new_buy=false`), `EMERGENCY_EXCLUDED`,
+`NO_TARGET` (no `target_percent` configured — includes maximum-only
+buckets like Individual Stocks, which are a constraint, never a
+destination), `AT_TARGET`, `OVER_TARGET`, `NO_CAPACITY` (investable value
+is zero).
+
+**Denominator:** target gaps and maximum capacities use the investable
+portfolio value as it stood *before* this request's cash — the incoming
+amount is never added to the denominator before deciding where it goes.
+`projected_percent` is a separate, clearly distinct calculation using
+investable value plus whatever ended up actually allocated.
+
+**Unallocated cash is never forced into a destination** — see
+`FINANCIAL_RULES.md`, "Smart Inflow Allocator Rules" for the full
+rounding and ordering rules (priority ascending, then bucket name;
+`requested_cash == allocated_cash + unallocated_cash` exactly, even after
+presentation rounding).
 
 ## Not Yet Specified
 

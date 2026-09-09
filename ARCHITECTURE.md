@@ -33,7 +33,10 @@ The backend follows strict separation of concerns, from outer to inner layers:
    SQLAlchemy models are never exposed directly as API responses.
 3. **`services/`** — Application/orchestration layer. Coordinates
    repositories and domain logic to fulfill a use case (e.g. "record a
-   transaction and update the holding").
+   transaction and update the holding"). Also holds `portfolio_shared.py`
+   (Phase 7): the emergency-bucket lookup and position-building helpers
+   used by the Portfolio, Strategy, and Smart Inflow services all live
+   here once, instead of being duplicated across service modules.
 4. **`domain/`** — Pure financial/business logic: portfolio valuation, cost
    basis, allocation, rebalancing, smart inflow allocation. **No I/O.** No
    database session, no HTTP, no framework imports. This layer is
@@ -47,7 +50,11 @@ The backend follows strict separation of concerns, from outer to inner layers:
    adds `strategy_validation.py`: validates the aggregate configured
    target allocation (only `target_percent` values are summed; a
    maximum-only rule never contributes) and reports a machine-readable
-   status — it never rewrites a percentage to force validity.
+   status — it never rewrites a percentage to force validity. Phase 7
+   adds `inflow_allocator.py`: recommends where new cash should go among
+   eligible buckets (target gap, capped by any maximum, ordered by
+   priority) — a recommendation engine only, never a rebalancer; it never
+   sells and never invents a destination for unallocated cash.
 5. **`repositories/`** — Data access layer. All SQLAlchemy queries live
    here. Services depend on repository interfaces, not raw sessions,
    keeping persistence swappable and mockable in tests.

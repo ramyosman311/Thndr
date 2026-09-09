@@ -16,8 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.allocation_engine import evaluate_bucket_allocation
 from app.domain.pnl_engine import calculate_holding_pnl
-from app.domain.portfolio_engine import AssetPosition, calculate_portfolio_totals
-from app.models import Asset
+from app.domain.portfolio_engine import calculate_portfolio_totals
 from app.repositories.portfolio_repository import (
     get_active_allocation_targets,
     get_active_assets,
@@ -25,6 +24,7 @@ from app.repositories.portfolio_repository import (
     get_portfolio_config,
 )
 from app.schemas.portfolio import BucketAllocationOut, HoldingPnLOut, PortfolioAllocationOut, PortfolioSummaryOut
+from app.services.portfolio_shared import build_positions, find_emergency_bucket_id
 
 _PRESENTATION_QUANT = Decimal("0.01")
 
@@ -40,44 +40,13 @@ def _round(value: Decimal) -> Decimal:
     return value.quantize(_PRESENTATION_QUANT, rounding=ROUND_HALF_UP)
 
 
-def _find_emergency_bucket_id(assets: list[Asset], emergency_asset_id):
-    """Which strategy bucket (if any) holds the configured emergency asset —
-    determined purely from configuration relationships (portfolio_configs
-    -> assets -> strategy_buckets), never from a bucket/asset name."""
-    if emergency_asset_id is None:
-        return None
-    for asset in assets:
-        if asset.id == emergency_asset_id:
-            return asset.strategy_bucket_id
-    return None
-
-
-def _build_positions(assets: list[Asset], emergency_asset_id) -> list[AssetPosition]:
-    positions = []
-    for asset in assets:
-        holding = asset.holding
-        quantity = holding.quantity if holding is not None else Decimal("0")
-        current_price = holding.current_price if holding is not None else Decimal("0")
-        positions.append(
-            AssetPosition(
-                asset_id=asset.id,
-                symbol=asset.symbol,
-                is_emergency=emergency_asset_id is not None and asset.id == emergency_asset_id,
-                strategy_bucket_id=asset.strategy_bucket_id,
-                quantity=quantity,
-                current_price=current_price,
-            )
-        )
-    return positions
-
-
 async def get_portfolio_summary(session: AsyncSession) -> PortfolioSummaryOut:
     config = await get_portfolio_config(session)
     if config is None:
         raise PortfolioNotConfiguredError("No portfolio configuration exists yet.")
 
     assets = await get_active_assets(session)
-    positions = _build_positions(assets, config.emergency_asset_id)
+    positions = build_positions(assets, config.emergency_asset_id)
     totals = calculate_portfolio_totals(positions, emergency_excluded=config.emergency_excluded)
 
     holdings_pnl: list[HoldingPnLOut] = []
@@ -124,13 +93,13 @@ async def get_portfolio_allocation(session: AsyncSession) -> PortfolioAllocation
         raise PortfolioNotConfiguredError("No portfolio configuration exists yet.")
 
     assets = await get_active_assets(session)
-    positions = _build_positions(assets, config.emergency_asset_id)
+    positions = build_positions(assets, config.emergency_asset_id)
     totals = calculate_portfolio_totals(positions, emergency_excluded=config.emergency_excluded)
 
     buckets = await get_active_strategy_buckets(session, config.id)
     targets = await get_active_allocation_targets(session, config.id)
     target_by_bucket_id = {target.strategy_bucket_id: target for target in targets}
-    emergency_bucket_id = _find_emergency_bucket_id(assets, config.emergency_asset_id)
+    emergency_bucket_id = find_emergency_bucket_id(assets, config.emergency_asset_id)
 
     bucket_outs: list[BucketAllocationOut] = []
     for bucket in buckets:
