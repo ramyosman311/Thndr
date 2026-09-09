@@ -4,10 +4,9 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 3 — Core database schema (assets, holdings,
-> transactions, portfolio config, allocation targets, strategy buckets,
-> watchlist, alert rules, snapshots) implemented as SQLAlchemy models and a
-> real Alembic migration. No seed data, financial engine, or frontend UI
+> **Status:** Phase 4 — Idempotent development seed data (initial assets,
+> strategy buckets, portfolio configuration, allocation targets, and five
+> historical portfolio snapshots). No financial engine or frontend UI
 > exist yet. See [Phase Plan](#phase-plan) below.
 
 ## What this project does (target scope)
@@ -191,7 +190,23 @@ alembic check     # compare models vs. latest migration
 alembic upgrade head
 ```
 
-No migrations exist yet — models arrive in Phase 3.
+**6. Development seed data**
+
+```bash
+cd backend
+source .venv/bin/activate
+python -m app.seed
+```
+
+Seeds the initial development portfolio: 7 assets, 6 strategy buckets, 1
+portfolio configuration (Cloudz as the emergency asset), 5 allocation
+targets, and 5 historical snapshots (35 snapshot items). Safe to run
+repeatedly — it is fully idempotent (create-if-missing, keyed on stable
+identifiers like asset symbol and snapshot timestamp), never creates
+duplicates, and creates no transaction records. This is **development seed
+data only** — never run as part of a migration, and never a source of
+truth for production data. See `backend/app/seed/data.py` for the exact
+values and `DATABASE.md` for the allocation rationale.
 
 ### Docker
 

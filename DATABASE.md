@@ -264,12 +264,30 @@ support future multi-user/multi-device sync without key collisions.
 
 ## Seed Data
 
-No seed data is included in the Phase 3 migration. The migration only
+No seed data is included in the Alembic migration. The migration only
 creates schema (tables, types, constraints, indexes) — it contains no
 `INSERT` statements and no assumptions about which assets, buckets, or
-percentages a user's portfolio actually has. Development/demo seed data,
-if introduced, will live in a clearly separate, optional script (Phase 4),
-never inside a schema migration, and never as production defaults.
+percentages a user's portfolio actually has.
+
+Development seed data is implemented separately, in `backend/app/seed/`
+(Phase 4), run explicitly via `python -m app.seed` — never automatically,
+and never as part of a migration:
+
+- `app/seed/data.py` — plain constants: 7 initial assets, 6 strategy
+  buckets, 1 portfolio configuration, 5 allocation targets, 5 historical
+  snapshots. Data only, read once by the seed script; never referenced
+  from `domain/`, `services/`, or any future engine.
+- `app/seed/seed.py` — idempotent "create if missing" logic, keyed on
+  stable identifiers (asset `symbol`; portfolio config `name`;
+  `(portfolio_config, strategy_bucket)` pairs; `(portfolio_config,
+  snapshot_at)` pairs) rather than generated UUIDs. Running it any number
+  of times produces the same rows — verified with three consecutive runs
+  against a real database and an automated idempotency test
+  (`test_seed_is_idempotent_when_run_twice`).
+- Cloudz is wired as the emergency asset, and Individual Stocks/Gold get
+  their maximum-vs-target/allow_new_buy treatment, entirely through these
+  seeded configuration rows — never through an `if symbol == "..."` check
+  anywhere in application code.
 
 ## Known Warning: Circular-Dependency Sort
 
