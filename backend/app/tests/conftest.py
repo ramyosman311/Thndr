@@ -13,6 +13,27 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app.core.config import get_settings  # noqa: E402
+from app.models import Asset, AssetType, PortfolioConfig  # noqa: E402
+
+
+def make_asset(symbol: str, **kwargs) -> Asset:
+    """Shared test factory for a minimal valid Asset row."""
+    return Asset(
+        symbol=symbol,
+        name=kwargs.pop("name", symbol),
+        asset_type=kwargs.pop("asset_type", AssetType.STOCK),
+        currency=kwargs.pop("currency", "EGP"),
+        **kwargs,
+    )
+
+
+def make_portfolio_config(**kwargs) -> PortfolioConfig:
+    """Shared test factory for a minimal valid PortfolioConfig row."""
+    return PortfolioConfig(
+        name=kwargs.pop("name", "Test Portfolio"),
+        base_currency=kwargs.pop("base_currency", "EGP"),
+        **kwargs,
+    )
 
 
 def _with_test_suffix(url: str) -> str:

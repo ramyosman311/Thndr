@@ -38,6 +38,12 @@ The backend follows strict separation of concerns, from outer to inner layers:
    basis, allocation, rebalancing, smart inflow allocation. **No I/O.** No
    database session, no HTTP, no framework imports. This layer is
    independently unit-testable and free of side effects.
+   Implemented as of Phase 5: `portfolio_engine.py` (total/emergency/
+   investable value), `allocation_engine.py` (actual % vs. target/minimum/
+   maximum/allow_new_buy, reporting only — never sells or buys),
+   `pnl_engine.py` (basic unrealized P/L per holding), and
+   `snapshot_comparison.py` (a plain value-change utility between two
+   snapshot totals — explicitly not P/L or investment return).
 5. **`repositories/`** — Data access layer. All SQLAlchemy queries live
    here. Services depend on repository interfaces, not raw sessions,
    keeping persistence swappable and mockable in tests.
