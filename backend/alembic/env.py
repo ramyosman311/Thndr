@@ -11,6 +11,7 @@ from alembic import context
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import app.models  # noqa: E402,F401  ensures all models are imported so Base.metadata is populated
 from app.core.config import get_settings  # noqa: E402
 from app.core.database import Base  # noqa: E402
 

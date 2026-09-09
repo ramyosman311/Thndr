@@ -4,9 +4,11 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 2 — Backend foundation (FastAPI, PostgreSQL connection,
-> Alembic, Docker, `/api/health`). No database business tables, financial
-> engine, or frontend UI exist yet. See [Phase Plan](#phase-plan) below.
+> **Status:** Phase 3 — Core database schema (assets, holdings,
+> transactions, portfolio config, allocation targets, strategy buckets,
+> watchlist, alert rules, snapshots) implemented as SQLAlchemy models and a
+> real Alembic migration. No seed data, financial engine, or frontend UI
+> exist yet. See [Phase Plan](#phase-plan) below.
 
 ## What this project does (target scope)
 
@@ -174,7 +176,10 @@ python -m pytest -v
 ```
 
 Tests run against a real PostgreSQL connection (configured via `.env`) —
-no mocked database layer.
+no mocked database layer. The model tests (`app/tests/test_models.py`) use
+a separate `_test`-suffixed database and apply the real Alembic migration
+chain automatically before running; create that database once (e.g.
+`createdb <dbname>_test`) alongside your main database.
 
 **5. Database migrations (Alembic)**
 

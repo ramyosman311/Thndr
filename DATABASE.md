@@ -2,18 +2,23 @@
 
 ## Status
 
-This document specifies the intended schema. No tables exist yet — models
-and migrations are created in **Phase 3**. This is the design contract for
-that phase.
+Implemented as of **Phase 3**: all core tables below exist as SQLAlchemy
+2.x models (`backend/app/models/`) and a real Alembic migration
+(`backend/alembic/versions/ac3c275604cd_phase_3_core_portfolio_schema.py`),
+applied and verified against a real PostgreSQL database. No seed data, no
+business/calculation logic yet — those are later phases.
 
 ## Engine
 
 - **Production:** PostgreSQL (Supabase-hosted).
 - **Local development:** dockerized PostgreSQL, matching production engine.
-- **Testing:** SQLite may be used only where PostgreSQL-specific behavior is
-  not under test; PostgreSQL-compatible test databases are preferred so
-  tests reflect real behavior (see FINANCIAL_RULES.md and testing plan).
-- SQLite is never used as a production database.
+- **Testing:** a real PostgreSQL database (a `_test`-suffixed sibling of the
+  configured database), migrated via the actual `alembic upgrade head`
+  command in a session-scoped test fixture — not SQLite. PostgreSQL-specific
+  behavior (native ENUM types, `NUMERIC` precision, `ON DELETE` semantics)
+  is exercised directly in tests (`backend/app/tests/test_models.py`).
+- SQLite is never used as a production database, and is not used for model
+  tests either — see FINANCIAL_RULES.md and the testing plan.
 
 ## Core Principle: Database as Source of Truth
 
@@ -22,46 +27,104 @@ application code. All such values live in `portfolio_configs` and
 `allocation_targets` rows, editable via Settings. See
 [FINANCIAL_RULES.md](./FINANCIAL_RULES.md).
 
-## Phase 1 Entities (implemented in Phase 3)
+## Numeric Precision (chosen in Phase 3)
+
+No financial value uses a binary floating-point type. All money/quantity/
+percentage columns are PostgreSQL `NUMERIC` (SQLAlchemy `Numeric`):
+
+| Kind | Precision/scale | Used by | Why |
+|---|---|---|---|
+| Quantity | `NUMERIC(20, 8)` | `holdings.quantity`, `transactions.quantity` | supports fractional shares/fund units exactly |
+| Unit price | `NUMERIC(20, 8)` | `holdings.average_cost`, `holdings.current_price`, `transactions.price`, `alert_rules.price_target`, `alert_rules.dip_buy_price` | precise even for low-priced assets; matches quantity precision for averaging math |
+| Currency amount | `NUMERIC(18, 2)` | `transactions.fees`, `portfolio_snapshot_items.value` | a plain monetary total, 2 decimal places |
+| Percentage | `NUMERIC(5, 2)` | `allocation_targets.target_percent`/`minimum_percent`/`maximum_percent`, `alert_rules.allocation_max_percent` | range 0.00–100.00, hundredths-of-a-percent precision |
+
+## Deletion Behavior
+
+Every foreign key to `assets` from a table that carries historical or
+current financial data uses `ON DELETE RESTRICT`: `holdings`,
+`transactions`, `watchlist`, `portfolio_snapshot_items`. Attempting to
+delete an asset that is still referenced by any of these fails outright
+(an `IntegrityError`), rather than cascading and silently destroying
+records or leaving orphaned rows. This was verified directly (Phase 3
+tests `test_deleting_asset_with_transaction_history_is_blocked` and
+`test_deleting_asset_with_snapshot_history_is_blocked`).
+
+Purely organizational/config references use softer behavior instead:
+`assets.strategy_bucket_id → strategy_buckets` and
+`portfolio_configs.emergency_asset_id → assets` are `ON DELETE SET NULL`
+(losing a category or emergency-asset designation isn't destructive).
+Parent-owns-child tables cascade: `strategy_buckets`, `allocation_targets`,
+and `portfolio_snapshots` are `ON DELETE CASCADE` from `portfolio_configs`;
+`portfolio_snapshot_items` cascades from `portfolio_snapshots`; `alert_rules`
+cascades from `watchlist`. `allocation_targets.strategy_bucket_id` is
+`ON DELETE RESTRICT` (a bucket with an active rule can't be removed out
+from under it).
+
+## Core Tables (implemented in Phase 3)
 
 ### `assets`
 
 | Field       | Type      | Notes |
 |-------------|-----------|-------|
 | id          | UUID (PK) | |
-| symbol      | string    | e.g. `BWA`, `AZN`, `ETEL` |
+| symbol      | string, **unique** | e.g. `BWA`, `AZN`, `ETEL` — a data row, never a hardcoded constant |
 | name        | string    | |
-| asset_type  | enum      | `STOCK`, `FUND`, `GOLD`, `CASH`, `SAVINGS`, `ETF`, `OTHER` |
-| market      | string    | e.g. EGX, or null for non-market assets |
+| asset_type  | native enum | `STOCK`, `FUND`, `GOLD`, `CASH`, `SAVINGS`, `ETF`, `OTHER` |
+| market      | string, nullable | e.g. EGX, or null for non-market assets |
 | currency    | string    | ISO currency code |
+| strategy_bucket_id | UUID (FK → strategy_buckets, nullable, `ON DELETE SET NULL`) | which configurable category this asset belongs to |
 | is_active   | boolean   | |
 | created_at  | timestamp | |
 | updated_at  | timestamp | |
+
+### `strategy_buckets` (new in Phase 3)
+
+Not present in the original Phase 1 sketch — added per the Phase 3
+approval to keep **Asset**, **Asset Class / Strategy Bucket**, and
+**Allocation Rule** as distinct concepts (see FINANCIAL_RULES.md). A
+bucket is a configurable category (e.g. "Individual Stocks", "Gold",
+"Cash") that assets belong to and that `allocation_targets` rules target —
+never a hardcoded grouping around specific ticker symbols.
+
+| Field                | Type      | Notes |
+|----------------------|-----------|-------|
+| id                   | UUID (PK) | |
+| portfolio_config_id  | UUID (FK → portfolio_configs, `ON DELETE CASCADE`) | |
+| name                 | string    | unique per portfolio_config |
+| description          | text, nullable | |
+| is_active            | boolean   | |
+| created_at, updated_at | timestamp | |
 
 ### `holdings`
 
 | Field         | Type      | Notes |
 |---------------|-----------|-------|
 | id            | UUID (PK) | |
-| asset_id      | UUID (FK → assets, **unique**) | one holding row per asset |
-| quantity      | numeric   | |
-| average_cost  | numeric   | cost basis per unit |
-| current_price | numeric   | last known price (from market data provider) |
+| asset_id      | UUID (FK → assets, **unique**, `ON DELETE RESTRICT`) | one holding row per asset |
+| quantity      | `NUMERIC(20,8)` | |
+| average_cost  | `NUMERIC(20,8)` | cost basis per unit |
+| current_price | `NUMERIC(20,8)` | last known price (from market data provider) |
 | updated_at    | timestamp | |
+
+CHECK constraints: `quantity >= 0`, `average_cost >= 0`, `current_price >= 0`.
 
 ### `transactions`
 
 | Field             | Type      | Notes |
 |-------------------|-----------|-------|
 | id                | UUID (PK) | |
-| asset_id          | UUID (FK → assets) | |
-| transaction_type  | enum      | `BUY`, `SELL`, `DIVIDEND`, `DEPOSIT`, `WITHDRAWAL`, `TRANSFER` |
-| quantity          | numeric   | |
-| price             | numeric   | |
-| fees              | numeric   | |
+| asset_id          | UUID (FK → assets, `ON DELETE RESTRICT`) | |
+| transaction_type  | native enum | `BUY`, `SELL`, `DIVIDEND`, `DEPOSIT`, `WITHDRAWAL`, `TRANSFER` |
+| quantity          | `NUMERIC(20,8)` | |
+| price             | `NUMERIC(20,8)` | |
+| fees              | `NUMERIC(18,2)` | |
 | transaction_date  | timestamp | |
 | notes             | text, nullable | |
 | created_at        | timestamp | |
+
+Indexed on `(asset_id, transaction_date)`. CHECK constraints:
+`quantity >= 0`, `price >= 0`, `fees >= 0`.
 
 ### `portfolio_configs`
 
@@ -70,7 +133,7 @@ application code. All such values live in `portfolio_configs` and
 | id                   | UUID (PK) | |
 | name                 | string    | |
 | base_currency        | string    | |
-| emergency_asset_id   | UUID (FK → assets, nullable) | which asset is the emergency/savings asset |
+| emergency_asset_id   | UUID (FK → assets, nullable, `ON DELETE SET NULL`) | which asset is the emergency/savings asset |
 | emergency_excluded   | boolean   | if true, excluded from risk/investment/rebalancing/inflow calcs |
 | telegram_enabled     | boolean   | |
 | created_at           | timestamp | |
@@ -81,27 +144,30 @@ application code. All such values live in `portfolio_configs` and
 | Field                 | Type      | Notes |
 |-----------------------|-----------|-------|
 | id                    | UUID (PK) | |
-| portfolio_config_id   | UUID (FK) | |
-| name                  | string    | category/group name |
-| target_percent        | numeric, nullable | long-term target weight (may be NULL, e.g. "Individual Stocks") |
-| minimum_percent       | numeric, nullable | |
-| maximum_percent       | numeric, nullable | hard cap, independent of target |
+| portfolio_config_id   | UUID (FK → portfolio_configs, `ON DELETE CASCADE`) | |
+| strategy_bucket_id    | UUID (FK → strategy_buckets, `ON DELETE RESTRICT`) | the rule targets a bucket, not a freeform name string |
+| target_percent        | `NUMERIC(5,2)`, nullable | long-term target weight (may be NULL, e.g. "Individual Stocks") |
+| minimum_percent       | `NUMERIC(5,2)`, nullable | |
+| maximum_percent       | `NUMERIC(5,2)`, nullable | hard cap, independent of target |
 | allow_new_buy         | boolean   | whether the inflow engine may buy into this category |
 | priority              | integer   | used by the inflow engine to order underweight categories |
 | is_active             | boolean   | |
 | created_at            | timestamp | |
 
-**Validation rule (service/domain layer, not just DB constraints):** the
+Unique per `(portfolio_config_id, strategy_bucket_id)`. CHECK constraints
+enforce each percent field is within `[0, 100]` (when not NULL) and
+`minimum_percent <= maximum_percent` (when both set) — all at the row
+level. **Validation rule (service/domain layer, not a DB constraint):** the
 sum of `target_percent` across active targets must be validated when
-settings are saved. A database CHECK constraint alone cannot enforce this
-aggregate rule across rows — see [FINANCIAL_RULES.md](./FINANCIAL_RULES.md).
+settings are saved (Phase 6) — PostgreSQL cannot enforce that aggregate
+rule with a column-level CHECK. See [FINANCIAL_RULES.md](./FINANCIAL_RULES.md).
 
 ### `watchlist`
 
 | Field       | Type      | Notes |
 |-------------|-----------|-------|
 | id          | UUID (PK) | |
-| asset_id    | UUID (FK → assets) | |
+| asset_id    | UUID (FK → assets, **unique**, `ON DELETE RESTRICT`) | one row per asset — re-adding re-enables it |
 | enabled     | boolean   | |
 | notes       | text, nullable | |
 | added_at    | timestamp | |
@@ -112,14 +178,14 @@ aggregate rule across rows — see [FINANCIAL_RULES.md](./FINANCIAL_RULES.md).
 | Field                      | Type      | Notes |
 |----------------------------|-----------|-------|
 | id                         | UUID (PK) | |
-| watchlist_id               | UUID (FK → watchlist) | |
+| watchlist_id               | UUID (FK → watchlist, **unique**, `ON DELETE CASCADE`) | |
 | enabled                    | boolean   | |
 | allocation_alert_enabled   | boolean   | |
-| allocation_max_percent     | numeric, nullable | |
+| allocation_max_percent     | `NUMERIC(5,2)`, nullable | |
 | price_target_enabled       | boolean   | |
-| price_target               | numeric, nullable | |
+| price_target               | `NUMERIC(20,8)`, nullable | |
 | dip_buy_enabled            | boolean   | |
-| dip_buy_price              | numeric, nullable | |
+| dip_buy_price              | `NUMERIC(20,8)`, nullable | |
 | telegram_enabled           | boolean   | |
 | last_triggered_at          | timestamp, nullable | |
 | created_at                 | timestamp | |
@@ -137,29 +203,48 @@ change:
 | Field                | Type      | Notes |
 |----------------------|-----------|-------|
 | id                   | UUID (PK) | |
-| portfolio_config_id  | UUID (FK) | |
+| portfolio_config_id  | UUID (FK → portfolio_configs, `ON DELETE CASCADE`) | |
 | snapshot_at          | timestamp | when the snapshot represents |
 | label                | string, nullable | |
 | created_at           | timestamp | |
+
+Indexed on `(portfolio_config_id, snapshot_at)`.
 
 **`portfolio_snapshot_items`**
 
 | Field        | Type      | Notes |
 |--------------|-----------|-------|
 | id           | UUID (PK) | |
-| snapshot_id  | UUID (FK → portfolio_snapshots) | |
-| asset_id     | UUID (FK → assets) | |
-| value        | numeric   | recorded value at snapshot time |
+| snapshot_id  | UUID (FK → portfolio_snapshots, `ON DELETE CASCADE`) | |
+| asset_id     | UUID (FK → assets, `ON DELETE RESTRICT`) | |
+| value        | `NUMERIC(18,2)` | recorded value at snapshot time |
+
+Unique per `(snapshot_id, asset_id)`; CHECK `value >= 0`.
 
 Snapshots are point-in-time value records, distinct from transactions —
 see "Snapshot ≠ Transaction" in [FINANCIAL_RULES.md](./FINANCIAL_RULES.md).
 Quantities are never inferred from snapshot values.
 
-## Future Tables (not built in Phase 1, architecture must not preclude them)
+## A Circular Foreign Key, and How the Migration Handles It
 
-- `portfolio_snapshots` / `portfolio_snapshot_items` *(brought forward to
-  Phase 3 per the master instructions above; listed here for traceability
-  with the original future-tables list)*
+`assets.strategy_bucket_id → strategy_buckets`,
+`strategy_buckets.portfolio_config_id → portfolio_configs`, and
+`portfolio_configs.emergency_asset_id → assets` form a 3-table reference
+cycle — no linear `CREATE TABLE` order satisfies all three inline. The
+migration creates `assets` without the `strategy_bucket_id` foreign key
+inline, creates `portfolio_configs` and `strategy_buckets` normally (each
+of their FKs is satisfied by then), and adds the deferred
+`assets.strategy_bucket_id → strategy_buckets.id` constraint via a
+separate `ALTER TABLE` once all three tables exist. `downgrade()` drops
+that constraint before dropping `strategy_buckets`. This was verified with
+multiple full `alembic upgrade head` / `alembic downgrade base` cycles
+against a real database.
+
+## Future Tables (not built yet, architecture must not preclude them)
+
+`portfolio_snapshots` / `portfolio_snapshot_items` were brought forward
+from this list and implemented in Phase 3 (see above). Still deferred:
+
 - `cash_flows`
 - `alert_events`
 - `market_quotes`
@@ -176,3 +261,29 @@ keys throughout, no assumption of a single implicit user).
 
 All entities use UUID primary keys, not auto-incrementing integers, to
 support future multi-user/multi-device sync without key collisions.
+
+## Seed Data
+
+No seed data is included in the Phase 3 migration. The migration only
+creates schema (tables, types, constraints, indexes) — it contains no
+`INSERT` statements and no assumptions about which assets, buckets, or
+percentages a user's portfolio actually has. Development/demo seed data,
+if introduced, will live in a clearly separate, optional script (Phase 4),
+never inside a schema migration, and never as production defaults.
+
+## Known Warning: Circular-Dependency Sort
+
+Running `alembic check` or `alembic revision --autogenerate` prints:
+
+```
+SAWarning: Cannot correctly sort tables; there are unresolvable cycles
+between tables "assets, portfolio_configs, strategy_buckets" ...
+```
+
+This comes from SQLAlchemy's metadata reflection/comparison step noticing
+the same 3-table cycle described above. It is expected, benign, and does
+not affect migration correctness — `alembic upgrade head`,
+`alembic downgrade base`, and `alembic check` all complete successfully
+despite it (verified directly). It would only matter if a future
+autogenerate needs to reason about ordering across these three tables
+again; if so, the same deferred-constraint pattern applies.
