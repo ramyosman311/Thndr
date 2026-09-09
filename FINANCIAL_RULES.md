@@ -210,6 +210,79 @@ allocates cash to BWA, AZN, and Free Cash — the allocator never invents a
 destination for the missing 15%, and never waits for the strategy to be
 "complete" before doing its job on the buckets that are configured.
 
+## Alert Engine Rules
+
+Implemented in `backend/app/domain/alert_engine.py` (Phase 8), orchestrated
+by `backend/app/services/alert_service.py`. Evaluates configured Watchlist
++ Alert Rule conditions against explicit, already-computed inputs — it is
+**pure**: no I/O, no database session, no HTTP, no Telegram send, and it
+never executes a trade.
+
+**Five alert categories** (`AlertType`): `ALLOCATION_BREACH`,
+`PRICE_TARGET`, `DIP_BUY`, `REBALANCE_SUGGESTED`, `INCOME_MATURITY`.
+
+- **Allocation Breach and Rebalancing Suggestion reuse the Allocation
+  Engine, never recompute it.** Both accept the already-computed
+  `risk_allocation_percent`/`maximum_status`/`target_status` produced by
+  `allocation_engine.evaluate_bucket_allocation` (Phase 5/6) — this module
+  never calculates `current_value / portfolio_value` itself. The two
+  checks use **independent thresholds**: `ALLOCATION_BREACH` compares
+  against the alert rule's own `allocation_max_percent` (a personal
+  early-warning level the user sets on the watchlist entry);
+  `REBALANCE_SUGGESTED` compares against the bucket's own configured
+  `allocation_targets.maximum_percent`/`target_percent` (the strategy's
+  actual cap/target) — reaching one does not imply the other.
+- **A rebalance suggestion is a suggestion, never a trade.** Per the
+  Phase 8 approval: "A suggestion is NOT an automatic trade. No selling.
+  No buying. No transaction creation." The result carries no field that
+  could represent a sell, a buy, or a transaction — verified directly
+  (`test_rebalance_suggestion_is_a_suggestion_only_no_trade_fields`,
+  `test_evaluate_rebalance_suggestion_is_a_suggestion_never_a_trade`).
+- **Price Target and Dip Buy take `current_price` as an explicit input**
+  (in practice, `holdings.current_price` — the same field the Portfolio
+  Engine already uses). No live market-data provider is invented for
+  this: see "Market Data Integrity" above. A `None`/unknown price means
+  the check reports `condition_met: false, reason: "current price
+  unknown"` — never a fabricated value.
+- **Recurring Income Maturity is prepared but not wired to persistence.**
+  `check_income_maturity` is a pure, fully tested standalone function
+  (maturity date vs. a lookahead window), but no `alert_rules` column
+  exists to configure it against a real watchlist entry yet — see
+  DATABASE.md, "Known Schema Limitations (Phase 8)".
+- **Deduplication is edge-triggered, never a permanent suppression.**
+  Each check receives `previously_triggered: bool` (derived from whether
+  `alert_rules.last_triggered_at` is currently set) and returns
+  `is_new_trigger` (the condition just became true — the one moment a
+  notification should fire) and `should_clear` (the condition just
+  became false, re-arming the rule). The same condition can trigger
+  again later after clearing — verified directly
+  (`test_dedup_clears_and_can_re_trigger_after_condition_becomes_true_again`).
+  Because `alert_rules` has one shared `last_triggered_at` column per
+  row rather than one per condition type, a rule with more than one
+  check enabled simultaneously shares a single latch across all of them
+  — a disclosed simplification, not silently hidden (see DATABASE.md).
+- **Watchlist + alert evaluation never modify financial positions.**
+  Evaluating alerts (`POST /api/alerts/evaluate`) writes only to
+  `alert_rules.last_triggered_at`; it never touches `holdings`,
+  `transactions`, `portfolio_snapshots`, `allocation_targets`, or
+  `portfolio_configs` — verified directly (row counts before/after are
+  identical across repeated evaluation runs). Watchlist CRUD
+  (add/remove/enable/disable an entry, create/update/delete a rule) is
+  ordinary configuration management, not a read-only engine, and is
+  expected to write to `watchlist`/`alert_rules` only.
+- **Only an active, enabled watchlist entry with an enabled alert rule is
+  ever evaluated.** A disabled watchlist entry, a disabled alert rule, or
+  an asset with `is_active=false` is excluded from
+  `POST /api/alerts/evaluate` — never silently evaluated as if still
+  live.
+- **Notification delivery is a separate concern.** The alert engine's
+  job ends at "this condition is newly triggered"; a
+  `NotificationDispatcher` abstraction (`backend/app/services/
+  notification_dispatcher.py`) is called only for new triggers, and no
+  real delivery mechanism (Telegram or otherwise) exists yet — a
+  `NullNotificationDispatcher` is the default. Domain code never imports
+  or calls a dispatcher directly.
+
 ## Rebalancing Engine Rules
 
 Implemented in `backend/app/domain/rebalancing_engine.py`.

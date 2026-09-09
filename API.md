@@ -5,10 +5,10 @@
 This document specifies the planned REST API surface. Implemented so far:
 `GET /api/health` (**Phase 2**), `GET /api/portfolio/summary` and
 `GET /api/portfolio/allocation` (**Phase 5**),
-`GET /api/portfolio/strategy/validation` (**Phase 6**), and
-`POST /api/cash-flow/allocate` (**Phase 7**). The rest arrive
-incrementally with their owning phases. This is the contract those phases
-implement against.
+`GET /api/portfolio/strategy/validation` (**Phase 6**),
+`POST /api/cash-flow/allocate` (**Phase 7**), and the full Watchlist +
+Alerts surface (**Phase 8**, below). The rest arrive incrementally with
+their owning phases. This is the contract those phases implement against.
 
 ## Conventions
 
@@ -204,24 +204,131 @@ Invalid totals (over 100%) are rejected with `400`/`409`; under 100% either
 warns or requires an explicit "unallocated percentage" acknowledgment —
 values are never silently normalized.
 
-### Watchlist
+### Watchlist (implemented, Phase 8)
 
 ```
-GET    /api/watchlist
+GET    /api/watchlist                    ?enabled_only=bool
 POST   /api/watchlist
 PATCH  /api/watchlist/{id}
 DELETE /api/watchlist/{id}
+GET    /api/watchlist/{id}/alerts
+POST   /api/watchlist/{id}/alerts
 ```
-Delete is logical (sets `removed_at`), not a physical row delete, per
-[DATABASE.md](./DATABASE.md).
+`POST /api/watchlist` — `{"asset_id": "...", "notes": "optional"}` →
+`404` if the asset doesn't exist, `409` if it's `is_active=false`, `409`
+on a duplicate (asset already actively watched). Re-adding an asset whose
+entry was previously removed re-enables that same row instead of creating
+a duplicate.
 
-### Alerts
+`PATCH /api/watchlist/{id}` — `{"enabled": bool, "notes": "..."}`
+(both optional) → `404` if the entry doesn't exist.
+
+`DELETE /api/watchlist/{id}` is **logical** (sets `enabled=false` and
+`removed_at`), never a physical row delete, per
+[DATABASE.md](./DATABASE.md) — returns the updated entry, `200`.
+
+Response shape (`WatchlistOut`):
+```jsonc
+{
+  "id": "...", "asset_id": "...", "asset_symbol": "TMGH",
+  "enabled": true, "notes": "worth watching",
+  "added_at": "2026-01-01T00:00:00Z", "removed_at": null,
+  "alert_rule": null // or the nested AlertRuleOut below, once configured
+}
+```
+
+`GET /api/watchlist/{id}/alerts` / `POST /api/watchlist/{id}/alerts` read
+or create the single alert rule for that watchlist entry (1:1 —
+`409` on a second `POST`). `404` if the watchlist entry doesn't exist;
+`GET` also `404`s if no rule has been configured yet.
+
+### Alerts (implemented, Phase 8)
 
 ```
-GET   /api/alerts
-POST  /api/alerts
-PATCH /api/alerts/{id}
+PATCH  /api/alerts/{id}
+DELETE /api/alerts/{id}
+POST   /api/alerts/evaluate
 ```
+`POST /api/watchlist/{id}/alerts` and `PATCH /api/alerts/{id}` accept any
+subset of: `enabled`, `allocation_alert_enabled` +
+`allocation_max_percent`, `price_target_enabled` + `price_target`,
+`dip_buy_enabled` + `dip_buy_price`, `telegram_enabled`. Enabling a check
+without its required threshold is rejected with `400`
+(`InvalidAlertRuleConfigurationError`) — e.g.
+`{"dip_buy_enabled": true}` with no `dip_buy_price` fails; thresholds can
+be changed at any time with no code change (dynamic configuration).
+
+Response shape (`AlertRuleOut`):
+```jsonc
+{
+  "id": "...", "watchlist_id": "...", "enabled": true,
+  "allocation_alert_enabled": true, "allocation_max_percent": "20.00",
+  "price_target_enabled": false, "price_target": null,
+  "dip_buy_enabled": false, "dip_buy_price": null,
+  "telegram_enabled": false, "last_triggered_at": null
+}
+```
+
+**`POST /api/alerts/evaluate`** evaluates every enabled alert rule on
+every enabled watchlist entry whose underlying asset is `is_active=true`.
+Read-only with respect to holdings, transactions, snapshots,
+`allocation_targets`, and `portfolio_configs`; the only write is to
+`alert_rules.last_triggered_at` (the deduplication latch this endpoint
+depends on — see FINANCIAL_RULES.md, "Alert Engine Rules"). Never creates
+a transaction, never buys, never sells.
+
+Response (one entry per check actually performed, not just new triggers):
+```jsonc
+{
+  "results": [
+    {
+      "alert_rule_id": "...", "watchlist_id": "...", "asset_symbol": "TMGH",
+      "alert_type": "ALLOCATION_BREACH", // | PRICE_TARGET | DIP_BUY | REBALANCE_SUGGESTED
+      "condition_met": true,
+      "is_new_trigger": true,   // true only the first evaluation where condition_met flips to true
+      "should_clear": false,    // true the first evaluation where a previously-met condition becomes false
+      "reason": "allocation 20.00% >= watch threshold 15.00%",
+      "current_value": "20.00", "threshold_value": "15.00"
+    }
+  ]
+}
+```
+`ALLOCATION_BREACH` and `REBALANCE_SUGGESTED` both reuse the Allocation
+Engine's own computed `risk_allocation_percent`/`maximum_status`/
+`target_status` (Phase 5/6) — this endpoint never recomputes an
+allocation percentage itself. They are independent thresholds:
+`ALLOCATION_BREACH` fires against this alert rule's own
+`allocation_max_percent` watch level; `REBALANCE_SUGGESTED` fires when the
+bucket's own configured `allocation_targets.maximum_percent` is breached
+or it is `OVERWEIGHT` against its `target_percent` — a personal
+early-warning threshold and the strategy's own configured cap are two
+different numbers. `REBALANCE_SUGGESTED` is a **suggestion only**: no
+sell, no buy, no transaction is ever created from it.
+
+`PRICE_TARGET`/`DIP_BUY` compare against `holdings.current_price` (no
+live market-data provider exists yet — see FINANCIAL_RULES.md,
+"Market Data Integrity"); a `null` `current_value` means the price is
+currently unknown (e.g. no `holdings` row yet), never a fabricated 0.
+
+**Recurring Income Maturity** — a fifth alert category
+(`check_income_maturity` in `backend/app/domain/alert_engine.py`) is
+implemented and unit-tested at the domain layer, but is **not** wired
+into this endpoint: `alert_rules` has no maturity-date/recurrence columns
+today. See DATABASE.md, "Known Schema Limitations (Phase 8)" for the
+minimal addition this would need.
+
+**Deduplication** is edge-triggered per alert rule row: `is_new_trigger`
+is true only the evaluation where a condition just became true;
+re-running while it stays true reports `condition_met: true,
+is_new_trigger: false` (no repeat notification); once the condition
+clears, the next evaluation reports `should_clear: true`, and the
+**same** rule can `is_new_trigger` again later if the condition becomes
+true again — nothing is ever permanently suppressed. Because
+`alert_rules` has a single shared `last_triggered_at` column (not one per
+condition type), a rule with more than one check type enabled
+simultaneously shares one latch across all of them — see DATABASE.md for
+the disclosed limitation and the minimal schema addition that would make
+dedup fully independent per condition type.
 
 ### Rebalancing
 
@@ -303,4 +410,7 @@ presentation rounding).
 Endpoints for future tables (`cash_flows`, `alert_events`, `market_quotes`,
 `scheduled_income`, `users`, `audit_logs`) are deferred until those tables
 are introduced (see [DATABASE.md](./DATABASE.md)) and will be documented
-here at that time.
+here at that time. This now includes an income-maturity alert endpoint
+(needs `scheduled_income`-like columns) and a per-condition-type alert
+event history endpoint (needs `alert_events`) — see DATABASE.md, "Known
+Schema Limitations (Phase 8)".

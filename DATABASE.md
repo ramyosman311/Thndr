@@ -5,8 +5,12 @@
 Implemented as of **Phase 3**: all core tables below exist as SQLAlchemy
 2.x models (`backend/app/models/`) and a real Alembic migration
 (`backend/alembic/versions/ac3c275604cd_phase_3_core_portfolio_schema.py`),
-applied and verified against a real PostgreSQL database. No seed data, no
-business/calculation logic yet — those are later phases.
+applied and verified against a real PostgreSQL database. Phases 4-8 built
+seed data and business/calculation logic against this schema **without
+requiring any further migration** — Phase 8 (Watchlist + Alerts)
+confirmed the `watchlist`/`alert_rules` tables were sufficient as-is; see
+"Known Schema Limitations (Phase 8)" below for the two gaps it disclosed
+rather than worked around.
 
 ## Engine
 
@@ -180,16 +184,61 @@ rule with a column-level CHECK. See [FINANCIAL_RULES.md](./FINANCIAL_RULES.md).
 | id                         | UUID (PK) | |
 | watchlist_id               | UUID (FK → watchlist, **unique**, `ON DELETE CASCADE`) | |
 | enabled                    | boolean   | |
-| allocation_alert_enabled   | boolean   | |
+| allocation_alert_enabled   | boolean   | also drives the Phase 8 rebalance-suggestion check — see FINANCIAL_RULES.md, "Alert Engine Rules" |
 | allocation_max_percent     | `NUMERIC(5,2)`, nullable | |
 | price_target_enabled       | boolean   | |
 | price_target               | `NUMERIC(20,8)`, nullable | |
 | dip_buy_enabled            | boolean   | |
 | dip_buy_price              | `NUMERIC(20,8)`, nullable | |
 | telegram_enabled           | boolean   | |
-| last_triggered_at          | timestamp, nullable | |
+| last_triggered_at          | timestamp, nullable | Phase 8 dedup latch — one shared column per row, see "Known Schema Limitations" below |
 | created_at                 | timestamp | |
 | updated_at                 | timestamp | |
+
+Used as-is in Phase 8 (Watchlist + Alerts): no migration was required.
+Both `watchlist` and `alert_rules` (Phase 3) turned out sufficient for
+watchlist CRUD, four DB-backed alert checks (allocation breach, price
+target, dip buy, rebalance suggestion), and edge-triggered
+enable/disable-safe deduplication. Two genuine gaps were identified and
+are disclosed rather than worked around — see the next section.
+
+### Known Schema Limitations (Phase 8)
+
+Two gaps were identified while implementing the Watchlist + Alerts
+feature. Per the Phase 8 approval ("if the existing schema is
+insufficient, STOP and report the deficiency — do not create an
+unrelated migration"), neither was worked around with a speculative
+migration; both are reported here with the minimal addition each would
+need, and both align with tables already listed as deferred above.
+
+**1. No income/recurring-payment maturity date anywhere.** `alert_rules`
+has no column that could represent a maturity or due date (not even an
+`_enabled` flag for it), so the "Recurring Income Maturity" alert
+category (`check_income_maturity` in
+`backend/app/domain/alert_engine.py`) is implemented and unit-tested as a
+pure, standalone domain function, but is not wired into a persisted
+`AlertRule` or the `/api/alerts/evaluate` endpoint. The minimal schema
+addition would be the already-deferred **`scheduled_income`** table
+(one row per recurring payment/maturity: `asset_id` or a free-text label,
+`maturity_date`, `recurrence` if any, `lookahead_days`, `enabled`), plus
+a way for `alert_rules` to reference it (or an
+`income_maturity_enabled`/`income_maturity_watchlist_id` pair) — not a
+change to `watchlist`/`alert_rules` themselves.
+
+**2. `alert_rules.last_triggered_at` is one shared column per row, not
+one per condition type.** When a single alert rule has more than one
+check enabled at once (e.g. both `allocation_alert_enabled` and
+`price_target_enabled`), Phase 8's deduplication necessarily latches on
+whether *any* enabled check was last known to be triggered, aggregated
+across the row — accurate for the common case of one check type per
+rule, but not independently correct when several are combined. The
+minimal schema addition would be the already-deferred
+**`alert_events`** table (one row per `(alert_rule_id, alert_type)` pair
+with its own `last_triggered_at`/`cleared_at`), which Phase 8's
+edge-triggered logic (`is_new_trigger`/`should_clear` in
+`alert_engine.py`) is already structured to slot into unchanged — only
+the persistence key would change, from "the rule row" to "the
+`(rule, alert_type)` pair."
 
 ### `portfolio_snapshots` / `portfolio_snapshot_items`
 
@@ -256,6 +305,10 @@ These are deferred until their owning phase (or later) unless a dependency
 forces earlier introduction. The schema above avoids decisions that would
 require rewriting existing tables to add them later (e.g. UUID primary
 keys throughout, no assumption of a single implicit user).
+`alert_events` and `scheduled_income` were evaluated during Phase 8
+(Watchlist + Alerts) and remain deferred — see "Known Schema Limitations
+(Phase 8)" above for exactly what each would unlock and why Phase 8
+didn't introduce either speculatively.
 
 ## Identifiers
 

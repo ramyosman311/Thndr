@@ -54,13 +54,24 @@ The backend follows strict separation of concerns, from outer to inner layers:
    adds `inflow_allocator.py`: recommends where new cash should go among
    eligible buckets (target gap, capped by any maximum, ordered by
    priority) — a recommendation engine only, never a rebalancer; it never
-   sells and never invents a destination for unallocated cash.
+   sells and never invents a destination for unallocated cash. Phase 8
+   adds `alert_engine.py`: evaluates Watchlist + Alert Rule conditions
+   (allocation breach, price target, dip buy, rebalance suggestion,
+   income maturity) against explicit inputs, reusing the Allocation
+   Engine's own output for allocation-related checks rather than
+   recomputing it — reports triggers only, never places a trade.
 5. **`repositories/`** — Data access layer. All SQLAlchemy queries live
    here. Services depend on repository interfaces, not raw sessions,
    keeping persistence swappable and mockable in tests.
 6. **`models/`** — SQLAlchemy ORM models (the database schema in code).
 7. **`workers/`** — Background/scheduled jobs: alert evaluation (watchdog),
-   Telegram delivery, future snapshot generation.
+   Telegram delivery, future snapshot generation. Not implemented yet —
+   Phase 8 evaluates alerts synchronously via
+   `POST /api/alerts/evaluate` and defines only the delivery interface
+   (`services/notification_dispatcher.py`'s `NotificationDispatcher`
+   Protocol, with a no-op `NullNotificationDispatcher` default) a future
+   scheduled worker or Telegram integration would implement, without
+   coupling alert evaluation to either.
 8. **`core/`** — Cross-cutting concerns: configuration (`config.py`),
    database engine/session setup (`database.py`), and security utilities
    (`security.py`).
@@ -134,8 +145,9 @@ data is never presented to the user as real market data.
 
 ## Recommendation, Not Execution
 
-The Rebalancing Engine and Smart Inflow Allocator only ever produce
-recommendations (asset, amount, reason). Neither engine — nor any other part
+The Rebalancing Engine, Smart Inflow Allocator, and Alert Engine (its
+`REBALANCE_SUGGESTED` check) only ever produce recommendations/alerts
+(asset, amount or condition, reason). None of them — nor any other part
 of the system — places trades or moves money automatically.
 
 ## Related Documents
