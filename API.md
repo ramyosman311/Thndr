@@ -6,9 +6,11 @@ This document specifies the planned REST API surface. Implemented so far:
 `GET /api/health` (**Phase 2**), `GET /api/portfolio/summary` and
 `GET /api/portfolio/allocation` (**Phase 5**),
 `GET /api/portfolio/strategy/validation` (**Phase 6**),
-`POST /api/cash-flow/allocate` (**Phase 7**), and the full Watchlist +
-Alerts surface (**Phase 8**, below). The rest arrive incrementally with
-their owning phases. This is the contract those phases implement against.
+`POST /api/cash-flow/allocate` (**Phase 7**), the full Watchlist +
+Alerts surface (**Phase 8**), and `GET /api/assets` (**Phase 9**, added
+to support the frontend's Watchlist "add asset" picker). The rest arrive
+incrementally with their owning phases. This is the contract those phases
+implement against.
 
 ## Conventions
 
@@ -40,10 +42,16 @@ Returns service status and (once implemented) database connectivity state.
 ### Assets
 
 ```
-GET    /api/assets
+GET    /api/assets   (implemented, Phase 9 — read-only)
 POST   /api/assets
 PATCH  /api/assets/{id}
 ```
+`GET /api/assets` lists active assets (`id`, `symbol`, `name`,
+`asset_type`, `currency`, `is_active`) — read-only, reuses the exact same
+repository query the Portfolio Engine already uses (never a duplicated
+query). Added in Phase 9 to let the frontend's Watchlist "add asset"
+picker resolve a symbol to an id, since no such listing existed yet.
+`POST`/`PATCH` remain unimplemented — out of Phase 9 scope.
 
 ### Portfolio
 
@@ -78,12 +86,17 @@ transactions, snapshots, or configuration.
       // unrealized_pnl_percent is null when cost_basis is 0 (division is
       // undefined, never fabricated) — see FINANCIAL_RULES.md.
     }
-  ]
+  ],
+  "total_unrealized_pnl": "1000.00",       // added in Phase 9 — sum of holdings_pnl[].unrealized_pnl
+  "total_unrealized_pnl_percent": "11.11"  // null when total cost basis is 0, never fabricated
 }
 ```
 All Decimal fields serialize as JSON **strings**, not numbers, so exact
 precision survives the API boundary (see FINANCIAL_RULES.md,
 "Precision"). Only holdings with `quantity != 0` appear in `holdings_pnl`.
+`total_unrealized_pnl`/`total_unrealized_pnl_percent` (Phase 9) aggregate
+the already-computed per-holding figures for the dashboard's headline P/L
+— see FINANCIAL_RULES.md, "Portfolio-Level P/L Aggregation".
 
 **`GET /api/portfolio/allocation`** — same `404` behavior. Otherwise, one
 entry per active strategy bucket (all of them — a bucket with no

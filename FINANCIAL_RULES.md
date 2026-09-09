@@ -90,6 +90,29 @@ be validated whenever settings are saved.
   `portfolio_configs.emergency_asset_id` → `assets.strategy_bucket_id`
   relationship, never by bucket name.
 
+## Portfolio-Level P/L Aggregation
+
+Implemented in `backend/app/domain/pnl_engine.py`'s
+`calculate_portfolio_pnl_totals` (Phase 9). The Portfolio Dashboard needs
+a single headline P/L figure, not just the per-holding breakdown
+`calculate_holding_pnl` already produces — this function sums those
+already-computed values, it never re-derives P/L itself:
+
+- `total_market_value`, `total_cost_basis`, `total_unrealized_pnl` are
+  plain Decimal sums across holdings.
+- `total_unrealized_pnl_percent` is `total_unrealized_pnl /
+  total_cost_basis * 100` — `None` (never a fabricated number) when the
+  total cost basis is 0, the same "undefined denominator" rule already
+  used per-holding.
+- A holding with an undefined (`None`) P/L is **excluded** from the sums
+  entirely, never counted as contributing 0 — that would silently
+  understate the total for genuinely incomplete data instead of
+  reporting the gap honestly.
+
+This was added specifically so the frontend (Phase 9) never computes an
+aggregate P/L itself in TypeScript — see ARCHITECTURE.md, "no P/L,
+allocation, or rebalancing math is computed in React."
+
 ## Risk Allocation vs. Total Portfolio Percentage
 
 Every bucket's allocation is reported with two distinct percentages

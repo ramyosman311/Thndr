@@ -35,6 +35,8 @@ class PortfolioSummaryOut(BaseModel):
     denominator_value: DecimalStr
     emergency_excluded: bool
     holdings_pnl: list[HoldingPnLOut]
+    total_unrealized_pnl: DecimalStr
+    total_unrealized_pnl_percent: DecimalStr | None
 
 
 class BucketAllocationOut(BaseModel):

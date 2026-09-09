@@ -2,10 +2,11 @@
 
 ## Status
 
-This document describes the intended architecture of THNDR Smart Portfolio.
-As of Phase 1, only the repository structure exists — no backend or frontend
-code has been implemented yet. This document is the contract that later
-phases build against.
+This document describes the architecture of THNDR Smart Portfolio. The
+backend (FastAPI, domain/service/repository layering) is implemented
+through Phase 8; the frontend (Next.js) is implemented as of Phase 9 — see
+"Frontend Layering" below for what exists today. This document remains the
+contract later phases (PWA, Capacitor, deployment) build against.
 
 ## High-Level Overview
 
@@ -82,19 +83,46 @@ callable and testable without a running database or HTTP server.
 
 ## Frontend Layering
 
-The Next.js frontend is a **display and interaction layer only**:
+The Next.js frontend is a **display and interaction layer only**. Implemented
+as of Phase 9 (Next.js 16, App Router, TypeScript, Tailwind CSS v4, Cairo
+font, full RTL, class-based dark mode via `next-themes`):
 
-- `app/` — App Router routes/pages (RTL, Arabic, dark mode by default).
-- `components/` — Reusable presentational UI components.
-- `features/` — Feature-scoped UI modules (dashboard, portfolio, allocation,
-  watchlist, journal, settings) composed from `components/`.
-- `hooks/` — Data-fetching and UI state hooks. Hooks call the backend API;
-  they do not recompute financial figures the backend already returns.
-- `lib/` — API client, formatting utilities (currency, percentages, dates).
-- `types/` — TypeScript types mirroring backend API schemas.
+- `app/` — App Router routes/pages: `/` (Dashboard), `/portfolio` (holdings +
+  P/L detail), `/allocation` (per-bucket allocation + strategy validation
+  detail), `/inflow` (Smart Inflow Allocator workflow), `/watchlist`
+  (Watchlist + Alerts CRUD and on-demand evaluation), `/settings`
+  (explicit placeholder — no backend capability yet). Root `layout.tsx`
+  sets `lang="ar" dir="rtl"`, loads the Cairo font, and renders the shared
+  header/nav shell. `manifest.ts`/`icon.tsx` provide PWA-ready metadata
+  (installable-ready; the offline service worker itself is Phase 11).
+- `components/` — Reusable presentational UI (`ui/` primitives: card,
+  status pill, metric card, query-boundary loading/error/empty states)
+  plus per-screen component groups (`dashboard.tsx`, `allocation.tsx`,
+  `watchlist/`) and the icon set (`icons.tsx`, hand-rolled to avoid an
+  icon-library dependency) and navigation (`nav.tsx`: `BottomNav` for
+  mobile, `TopNav` for desktop, same `NAV_ITEMS`).
+- `hooks/` — `use-api-query.ts`: a minimal fetch-on-mount/refetch hook
+  used by every screen instead of a state-management library. Hooks call
+  the backend API; they do not recompute financial figures the backend
+  already returns.
+- `lib/` — `api.ts` (the single typed API client — no component calls
+  `fetch()` directly), `format.ts` (Decimal-string presentation
+  formatting: thousands grouping, currency/percent suffixes — never
+  round-trips a value through a binary float), `status-labels.ts`
+  (Arabic label + color tone per backend-defined status string — pure
+  translation/presentation, never a new or reinterpreted status).
+- `types/api.ts` — TypeScript types mirroring every backend Pydantic
+  schema field-for-field, including `DecimalStr` (a Decimal serialized as
+  a string) to keep the "never treat a financial value as a float" rule
+  visible in the type system itself.
 
 **Hard rule:** no P/L, allocation, or rebalancing math is computed in React.
-The frontend renders numbers the backend has already calculated.
+The frontend renders numbers the backend has already calculated. Where a
+Phase 9 screen needed a genuinely missing backend capability (a portfolio-
+level P/L aggregate for the dashboard header; a way to list assets for the
+Watchlist "add" picker), the addition was made as a minimal, clean backend
+endpoint/field — see FINANCIAL_RULES.md ("Portfolio-Level P/L
+Aggregation") and API.md ("Assets") — never as client-side financial logic.
 
 ## Why This Layering Matters
 

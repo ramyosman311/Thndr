@@ -23,6 +23,14 @@ class HoldingPnL:
     unrealized_pnl_percent: Decimal | None
 
 
+@dataclass(frozen=True)
+class PortfolioPnLTotals:
+    total_market_value: Decimal
+    total_cost_basis: Decimal
+    total_unrealized_pnl: Decimal
+    total_unrealized_pnl_percent: Decimal | None
+
+
 def calculate_holding_pnl(
     *,
     quantity: Decimal | None,
@@ -57,4 +65,40 @@ def calculate_holding_pnl(
         cost_basis=cost_basis,
         unrealized_pnl=unrealized_pnl,
         unrealized_pnl_percent=unrealized_pnl_percent,
+    )
+
+
+def calculate_portfolio_pnl_totals(holdings: list[HoldingPnL]) -> PortfolioPnLTotals:
+    """Aggregates already-computed per-holding P/L into a portfolio-level
+    total (Phase 9: the dashboard needs a single headline P/L figure, not
+    just a per-holding breakdown). This never re-derives P/L itself —
+    each `HoldingPnL` is exactly what `calculate_holding_pnl` already
+    produced; this only sums those Decimal values and applies the same
+    "undefined when the denominator is zero" rule already used per-
+    holding, now against the portfolio's total cost basis.
+
+    Holdings with an undefined (`None`) market_value/cost_basis/
+    unrealized_pnl are excluded from the sums entirely — never treated
+    as zero, which would silently understate the total for incomplete
+    data instead of reporting it honestly.
+    """
+    total_market_value = Decimal("0")
+    total_cost_basis = Decimal("0")
+    total_unrealized_pnl = Decimal("0")
+    for holding in holdings:
+        if holding.market_value is None or holding.cost_basis is None or holding.unrealized_pnl is None:
+            continue
+        total_market_value += holding.market_value
+        total_cost_basis += holding.cost_basis
+        total_unrealized_pnl += holding.unrealized_pnl
+
+    total_unrealized_pnl_percent = (
+        None if total_cost_basis == 0 else (total_unrealized_pnl / total_cost_basis) * Decimal("100")
+    )
+
+    return PortfolioPnLTotals(
+        total_market_value=total_market_value,
+        total_cost_basis=total_cost_basis,
+        total_unrealized_pnl=total_unrealized_pnl,
+        total_unrealized_pnl_percent=total_unrealized_pnl_percent,
     )

@@ -15,7 +15,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.allocation_engine import evaluate_bucket_allocation
-from app.domain.pnl_engine import calculate_holding_pnl
+from app.domain.pnl_engine import HoldingPnL, calculate_holding_pnl, calculate_portfolio_pnl_totals
 from app.domain.portfolio_engine import calculate_portfolio_totals
 from app.repositories.portfolio_repository import (
     get_active_allocation_targets,
@@ -50,6 +50,7 @@ async def get_portfolio_summary(session: AsyncSession) -> PortfolioSummaryOut:
     totals = calculate_portfolio_totals(positions, emergency_excluded=config.emergency_excluded)
 
     holdings_pnl: list[HoldingPnLOut] = []
+    raw_pnls: list[HoldingPnL] = []
     for asset in assets:
         holding = asset.holding
         if holding is None or holding.quantity == 0:
@@ -59,6 +60,7 @@ async def get_portfolio_summary(session: AsyncSession) -> PortfolioSummaryOut:
             average_cost=holding.average_cost,
             current_price=holding.current_price,
         )
+        raw_pnls.append(pnl)
         holdings_pnl.append(
             HoldingPnLOut(
                 asset_id=asset.id,
@@ -75,6 +77,8 @@ async def get_portfolio_summary(session: AsyncSession) -> PortfolioSummaryOut:
             )
         )
 
+    pnl_totals = calculate_portfolio_pnl_totals(raw_pnls)
+
     return PortfolioSummaryOut(
         base_currency=config.base_currency,
         total_value=_round(totals.total_value),
@@ -84,6 +88,12 @@ async def get_portfolio_summary(session: AsyncSession) -> PortfolioSummaryOut:
         denominator_value=_round(totals.denominator_value),
         emergency_excluded=config.emergency_excluded,
         holdings_pnl=holdings_pnl,
+        total_unrealized_pnl=_round(pnl_totals.total_unrealized_pnl),
+        total_unrealized_pnl_percent=(
+            _round(pnl_totals.total_unrealized_pnl_percent)
+            if pnl_totals.total_unrealized_pnl_percent is not None
+            else None
+        ),
     )
 
 

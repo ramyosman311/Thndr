@@ -4,14 +4,18 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 7 — Smart Inflow Allocator
-> (`POST /api/cash-flow/allocate`): recommends where new cash should go
-> among eligible strategy buckets — target-gap and priority driven,
-> capped by any configured maximum, reusing the Strategy Engine's
-> validation rather than duplicating it. Recommendation only: never
-> sells, never modifies holdings, never forces unallocated cash into a
-> destination. No rebalancing/execution, Telegram, market data, or
-> frontend UI exist yet. See [Phase Plan](#phase-plan) below.
+> **Status:** Phase 9 — Portfolio Dashboard + mobile-first frontend.
+> A Next.js (App Router) app now consumes the backend API end-to-end:
+> Dashboard, Portfolio, Allocation/Strategy, Smart Inflow, and Watchlist +
+> Alerts screens, fully RTL/Arabic with dark mode and a PWA-ready
+> manifest. The frontend never recomputes a financial value the backend
+> already returns. Backend-wise: Phase 5 (Portfolio Engine), Phase 6
+> (Strategy validation), Phase 7 (Smart Inflow Allocator), and Phase 8
+> (Watchlist + Alerts) are all implemented and tested; Phase 9 added one
+> read-only `GET /api/assets` endpoint and a portfolio-level P/L
+> aggregate field the new dashboard needed (see FINANCIAL_RULES.md and
+> API.md). No rebalancing execution, Telegram delivery, or real market
+> data exist yet. See [Phase Plan](#phase-plan) below.
 
 ## What this project does (target scope)
 
@@ -115,17 +119,17 @@ thndr-smart-portfolio/
 Development proceeds in verified phases; each phase stops for approval
 before the next begins.
 
-1. Repository + Architecture *(current)*
-2. Backend Foundation (FastAPI, DB connection, Docker, `/api/health`)
-3. Database Models + Migrations
-4. Seed Data
-5. Portfolio Engine (value, P/L, allocation)
-6. Strategy Engine (dynamic targets)
-7. Smart Inflow Allocator
-8. Watchlist + Alerts
-9. Telegram Notifications
-10. Next.js Frontend
-11. PWA
+1. Repository + Architecture — done
+2. Backend Foundation (FastAPI, DB connection, Docker, `/api/health`) — done
+3. Database Models + Migrations — done
+4. Seed Data — done
+5. Portfolio Engine (value, P/L, allocation) — done
+6. Strategy Engine (dynamic targets) — done
+7. Smart Inflow Allocator — done
+8. Watchlist + Alerts — done
+9. Next.js Frontend (Portfolio Dashboard, mobile-first, RTL, dark mode) — done *(current; reordered ahead of Telegram per approval)*
+10. Telegram Notifications
+11. PWA (installable, offline-capable)
 12. Capacitor wrappers
 13. Production deployment prep
 
@@ -212,6 +216,60 @@ data only** — never run as part of a migration, and never a source of
 truth for production data. See `backend/app/seed/data.py` for the exact
 values and `DATABASE.md` for the allocation rationale.
 
+### Frontend
+
+**Prerequisites:** Node.js 22+, and the backend running locally (see
+above) — the frontend is a pure API client and has nothing to render
+without it.
+
+**1. Install dependencies**
+
+```bash
+cd frontend
+npm install
+```
+
+**2. Configure environment**
+
+```bash
+cp ../.env.example .env.local
+# NEXT_PUBLIC_API_BASE_URL defaults to http://localhost:8000/api, matching the backend above
+```
+
+**3. Run the dev server**
+
+```bash
+npm run dev
+```
+
+Then open `http://localhost:3000` — Dashboard, Portfolio, Allocation/
+Strategy, Smart Inflow, Watchlist + Alerts, and a Settings placeholder,
+fully RTL/Arabic with light/dark mode (`next-themes`, respects the system
+preference by default).
+
+**4. Run tests**
+
+```bash
+cd frontend
+npm test
+```
+
+Vitest + Testing Library, run in isolation with the API client mocked
+per-test (no network calls) — component rendering, loading/error/empty
+states, and interaction flows (add/remove a watchlist entry, submit the
+Smart Inflow form, evaluate alerts) are covered without needing a live
+backend.
+
+**5. Production build**
+
+```bash
+cd frontend
+npm run build
+```
+
+Uses Next.js 16 (App Router, Turbopack). `npm run lint` runs ESLint
+separately.
+
 ### Docker
 
 From the repository root:
@@ -230,12 +288,13 @@ uses `python:3.12-slim`, runs as a non-root user, and exposes a container
 > [DEPLOYMENT.md](./DEPLOYMENT.md) for details. The Dockerfile itself is
 > unaffected and builds normally wherever Docker Hub is reachable.
 
-### Required Environment Variables (Phase 2)
+### Required Environment Variables
 
-See `.env.example` for the full list. Backend-relevant variables at this
-phase: `APP_ENV`, `APP_DEBUG`, `DEV_MODE`, `BACKEND_HOST`, `BACKEND_PORT`,
+See `.env.example` for the full list. Backend variables: `APP_ENV`,
+`APP_DEBUG`, `DEV_MODE`, `BACKEND_HOST`, `BACKEND_PORT`,
 `BACKEND_CORS_ORIGINS`, `DATABASE_URL`, `DATABASE_URL_SYNC`, `SECRET_KEY`.
-Telegram/market-data/Supabase/frontend variables are placeholders for later
+Frontend: `NEXT_PUBLIC_API_BASE_URL` (Phase 9 — read by `frontend/lib/api.ts`).
+Telegram/market-data/Supabase variables remain placeholders for later
 phases and are not read by any code yet.
 
 ## License

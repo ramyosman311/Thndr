@@ -1,0 +1,121 @@
+@import "tailwindcss";
+
+/* Class-based dark mode (toggled by next-themes on <html>), not just
+   prefers-color-scheme, so the user can override the system setting. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --background: #f7f8fa;
+  --foreground: #12141a;
+
+  --card: #ffffff;
+  --card-foreground: #12141a;
+
+  --border: #e4e7ec;
+  --muted: #f0f1f4;
+  --muted-foreground: #5b6270;
+
+  --primary: #0f766e;
+  --primary-foreground: #ffffff;
+
+  --accent: #f0fdfa;
+  --accent-foreground: #0f766e;
+
+  --success: #15803d;
+  --success-foreground: #ffffff;
+  --success-muted: #ecfdf3;
+
+  --danger: #b91c1c;
+  --danger-foreground: #ffffff;
+  --danger-muted: #fef2f2;
+
+  --warning: #b45309;
+  --warning-foreground: #ffffff;
+  --warning-muted: #fffbeb;
+
+  --ring: #0f766e;
+}
+
+:root.dark {
+  --background: #0b0d12;
+  --foreground: #e9eaee;
+
+  --card: #14171e;
+  --card-foreground: #e9eaee;
+
+  --border: #262b35;
+  --muted: #1b1f27;
+  --muted-foreground: #9aa1ae;
+
+  --primary: #2dd4bf;
+  --primary-foreground: #06231f;
+
+  --accent: #10231f;
+  --accent-foreground: #5eead4;
+
+  --success: #4ade80;
+  --success-foreground: #052e14;
+  --success-muted: #0d2818;
+
+  --danger: #f87171;
+  --danger-foreground: #2c0a0a;
+  --danger-muted: #2a1212;
+
+  --warning: #fbbf24;
+  --warning-foreground: #2b1a02;
+  --warning-muted: #2a2008;
+
+  --ring: #2dd4bf;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-muted: var(--success-muted);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-danger-muted: var(--danger-muted);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-muted: var(--warning-muted);
+  --color-ring: var(--ring);
+  --font-sans: var(--font-cairo);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-cairo), "Cairo", "Segoe UI", Tahoma, sans-serif;
+}
+
+/* iOS safe-area support for a mobile-first, notch-aware layout. */
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Numbers (currency/percent) render as tabular figures so columns of
+   financial values align, and stay LTR even inside an RTL document. */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+*:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}

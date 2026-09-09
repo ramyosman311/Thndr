@@ -59,6 +59,44 @@ async def test_portfolio_summary_endpoint_returns_calculated_values(db_session, 
     assert "APISTK" in pnl_by_symbol
     assert Decimal(pnl_by_symbol["APISTK"]["market_value"]) == Decimal("10000.00")
 
+    # Both holdings default to average_cost=0, so total cost basis is 0
+    # and the aggregate percent is undefined (None), never fabricated —
+    # but the aggregate P/L amount itself is still a well-defined sum.
+    assert Decimal(body["total_unrealized_pnl"]) == Decimal("110000.00")
+    assert body["total_unrealized_pnl_percent"] is None
+
+
+async def test_portfolio_summary_total_unrealized_pnl_percent_uses_total_cost_basis(db_session, client):
+    """Phase 9: the dashboard's headline P/L% aggregates already-computed
+    per-holding P/L (never re-derives it) against the portfolio's total
+    cost basis — verified end-to-end through the real API."""
+    config = PortfolioConfig(name="API PnL Portfolio", base_currency="EGP", emergency_excluded=False)
+    db_session.add(config)
+    await db_session.flush()
+
+    asset_a = make_asset("APIPNLA")
+    db_session.add(asset_a)
+    await db_session.flush()
+    db_session.add(
+        Holding(asset_id=asset_a.id, quantity=Decimal("10"), average_cost=Decimal("50"), current_price=Decimal("60"))
+    )  # cost basis 500, market value 600, pnl +100
+
+    asset_b = make_asset("APIPNLB")
+    db_session.add(asset_b)
+    await db_session.flush()
+    db_session.add(
+        Holding(asset_id=asset_b.id, quantity=Decimal("5"), average_cost=Decimal("100"), current_price=Decimal("90"))
+    )  # cost basis 500, market value 450, pnl -50
+    await db_session.commit()
+
+    response = await client.get("/api/portfolio/summary")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert Decimal(body["total_unrealized_pnl"]) == Decimal("50.00")
+    expected_percent = (Decimal("50") / Decimal("1000")) * Decimal("100")
+    assert Decimal(body["total_unrealized_pnl_percent"]) == expected_percent.quantize(Decimal("0.01"))
+
 
 async def test_portfolio_allocation_endpoint_returns_calculated_percentages(db_session, client):
     config = PortfolioConfig(name="API Alloc Portfolio", base_currency="EGP", emergency_excluded=False)
