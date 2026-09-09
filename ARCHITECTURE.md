@@ -60,7 +60,14 @@ The backend follows strict separation of concerns, from outer to inner layers:
    (allocation breach, price target, dip buy, rebalance suggestion,
    income maturity) against explicit inputs, reusing the Allocation
    Engine's own output for allocation-related checks rather than
-   recomputing it — reports triggers only, never places a trade.
+   recomputing it — reports triggers only, never places a trade. Phase 10
+   adds `transaction_engine.py`: pure BUY/SELL average-cost math
+   (`apply_buy`/`apply_sell`) that turns a transaction into the next
+   `holdings` state — quantity, average cost, and (for SELL only) an
+   immediate realized P/L. This is the only place `holdings.quantity`/
+   `average_cost` are ever computed; once written, the existing Phase 5
+   Portfolio/P/L/Allocation Engines read the result unchanged — Phase 10
+   introduces no second portfolio calculation path.
 5. **`repositories/`** — Data access layer. All SQLAlchemy queries live
    here. Services depend on repository interfaces, not raw sessions,
    keeping persistence swappable and mockable in tests.
@@ -91,16 +98,22 @@ font, full RTL, class-based dark mode via `next-themes`):
   P/L detail), `/allocation` (per-bucket allocation + strategy validation
   detail), `/inflow` (Smart Inflow Allocator workflow), `/watchlist`
   (Watchlist + Alerts CRUD and on-demand evaluation), `/settings`
-  (explicit placeholder — no backend capability yet). Root `layout.tsx`
+  (explicit placeholder — no backend capability yet). Phase 10 upgrades
+  `/portfolio` with a transaction entry form (BUY/SELL, asset picker
+  reusing `GET /api/assets`, quantity/price/fees/date/notes, an explicit
+  review-then-confirm step, and a clear "records an executed transaction,
+  not a recommendation" label) and a read-only transaction history list —
+  see `components/portfolio/`. Root `layout.tsx`
   sets `lang="ar" dir="rtl"`, loads the Cairo font, and renders the shared
   header/nav shell. `manifest.ts`/`icon.tsx` provide PWA-ready metadata
   (installable-ready; the offline service worker itself is Phase 11).
 - `components/` — Reusable presentational UI (`ui/` primitives: card,
   status pill, metric card, query-boundary loading/error/empty states)
   plus per-screen component groups (`dashboard.tsx`, `allocation.tsx`,
-  `watchlist/`) and the icon set (`icons.tsx`, hand-rolled to avoid an
-  icon-library dependency) and navigation (`nav.tsx`: `BottomNav` for
-  mobile, `TopNav` for desktop, same `NAV_ITEMS`).
+  `watchlist/`, `portfolio/` — Phase 10's `transaction-form.tsx` and
+  `transaction-history.tsx`) and the icon set (`icons.tsx`, hand-rolled to
+  avoid an icon-library dependency) and navigation (`nav.tsx`: `BottomNav`
+  for mobile, `TopNav` for desktop, same `NAV_ITEMS`).
 - `hooks/` — `use-api-query.ts`: a minimal fetch-on-mount/refetch hook
   used by every screen instead of a state-management library. Hooks call
   the backend API; they do not recompute financial figures the backend
@@ -175,8 +188,16 @@ data is never presented to the user as real market data.
 
 The Rebalancing Engine, Smart Inflow Allocator, and Alert Engine (its
 `REBALANCE_SUGGESTED` check) only ever produce recommendations/alerts
-(asset, amount or condition, reason). None of them — nor any other part
-of the system — places trades or moves money automatically.
+(asset, amount or condition, reason). None of them ever place a trade or
+move money automatically, and none of them ever calls
+`POST /api/transactions` on the user's behalf.
+
+`POST /api/transactions` (Phase 10) is the deliberate, explicit exception:
+it exists specifically so a *user* can record a trade they already
+executed elsewhere (a real brokerage, in practice). This is manual data
+entry of a real-world event, never automated trading — the system still
+never decides to buy or sell anything, and no recommendation engine's
+output is ever wired to it automatically.
 
 ## Related Documents
 

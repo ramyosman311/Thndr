@@ -225,6 +225,47 @@ export interface AlertEvaluationOut {
   results: AlertEvaluationEntryOut[];
 }
 
+// --- Transactions + Holdings (Phase 10) ----------------------------------
+
+export type TransactionKind = "BUY" | "SELL";
+
+export interface TransactionCreateRequest {
+  asset_id: string;
+  transaction_type: TransactionKind;
+  quantity: DecimalStr;
+  price: DecimalStr;
+  fees?: DecimalStr;
+  /** ISO-8601 datetime string. */
+  transaction_date: string;
+  notes?: string | null;
+}
+
+export interface TransactionOut {
+  id: string;
+  asset_id: string;
+  asset_symbol: string;
+  transaction_type: string;
+  quantity: DecimalStr;
+  price: DecimalStr;
+  fees: DecimalStr;
+  transaction_date: string;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface HoldingSnapshotOut {
+  quantity: DecimalStr;
+  average_cost: DecimalStr;
+  current_price: DecimalStr;
+}
+
+export interface TransactionResultOut {
+  transaction: TransactionOut;
+  holding: HoldingSnapshotOut;
+  /** Only present for SELL — see FINANCIAL_RULES.md, "Realized P/L". */
+  realized_pnl: DecimalStr | null;
+}
+
 // --- Assets (Phase 9 read-only listing) ----------------------------------
 
 export interface AssetOut {

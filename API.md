@@ -7,10 +7,12 @@ This document specifies the planned REST API surface. Implemented so far:
 `GET /api/portfolio/allocation` (**Phase 5**),
 `GET /api/portfolio/strategy/validation` (**Phase 6**),
 `POST /api/cash-flow/allocate` (**Phase 7**), the full Watchlist +
-Alerts surface (**Phase 8**), and `GET /api/assets` (**Phase 9**, added
-to support the frontend's Watchlist "add asset" picker). The rest arrive
-incrementally with their owning phases. This is the contract those phases
-implement against.
+Alerts surface (**Phase 8**), `GET /api/assets` (**Phase 9**, added to
+support the frontend's Watchlist "add asset" picker — now also reused by
+the Phase 10 transaction form's asset picker), and `POST`/`GET
+/api/transactions` (**Phase 10**, the Transaction + Holdings write path).
+The rest arrive incrementally with their owning phases. This is the
+contract those phases implement against.
 
 ## Conventions
 
@@ -51,7 +53,8 @@ PATCH  /api/assets/{id}
 repository query the Portfolio Engine already uses (never a duplicated
 query). Added in Phase 9 to let the frontend's Watchlist "add asset"
 picker resolve a symbol to an id, since no such listing existed yet.
-`POST`/`PATCH` remain unimplemented — out of Phase 9 scope.
+Reused unchanged by the Phase 10 transaction form's asset picker — never
+duplicated. `POST`/`PATCH` remain unimplemented.
 
 ### Portfolio
 
@@ -182,19 +185,71 @@ reports.
 
 ### Holdings
 
-```
-GET    /api/holdings
-POST   /api/holdings
-PATCH  /api/holdings/{id}
-```
+No dedicated endpoint — a holding is always the automatic *result* of a
+transaction (see below), never directly created or edited. Current
+holdings are read via `holdings_pnl` in `GET /api/portfolio/summary`
+(Phase 5). `PATCH /api/holdings/{id}` remains unimplemented: Phase 10
+deliberately does not add a way to set `current_price` manually — see
+FINANCIAL_RULES.md, "Current Price Is Not Set By Transactions" for the
+disclosed consequence.
 
-### Transactions
+### Transactions (implemented, Phase 10)
 
 ```
-GET    /api/transactions
-POST   /api/transactions
-DELETE /api/transactions/{id}
+POST /api/transactions
+GET  /api/transactions
 ```
+`DELETE /api/transactions/{id}` and `GET /api/transactions/{id}` remain
+unimplemented — transactions are immutable historical records (see
+FINANCIAL_RULES.md, "Transaction Immutability"); ordinary deletion was
+explicitly out of scope for Phase 10.
+
+**`POST /api/transactions`** records an executed BUY or SELL and
+atomically updates the resulting holding (average-cost accounting — see
+FINANCIAL_RULES.md, "Transaction Accounting"). This is **not** a
+recommendation: unlike `POST /api/cash-flow/allocate` (Smart Inflow), it
+writes a real, permanent transaction row and changes the current
+holding.
+
+Request:
+```jsonc
+{
+  "asset_id": "...",
+  "transaction_type": "BUY",   // "BUY" | "SELL" only — see below
+  "quantity": "10",
+  "price": "100.00",
+  "fees": "5.00",              // optional, defaults to "0"
+  "transaction_date": "2026-01-01T00:00:00Z",
+  "notes": "optional"
+}
+```
+`quantity` must be `> 0`, `price` and `fees` must be `>= 0` — enforced by
+Pydantic field validators, `422` on violation. `transaction_type` accepts
+only `BUY`/`SELL` (`422` for anything else, including the model's other
+enum values `DIVIDEND`/`DEPOSIT`/`WITHDRAWAL`/`TRANSFER` — those have no
+holding-update semantics defined yet and are rejected explicitly rather
+than silently doing nothing).
+
+Response (`201`):
+```jsonc
+{
+  "transaction": {
+    "id": "...", "asset_id": "...", "asset_symbol": "TMGH", "transaction_type": "BUY",
+    "quantity": "10.00000000", "price": "100.00000000", "fees": "5.00",
+    "transaction_date": "2026-01-01T00:00:00Z", "notes": "optional", "created_at": "..."
+  },
+  "holding": { "quantity": "10.00000000", "average_cost": "100.50000000", "current_price": "0E-8" },
+  "realized_pnl": null   // a Decimal string for SELL only — see FINANCIAL_RULES.md, "Realized P/L"
+}
+```
+Error responses: `404` if `asset_id` doesn't exist; `409` if a SELL's
+quantity exceeds the currently held quantity (including selling an asset
+with no holding at all) — the transaction is never recorded in this
+case, and the holding is never touched.
+
+**`GET /api/transactions`** returns the full transaction history
+(`TransactionOut[]`, no holding-state fields), most recent
+`transaction_date` first. Read-only.
 
 ### Settings — Portfolio Config
 

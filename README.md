@@ -4,18 +4,25 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 9 — Portfolio Dashboard + mobile-first frontend.
-> A Next.js (App Router) app now consumes the backend API end-to-end:
-> Dashboard, Portfolio, Allocation/Strategy, Smart Inflow, and Watchlist +
-> Alerts screens, fully RTL/Arabic with dark mode and a PWA-ready
-> manifest. The frontend never recomputes a financial value the backend
-> already returns. Backend-wise: Phase 5 (Portfolio Engine), Phase 6
-> (Strategy validation), Phase 7 (Smart Inflow Allocator), and Phase 8
-> (Watchlist + Alerts) are all implemented and tested; Phase 9 added one
-> read-only `GET /api/assets` endpoint and a portfolio-level P/L
-> aggregate field the new dashboard needed (see FINANCIAL_RULES.md and
-> API.md). No rebalancing execution, Telegram delivery, or real market
-> data exist yet. See [Phase Plan](#phase-plan) below.
+> **Status:** Phase 10 — Transaction & Holdings Engine.
+> `POST /api/transactions` records a real, executed BUY/SELL and
+> atomically updates the resulting holding using average-cost accounting
+> (never FIFO/LIFO) — `holdings.quantity`/`average_cost` are now fully
+> transaction-derived, and the existing Portfolio/P/L/Allocation Engines
+> (Phase 5/6) pick up the result automatically, with no second
+> calculation path. Oversells are rejected outright (`409`, nothing
+> written); fees affect cost basis/proceeds; concurrent writes to the
+> same asset are serialized with a row lock. The Next.js frontend's
+> `/portfolio` screen (Phase 9) now includes a mobile-first transaction
+> entry form (explicit review-then-confirm, clearly labeled as an
+> executed transaction, never a recommendation) and a transaction
+> history view. Backend-wise: Phase 5 (Portfolio Engine) through Phase 9
+> (Frontend) remain implemented and tested; see FINANCIAL_RULES.md,
+> "Transaction Accounting" for the full methodology and disclosed
+> limitations (no correction/reversal path; `current_price` is still
+> never set automatically). No rebalancing execution, broker integration,
+> Telegram delivery, or real market data exist yet. See
+> [Phase Plan](#phase-plan) below.
 
 ## What this project does (target scope)
 
@@ -127,11 +134,12 @@ before the next begins.
 6. Strategy Engine (dynamic targets) — done
 7. Smart Inflow Allocator — done
 8. Watchlist + Alerts — done
-9. Next.js Frontend (Portfolio Dashboard, mobile-first, RTL, dark mode) — done *(current; reordered ahead of Telegram per approval)*
-10. Telegram Notifications
-11. PWA (installable, offline-capable)
-12. Capacitor wrappers
-13. Production deployment prep
+9. Next.js Frontend (Portfolio Dashboard, mobile-first, RTL, dark mode) — done
+10. Transaction & Holdings Engine (BUY/SELL, average-cost accounting) — done *(current; reordered ahead of Telegram per approval)*
+11. Telegram Notifications
+12. PWA (installable, offline-capable)
+13. Capacitor wrappers
+14. Production deployment prep
 
 ## Local Development
 

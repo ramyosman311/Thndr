@@ -1,15 +1,29 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import { useApiQuery } from "@/hooks/use-api-query";
 import { api } from "@/lib/api";
 import { QueryBoundary, EmptyBlock } from "@/components/ui/query-boundary";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { TotalValueCard, ValueSplitCard } from "@/components/dashboard";
+import { TransactionForm } from "@/components/portfolio/transaction-form";
+import { TransactionHistory } from "@/components/portfolio/transaction-history";
 import { formatCurrency, formatNumber, formatPercent, isNegative, isZero } from "@/lib/format";
 import type { HoldingPnLOut } from "@/types/api";
 
 export default function PortfolioPage() {
   const summaryQuery = useApiQuery(() => api.portfolioSummary());
+  const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
+
+  const holdingQuantityByAssetId = useMemo(() => {
+    if (summaryQuery.status !== "success") return {};
+    return Object.fromEntries(summaryQuery.data.holdings_pnl.map((h) => [h.asset_id, h.quantity]));
+  }, [summaryQuery]);
+
+  function handleTransactionRecorded() {
+    summaryQuery.refetch();
+    setHistoryRefreshToken((t) => t + 1);
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -40,6 +54,20 @@ export default function PortfolioPage() {
           </>
         )}
       </QueryBoundary>
+
+      <Card>
+        <CardHeader title="تسجيل معاملة" subtitle="شراء أو بيع فعلي — ليس توصية" />
+        <CardBody>
+          <TransactionForm holdingQuantityByAssetId={holdingQuantityByAssetId} onSuccess={handleTransactionRecorded} />
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader title="سجل المعاملات" />
+        <CardBody>
+          <TransactionHistory refreshToken={historyRefreshToken} />
+        </CardBody>
+      </Card>
     </div>
   );
 }

@@ -5,12 +5,14 @@
 Implemented as of **Phase 3**: all core tables below exist as SQLAlchemy
 2.x models (`backend/app/models/`) and a real Alembic migration
 (`backend/alembic/versions/ac3c275604cd_phase_3_core_portfolio_schema.py`),
-applied and verified against a real PostgreSQL database. Phases 4-8 built
+applied and verified against a real PostgreSQL database. Phases 4-10 built
 seed data and business/calculation logic against this schema **without
 requiring any further migration** — Phase 8 (Watchlist + Alerts)
-confirmed the `watchlist`/`alert_rules` tables were sufficient as-is; see
+confirmed the `watchlist`/`alert_rules` tables were sufficient as-is (see
 "Known Schema Limitations (Phase 8)" below for the two gaps it disclosed
-rather than worked around.
+rather than worked around), and Phase 10 (Transaction + Holdings Engine)
+confirmed `holdings`/`transactions` were already exactly what
+transaction-derived positions require.
 
 ## Engine
 
@@ -113,6 +115,14 @@ never a hardcoded grouping around specific ticker symbols.
 
 CHECK constraints: `quantity >= 0`, `average_cost >= 0`, `current_price >= 0`.
 
+`quantity` and `average_cost` are, as of Phase 10, always the *derived
+result* of transaction history (`POST /api/transactions` — see
+FINANCIAL_RULES.md, "Transaction Accounting") — this table's own schema
+needed no change to support that; it was already exactly what a
+transaction-derived position requires. `current_price` remains untouched
+by transactions (a separate concept — see FINANCIAL_RULES.md, "Current
+Price Is Not Set By Transactions"); nothing in Phase 10 writes it.
+
 ### `transactions`
 
 | Field             | Type      | Notes |
@@ -128,7 +138,12 @@ CHECK constraints: `quantity >= 0`, `average_cost >= 0`, `current_price >= 0`.
 | created_at        | timestamp | |
 
 Indexed on `(asset_id, transaction_date)`. CHECK constraints:
-`quantity >= 0`, `price >= 0`, `fees >= 0`.
+`quantity >= 0`, `price >= 0`, `fees >= 0`. Only `BUY`/`SELL` are
+writable via `POST /api/transactions` as of Phase 10 — the other enum
+values exist for a future phase and have no defined holding-update
+behavior yet. Rows are immutable once written: Phase 10 adds no
+update/delete path for this table (see FINANCIAL_RULES.md, "Transaction
+Accounting").
 
 ### `portfolio_configs`
 

@@ -3,7 +3,7 @@
 ## Status
 
 This document specifies the financial domain rules the backend `domain/`
-layer must implement (Phases 5–8). No calculation logic exists yet in
+layer must implement (Phases 5–10). No calculation logic exists yet in
 Phase 1. This is the specification those phases are built and tested
 against.
 
@@ -305,6 +305,123 @@ never executes a trade.
   real delivery mechanism (Telegram or otherwise) exists yet — a
   `NullNotificationDispatcher` is the default. Domain code never imports
   or calls a dispatcher directly.
+
+## Transaction Accounting (Phase 10)
+
+Implemented in `backend/app/domain/transaction_engine.py`, orchestrated by
+`backend/app/services/transaction_service.py`. Makes `holdings` a fully
+transaction-derived table: every BUY/SELL updates it deterministically,
+and the existing Portfolio/P/L/Allocation Engines (Phase 5/6) see the
+result automatically — Phase 10 introduces no second portfolio
+calculation engine.
+
+**Average-cost accounting, not FIFO/LIFO.** This module never tracks
+individual purchase lots. It blends every purchase into one running
+average cost per asset:
+
+```
+gross_cost = purchase_quantity * purchase_price
+total_cost = gross_cost + fees                       # fees increase cost basis
+new_quantity = current_quantity + purchase_quantity
+new_cost_basis = (current_quantity * current_average_cost) + total_cost
+new_average_cost = new_cost_basis / new_quantity
+```
+
+**SELL removes the sold quantity's cost at the *current* average cost**
+— never at the sale price, never via FIFO/LIFO lot selection:
+
+```
+cost_removed = sell_quantity * current_average_cost
+remaining_quantity = current_quantity - sell_quantity
+remaining_cost_basis = (current_quantity * current_average_cost) - cost_removed
+remaining_average_cost = remaining_cost_basis / remaining_quantity   # 0 when remaining_quantity == 0
+```
+Under this method the average cost of the remaining position is
+mathematically unchanged by a partial sale — removing a proportional
+slice of cost basis at the same per-unit cost cannot change the per-unit
+cost of what's left. `transaction_engine.py` computes this explicitly
+(rather than just carrying the old value over) so the invariant is
+directly testable, and so a full sale lands on exactly `0` rather than a
+value that merely happens to be very close to it.
+
+**Oversell is rejected outright, before anything is written.** A SELL
+whose `quantity` exceeds the currently held quantity (including selling
+an asset with no holding row at all) raises before either the
+`transactions` insert or the `holdings` update happens — the API returns
+`409` and neither row is touched. There is no partial-fill behavior.
+
+**Fees are never silently dropped.** BUY fees increase cost basis (shown
+above); SELL fees reduce the immediate realized proceeds:
+
+```
+sale_proceeds_net_of_fees = (sell_quantity * sell_price) - fees
+realized_pnl = sale_proceeds_net_of_fees - cost_removed
+```
+
+**Realized P/L is computed, never persisted as a ledger, and never mixed
+with unrealized P/L.** `realized_pnl` is returned only in the response of
+the specific SELL request that produced it (`POST /api/transactions`) —
+it is not written to any column, and there is no running "total realized
+P/L" anywhere in the schema. Unrealized P/L (`pnl_engine.py`, Phase 5)
+is calculated independently, from the *resulting* holding's average cost
+and a separately-supplied current price, exactly as before Phase 10 — a
+SELL's realized result never feeds into it.
+
+**Transactions are immutable.** `transactions` rows are never updated or
+deleted by this feature. There is no correction/reversal mechanism in
+Phase 10; a mis-entered transaction has no undo — this is a disclosed
+limitation, not an oversight.
+
+**Transaction Atomicity.** One `POST /api/transactions` call performs
+exactly one `session.commit()` covering both the new `transactions` row
+and the `holdings` row it updates (or creates, on a first BUY) — they are
+the same database transaction, so they always succeed or fail together.
+There is no state where a transaction is recorded without its holding
+update, or vice versa.
+
+**Transaction Concurrency.** Two concurrent BUY/SELL requests against the
+*same* asset are serialized with `SELECT ... FOR UPDATE` on the existing
+holding row: the second request's read blocks until the first commits,
+so it always sees the post-first-transaction quantity — never a stale
+value that could let two concurrent sells both succeed against the same
+5 shares. Verified directly by firing two simultaneous SELL requests for
+more than half the held quantity each: exactly one succeeds, the other
+receives a `409` computed against the already-updated quantity, and the
+final quantity is never negative. A brand-new asset's *first* BUY has no
+existing row to lock; two fully concurrent first-BUY requests for the
+same asset are resolved by `holdings`' `UNIQUE (asset_id)` constraint
+(Phase 3) — one succeeds, the other fails outright rather than silently
+creating a duplicate or corrupting state. This was judged a sufficient,
+proportionate safeguard for a single-user application; a busier
+multi-writer system would warrant a retry-on-conflict wrapper, which
+Phase 10 does not add (no evidence it's needed yet).
+
+**Current Price Is Not Set By Transactions.** `holding.current_price` is
+a separate concept from `transaction.price` (the actual executed price)
+— see "Snapshot ≠ Transaction" for the analogous principle applied to
+snapshots. A BUY/SELL updates only `quantity` and `average_cost`; it
+never writes `current_price`. **Disclosed consequence:** a holding
+acquired purely through Phase 10 transactions keeps `current_price` at
+its previous value (`0` for a brand-new holding) until some other
+mechanism sets it — no such mechanism exists yet (no live market-data
+provider, no manual "update price" endpoint). Until then, that holding's
+`market_value` is honestly `0` and its `unrealized_pnl` is honestly
+`-cost_basis` (a well-defined consequence of the stored data, not a
+fabrication) — verified directly end-to-end. Introducing a way to set
+`current_price` (a market-data provider, or a manual `PATCH
+/api/holdings/{id}`) is a natural next step but was not implemented in
+Phase 10 because nothing in this phase's required scope depended on it.
+
+**Storage precision boundary.** `holdings.average_cost` is `NUMERIC(20, 8)`
+(Phase 3). `new_average_cost`/`remaining_average_cost` are computed as
+exact Decimal divisions in `transaction_engine.py` and are not rounded
+there — but a quotient that doesn't terminate within 8 decimal places
+(e.g. `1600 / 15`) is rounded to 8 places by PostgreSQL itself when the
+value is persisted, the same way any other value stored in this column
+already is. The API always returns the value as actually stored (the
+service re-reads the row after commit), never the pre-storage
+full-precision Python result — so what a client sees always matches what
+a subsequent read would show.
 
 ## Rebalancing Engine Rules
 

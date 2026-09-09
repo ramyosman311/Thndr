@@ -15,6 +15,9 @@ import type {
   PortfolioAllocationOut,
   PortfolioSummaryOut,
   StrategyValidationOut,
+  TransactionCreateRequest,
+  TransactionOut,
+  TransactionResultOut,
   WatchlistAddRequest,
   WatchlistOut,
   WatchlistUpdateRequest,
@@ -41,7 +44,8 @@ export class ApiError extends Error {
   }
 }
 
-function kindForStatus(status: number): ApiErrorKind {
+export function kindForStatus(status: number): ApiErrorKind {
+  if (status === 400) return "validation";
   if (status === 404) return "not_configured";
   if (status === 409) return "conflict";
   if (status === 422) return "validation";
@@ -100,6 +104,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ amount }),
     }),
+
+  createTransaction: (payload: TransactionCreateRequest) =>
+    request<TransactionResultOut>("/transactions", { method: "POST", body: JSON.stringify(payload) }),
+  listTransactions: () => request<TransactionOut[]>("/transactions"),
 
   listWatchlist: (enabledOnly = false) =>
     request<WatchlistOut[]>(`/watchlist${enabledOnly ? "?enabled_only=true" : ""}`),
