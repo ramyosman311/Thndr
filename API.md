@@ -4,7 +4,8 @@
 
 This document specifies the planned REST API surface. Implemented so far:
 `GET /api/health` (**Phase 2**), `GET /api/portfolio/summary` and
-`GET /api/portfolio/allocation` (**Phase 5**). The rest arrive
+`GET /api/portfolio/allocation` (**Phase 5**), and
+`GET /api/portfolio/strategy/validation` (**Phase 6**). The rest arrive
 incrementally with their owning phases. This is the contract those phases
 implement against.
 
@@ -90,17 +91,21 @@ and `allow_new_buy: null`):
 
 ```jsonc
 {
-  "denominator_basis": "investable",
-  "denominator_value": "10000.00",
+  "total_portfolio_value": "110000.00",
+  "risk_denominator_basis": "investable",
+  "risk_denominator_value": "10000.00",
   "emergency_excluded": true,
   "buckets": [
     {
       "strategy_bucket_id": "...", "bucket_name": "Individual Stocks",
-      "actual_value": "0.00", "actual_percent": "0.00",
+      "actual_value": "0.00",
+      "total_portfolio_percent": "0.00",     // value / TOTAL portfolio value — always defined
+      "risk_allocation_percent": "0.00",     // value / the risk/investable denominator — null if this bucket is excluded from risk allocation
       "target_percent": null, "minimum_percent": null, "maximum_percent": "15.00",
       "allow_new_buy": true,
       "target_status": "NO_TARGET", "minimum_status": "NO_MINIMUM", "maximum_status": "WITHIN_MAXIMUM",
-      "buy_allowed": true
+      "buy_allowed": true,
+      "excluded_from_risk_allocation": false
     }
   ]
 }
@@ -111,15 +116,55 @@ buying regardless of the flag, but this field (like the whole endpoint)
 only ever reports a status; nothing here sells, buys, or rebalances (see
 FINANCIAL_RULES.md, "Rebalancing Engine Rules").
 
-**Known caveat:** a bucket excluded from the allocation denominator (e.g.
-"Emergency Cash" when `emergency_excluded=true`) still gets an
-`actual_percent` computed against that same (smaller) denominator, which
-can read as more than 100%. This is mathematically consistent with the
-documented formula — the exclusion only ever changes the denominator used
-for *other* buckets' percentages — and is harmless in practice because
-such a bucket has no `allocation_targets` row to compare against
-(`NO_TARGET`/`NO_MINIMUM`/`NO_MAXIMUM`), so no status is ever misjudged
-from it.
+**Two distinct percentages, resolved in Phase 6:** every bucket carries
+both `total_portfolio_percent` (bucket value ÷ total portfolio value —
+always a well-defined number, for every bucket, including the one holding
+the emergency asset) and `risk_allocation_percent` (bucket value ÷ the
+risk/investable denominator). The bucket excluded from risk allocation
+(the one holding the configured emergency asset, when
+`emergency_excluded=true`) gets `risk_allocation_percent: null` and
+`excluded_from_risk_allocation: true` instead of a misleading number like
+1000% — computing that bucket's own weight against a denominator that
+excludes its value is mathematically undefined, so it is reported as
+such rather than guessed. `target_status`/`minimum_status`/`maximum_status`
+are evaluated against `risk_allocation_percent` and report their "not
+applicable" variant (`NO_TARGET`/`NO_MINIMUM`/`NO_MAXIMUM`) when it is
+null.
+
+### Strategy Validation
+
+```
+GET /api/portfolio/strategy/validation   (implemented, Phase 6)
+```
+Read-only; never modifies `allocation_targets`, `strategy_buckets`, or
+`portfolio_configs`. `404` with a `detail` message if no
+`portfolio_configs` row exists yet. Otherwise **always `200`** — an
+incomplete or overallocated strategy is a normal, successful response
+with a diagnostic status, never a `4xx`/`5xx` for a business-rule
+mismatch:
+
+```jsonc
+{
+  "status": "INCOMPLETE_TARGET_ALLOCATION",
+  "is_valid": false,
+  "total_target_percent": "85.00",
+  "expected_target_percent": "100.00",
+  "explanation": "Configured target allocation totals 85.00%, which is below the expected 100%. ...",
+  "target_rows": [ /* buckets with a configured target_percent, e.g. Growth/Investment Funds, Gold (target=0) */ ],
+  "maximum_only_rows": [ /* buckets with only a maximum_percent, e.g. Individual Stocks — never counted as a target */ ],
+  "excluded_emergency_rows": [ /* would list the emergency bucket's rule if it had one; empty in the seeded config */ ],
+  "field_errors": [],
+  "priority_order": [ /* all participating rules, sorted by priority */ ]
+}
+```
+`status` is one of: `VALID`, `INCOMPLETE_TARGET_ALLOCATION`,
+`OVERALLOCATED_TARGET_ALLOCATION`, `EMPTY_CONFIGURATION`,
+`INVALID_TARGET_VALUE`, `INVALID_MIN_MAX_CONFIGURATION` — see
+FINANCIAL_RULES.md for the exact rule these encode. Only
+`target_percent` ever contributes to `total_target_percent`;
+`minimum_percent`, `maximum_percent`, and `allow_new_buy` never do. The
+engine never auto-corrects a configuration to make it valid — it only
+reports.
 
 ### Holdings
 

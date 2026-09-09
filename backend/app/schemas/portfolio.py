@@ -41,7 +41,11 @@ class BucketAllocationOut(BaseModel):
     strategy_bucket_id: UUID
     bucket_name: str
     actual_value: DecimalStr
-    actual_percent: DecimalStr
+    # bucket value / TOTAL portfolio value — always defined, for every bucket.
+    total_portfolio_percent: DecimalStr
+    # bucket value / the risk/investable denominator — null (never a
+    # misleading number) for the bucket excluded from risk allocation.
+    risk_allocation_percent: DecimalStr | None
     target_percent: DecimalStr | None
     minimum_percent: DecimalStr | None
     maximum_percent: DecimalStr | None
@@ -50,10 +54,12 @@ class BucketAllocationOut(BaseModel):
     minimum_status: str
     maximum_status: str
     buy_allowed: bool
+    excluded_from_risk_allocation: bool
 
 
 class PortfolioAllocationOut(BaseModel):
-    denominator_basis: str
-    denominator_value: DecimalStr
+    total_portfolio_value: DecimalStr
+    risk_denominator_basis: str
+    risk_denominator_value: DecimalStr
     emergency_excluded: bool
     buckets: list[BucketAllocationOut]

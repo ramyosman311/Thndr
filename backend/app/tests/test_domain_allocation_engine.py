@@ -28,13 +28,16 @@ def test_overweight_but_not_maximum_breach():
         strategy_bucket_id=bucket_id,
         bucket_name="Test",
         positions=positions,
-        denominator_value=Decimal("100"),
+        total_value=Decimal("100"),
+        risk_denominator_value=Decimal("100"),
+        excluded_from_risk_allocation=False,
         target_percent=Decimal("10"),
         minimum_percent=None,
         maximum_percent=Decimal("15"),
         allow_new_buy=True,
     )
-    assert result.actual_percent == Decimal("12")
+    assert result.risk_allocation_percent == Decimal("12")
+    assert result.total_portfolio_percent == Decimal("12")
     assert result.target_status == TargetStatus.OVERWEIGHT
     assert result.maximum_status == MaximumStatus.WITHIN_MAXIMUM
     assert result.buy_allowed is True
@@ -49,7 +52,9 @@ def test_maximum_breach_at_and_above_boundary():
             strategy_bucket_id=bucket_id,
             bucket_name="Test",
             positions=positions,
-            denominator_value=Decimal("100"),
+            total_value=Decimal("100"),
+            risk_denominator_value=Decimal("100"),
+            excluded_from_risk_allocation=False,
             target_percent=Decimal("10"),
             minimum_percent=None,
             maximum_percent=Decimal("15"),
@@ -66,7 +71,9 @@ def test_individual_stocks_style_bucket_no_target_reports_maximum_only():
         strategy_bucket_id=bucket_id,
         bucket_name="Individual Stocks",
         positions=positions,
-        denominator_value=Decimal("100"),
+        total_value=Decimal("100"),
+        risk_denominator_value=Decimal("100"),
+        excluded_from_risk_allocation=False,
         target_percent=None,
         minimum_percent=None,
         maximum_percent=Decimal("15"),
@@ -84,7 +91,9 @@ def test_allow_new_buy_flag_changes_result_without_code_change():
         strategy_bucket_id=bucket_id,
         bucket_name="Some Bucket",
         positions=positions,
-        denominator_value=Decimal("100"),
+        total_value=Decimal("100"),
+        risk_denominator_value=Decimal("100"),
+        excluded_from_risk_allocation=False,
         target_percent=None,
         minimum_percent=None,
         maximum_percent=None,
@@ -103,7 +112,9 @@ def test_gold_style_zero_target_and_disallowed_buy_is_configuration_driven():
         strategy_bucket_id=bucket_id,
         bucket_name="Gold",
         positions=positions,
-        denominator_value=Decimal("1000"),
+        total_value=Decimal("1000"),
+        risk_denominator_value=Decimal("1000"),
+        excluded_from_risk_allocation=False,
         target_percent=Decimal("0"),
         minimum_percent=None,
         maximum_percent=None,
@@ -122,13 +133,16 @@ def test_zero_denominator_yields_zero_percent_not_a_crash():
         strategy_bucket_id=bucket_id,
         bucket_name="Test",
         positions=positions,
-        denominator_value=Decimal("0"),
+        total_value=Decimal("0"),
+        risk_denominator_value=Decimal("0"),
+        excluded_from_risk_allocation=False,
         target_percent=Decimal("10"),
         minimum_percent=None,
         maximum_percent=None,
         allow_new_buy=True,
     )
-    assert result.actual_percent == Decimal("0")
+    assert result.risk_allocation_percent == Decimal("0")
+    assert result.total_portfolio_percent == Decimal("0")
 
 
 def test_minimum_breach_is_independent_of_target_status():
@@ -138,7 +152,9 @@ def test_minimum_breach_is_independent_of_target_status():
         strategy_bucket_id=bucket_id,
         bucket_name="Test",
         positions=positions,
-        denominator_value=Decimal("1000"),
+        total_value=Decimal("1000"),
+        risk_denominator_value=Decimal("1000"),
+        excluded_from_risk_allocation=False,
         target_percent=Decimal("10"),
         minimum_percent=Decimal("5"),
         maximum_percent=None,
@@ -155,7 +171,9 @@ def test_on_target_within_tolerance():
         strategy_bucket_id=bucket_id,
         bucket_name="Growth",
         positions=positions,
-        denominator_value=Decimal("1000"),
+        total_value=Decimal("1000"),
+        risk_denominator_value=Decimal("1000"),
+        excluded_from_risk_allocation=False,
         target_percent=Decimal("55"),
         minimum_percent=None,
         maximum_percent=None,
@@ -173,7 +191,9 @@ def test_maximum_breach_never_triggers_a_sell_it_only_reports():
         strategy_bucket_id=bucket_id,
         bucket_name="Test",
         positions=positions,
-        denominator_value=Decimal("100"),
+        total_value=Decimal("100"),
+        risk_denominator_value=Decimal("100"),
+        excluded_from_risk_allocation=False,
         target_percent=Decimal("10"),
         minimum_percent=None,
         maximum_percent=Decimal("15"),
@@ -182,3 +202,58 @@ def test_maximum_breach_never_triggers_a_sell_it_only_reports():
     assert result.maximum_status == MaximumStatus.MAXIMUM_BREACHED
     assert not hasattr(result, "sell")
     assert not hasattr(result, "recommended_sell_quantity")
+
+
+def test_excluded_from_risk_allocation_gives_null_risk_percent_not_misleading_number():
+    """The Phase 5 caveat this resolves: a bucket excluded from risk
+    allocation (e.g. holding the emergency asset when emergency_excluded)
+    must never show something like 1000% just because its value is large
+    relative to a denominator that excludes it."""
+    bucket_id = uuid4()
+    # Value (100,000) is 10x the risk denominator (10,000) — this would be
+    # 1000% if computed against risk_denominator_value.
+    positions = [make_position(bucket_id, "1", "100000")]
+    result = evaluate_bucket_allocation(
+        strategy_bucket_id=bucket_id,
+        bucket_name="Emergency Cash",
+        positions=positions,
+        total_value=Decimal("110000"),
+        risk_denominator_value=Decimal("10000"),
+        excluded_from_risk_allocation=True,
+        target_percent=None,
+        minimum_percent=None,
+        maximum_percent=None,
+        allow_new_buy=None,
+    )
+    assert result.risk_allocation_percent is None
+    # total_portfolio_percent remains well-defined and accurate regardless.
+    assert result.total_portfolio_percent == (Decimal("100000") / Decimal("110000") * 100)
+    assert result.target_status == TargetStatus.NO_TARGET
+    assert result.minimum_status == MinimumStatus.NO_MINIMUM
+    assert result.maximum_status == MaximumStatus.NO_MAXIMUM
+    assert result.excluded_from_risk_allocation is True
+
+
+def test_excluded_bucket_with_a_configured_maximum_reports_not_applicable_rather_than_guessing():
+    """If a rule were ever configured on a risk-excluded bucket (not the
+    normal case, but not schema-forbidden), the engine must not invent a
+    comparison against an undefined percentage."""
+    bucket_id = uuid4()
+    positions = [make_position(bucket_id, "1", "100000")]
+    result = evaluate_bucket_allocation(
+        strategy_bucket_id=bucket_id,
+        bucket_name="Emergency Cash",
+        positions=positions,
+        total_value=Decimal("110000"),
+        risk_denominator_value=Decimal("10000"),
+        excluded_from_risk_allocation=True,
+        target_percent=Decimal("10"),
+        minimum_percent=None,
+        maximum_percent=Decimal("20"),
+        allow_new_buy=True,
+    )
+    assert result.risk_allocation_percent is None
+    assert result.target_status == TargetStatus.NO_TARGET
+    assert result.maximum_status == MaximumStatus.NO_MAXIMUM
+    # Buying is not frozen by an unevaluable maximum.
+    assert result.buy_allowed is True

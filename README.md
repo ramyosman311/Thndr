@@ -4,10 +4,11 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 5 — Portfolio Engine: current value, emergency-cash
-> exclusion, allocation vs. target/minimum/maximum/allow_new_buy, and
-> basic unrealized P/L, exposed read-only via `GET /api/portfolio/summary`
-> and `GET /api/portfolio/allocation`. No rebalancing/inflow engines,
+> **Status:** Phase 6 — Strategy Engine: aggregate target-allocation
+> validation (`GET /api/portfolio/strategy/validation`), reporting the
+> seeded strategy's true state (85% configured, `INCOMPLETE_TARGET_
+> ALLOCATION`) without ever auto-correcting it. Also resolves the Phase 5
+> risk-allocation-percentage caveat. No rebalancing/inflow engines,
 > Telegram, or frontend UI exist yet. See [Phase Plan](#phase-plan) below.
 
 ## What this project does (target scope)

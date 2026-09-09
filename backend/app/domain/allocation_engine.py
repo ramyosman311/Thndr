@@ -9,6 +9,20 @@ configures (see FINANCIAL_RULES.md, "Database Is the Source of Truth").
 target_percent, minimum_percent, maximum_percent, and allow_new_buy are
 kept fully independent per FINANCIAL_RULES.md ("Target Allocation vs.
 Maximum Allocation vs. Allow New Buy") — none is derived from another.
+
+Two distinct percentages are reported per bucket (see FINANCIAL_RULES.md,
+"Risk Allocation vs. Total Portfolio Percentage"):
+
+- `total_portfolio_percent`: bucket value / TOTAL portfolio value. Always
+  a well-defined number (0 when total value is 0), for every bucket,
+  including one excluded from risk allocation.
+- `risk_allocation_percent`: bucket value / the risk/investable
+  denominator. This is `None` — not a misleading number like 1050% —
+  for a bucket excluded from risk allocation (i.e. the bucket holding the
+  configured emergency asset, when `emergency_excluded=True`), since that
+  exclusion means the bucket has no meaningful weight in that basis by
+  definition. Target/minimum/maximum status are evaluated against this
+  percentage, and report their "not applicable" variant when it is None.
 """
 
 from dataclasses import dataclass
@@ -49,7 +63,8 @@ class BucketAllocation:
     strategy_bucket_id: UUID
     bucket_name: str
     actual_value: Decimal
-    actual_percent: Decimal
+    total_portfolio_percent: Decimal
+    risk_allocation_percent: Decimal | None
     target_percent: Decimal | None
     minimum_percent: Decimal | None
     maximum_percent: Decimal | None
@@ -58,6 +73,7 @@ class BucketAllocation:
     minimum_status: MinimumStatus
     maximum_status: MaximumStatus
     buy_allowed: bool
+    excluded_from_risk_allocation: bool
 
 
 def calculate_bucket_value(positions: list[AssetPosition], strategy_bucket_id: UUID) -> Decimal:
@@ -75,8 +91,8 @@ def calculate_actual_percent(actual_value: Decimal, denominator_value: Decimal) 
     return (actual_value / denominator_value) * Decimal("100")
 
 
-def _target_status(actual_percent: Decimal, target_percent: Decimal | None) -> TargetStatus:
-    if target_percent is None:
+def _target_status(actual_percent: Decimal | None, target_percent: Decimal | None) -> TargetStatus:
+    if actual_percent is None or target_percent is None:
         return TargetStatus.NO_TARGET
     diff = actual_percent - target_percent
     if abs(diff) <= ON_TARGET_TOLERANCE_PERCENT:
@@ -84,14 +100,14 @@ def _target_status(actual_percent: Decimal, target_percent: Decimal | None) -> T
     return TargetStatus.OVERWEIGHT if diff > 0 else TargetStatus.UNDERWEIGHT
 
 
-def _minimum_status(actual_percent: Decimal, minimum_percent: Decimal | None) -> MinimumStatus:
-    if minimum_percent is None:
+def _minimum_status(actual_percent: Decimal | None, minimum_percent: Decimal | None) -> MinimumStatus:
+    if actual_percent is None or minimum_percent is None:
         return MinimumStatus.NO_MINIMUM
     return MinimumStatus.MINIMUM_BREACHED if actual_percent < minimum_percent else MinimumStatus.ABOVE_MINIMUM
 
 
-def _maximum_status(actual_percent: Decimal, maximum_percent: Decimal | None) -> MaximumStatus:
-    if maximum_percent is None:
+def _maximum_status(actual_percent: Decimal | None, maximum_percent: Decimal | None) -> MaximumStatus:
+    if actual_percent is None or maximum_percent is None:
         return MaximumStatus.NO_MAXIMUM
     return MaximumStatus.MAXIMUM_BREACHED if actual_percent >= maximum_percent else MaximumStatus.WITHIN_MAXIMUM
 
@@ -101,7 +117,9 @@ def evaluate_bucket_allocation(
     strategy_bucket_id: UUID,
     bucket_name: str,
     positions: list[AssetPosition],
-    denominator_value: Decimal,
+    total_value: Decimal,
+    risk_denominator_value: Decimal,
+    excluded_from_risk_allocation: bool,
     target_percent: Decimal | None,
     minimum_percent: Decimal | None,
     maximum_percent: Decimal | None,
@@ -112,10 +130,14 @@ def evaluate_bucket_allocation(
     FINANCIAL_RULES.md, "Rebalancing Engine Rules": recommend, never
     execute — the same principle applies here, one phase earlier)."""
     actual_value = calculate_bucket_value(positions, strategy_bucket_id)
-    actual_percent = calculate_actual_percent(actual_value, denominator_value)
-    target_status = _target_status(actual_percent, target_percent)
-    minimum_status = _minimum_status(actual_percent, minimum_percent)
-    maximum_status = _maximum_status(actual_percent, maximum_percent)
+    total_portfolio_percent = calculate_actual_percent(actual_value, total_value)
+    risk_allocation_percent = (
+        None if excluded_from_risk_allocation else calculate_actual_percent(actual_value, risk_denominator_value)
+    )
+
+    target_status = _target_status(risk_allocation_percent, target_percent)
+    minimum_status = _minimum_status(risk_allocation_percent, minimum_percent)
+    maximum_status = _maximum_status(risk_allocation_percent, maximum_percent)
 
     # Buying is reported as currently allowed only if the configured rule
     # permits it AND the maximum has not been breached — reaching the
@@ -130,7 +152,8 @@ def evaluate_bucket_allocation(
         strategy_bucket_id=strategy_bucket_id,
         bucket_name=bucket_name,
         actual_value=actual_value,
-        actual_percent=actual_percent,
+        total_portfolio_percent=total_portfolio_percent,
+        risk_allocation_percent=risk_allocation_percent,
         target_percent=target_percent,
         minimum_percent=minimum_percent,
         maximum_percent=maximum_percent,
@@ -139,4 +162,5 @@ def evaluate_bucket_allocation(
         minimum_status=minimum_status,
         maximum_status=maximum_status,
         buy_allowed=buy_allowed,
+        excluded_from_risk_allocation=excluded_from_risk_allocation,
     )

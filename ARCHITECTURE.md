@@ -43,7 +43,11 @@ The backend follows strict separation of concerns, from outer to inner layers:
    maximum/allow_new_buy, reporting only — never sells or buys),
    `pnl_engine.py` (basic unrealized P/L per holding), and
    `snapshot_comparison.py` (a plain value-change utility between two
-   snapshot totals — explicitly not P/L or investment return).
+   snapshot totals — explicitly not P/L or investment return). Phase 6
+   adds `strategy_validation.py`: validates the aggregate configured
+   target allocation (only `target_percent` values are summed; a
+   maximum-only rule never contributes) and reports a machine-readable
+   status — it never rewrites a percentage to force validity.
 5. **`repositories/`** — Data access layer. All SQLAlchemy queries live
    here. Services depend on repository interfaces, not raw sessions,
    keeping persistence swappable and mockable in tests.

@@ -57,14 +57,58 @@ buying) while still holding an existing position that must not be sold
 The sum of active `target_percent` values across `allocation_targets` must
 be validated whenever settings are saved.
 
-- This validation happens in the **service/domain layer**, not solely via
-  a database CHECK constraint — PostgreSQL cannot enforce an aggregate
-  SUM constraint across rows with a simple column-level CHECK.
-- If active targets **exceed 100%**, the save is **rejected**.
-- If active targets are **below 100%**, the UI must either show an
-  explicit warning or require the user to configure an explicit
-  "unallocated percentage" — values are **never silently normalized** to
-  sum to 100%.
+- This validation happens in the **service/domain layer**
+  (`backend/app/domain/strategy_validation.py`, implemented in Phase 6),
+  not solely via a database CHECK constraint — PostgreSQL cannot enforce
+  an aggregate SUM constraint across rows with a simple column-level
+  CHECK.
+- If active targets **exceed 100%**, the configuration is
+  `OVERALLOCATED_TARGET_ALLOCATION`.
+- If active targets are **below 100%**, the configuration is
+  `INCOMPLETE_TARGET_ALLOCATION` — values are **never silently
+  normalized** to sum to 100%, and a maximum-only rule (e.g. Individual
+  Stocks) is **never** treated as an implied target to close the gap.
+- If no active, risk-participating rules exist at all, the configuration
+  is `EMPTY_CONFIGURATION`.
+- A structurally invalid rule (a percent outside `[0, 100]`, or
+  `minimum_percent > maximum_percent`) is `INVALID_TARGET_VALUE` /
+  `INVALID_MIN_MAX_CONFIGURATION` respectively, and takes priority over
+  the aggregate diagnosis.
+- Only `target_percent` is ever summed. `minimum_percent`,
+  `maximum_percent`, and `allow_new_buy` never contribute to the sum —
+  this is enforced structurally in the validator, not just by convention.
+- The engine **only ever reports** a validation status
+  (`GET /api/portfolio/strategy/validation`, `200` even when invalid —
+  see API.md). It never auto-corrects a configuration: it does not change
+  85% to 100%, does not convert a `maximum_percent` into a
+  `target_percent`, and does not invent a missing target. Example: the
+  seeded strategy (BWA 55% + AZN 25% + Free Cash 5% + Gold 0% = 85%,
+  Individual Stocks maximum=15% contributing nothing) is reported as
+  `INCOMPLETE_TARGET_ALLOCATION` at 85%, not silently treated as complete.
+- A bucket holding the configured emergency asset is excluded from this
+  validation entirely when `emergency_excluded=true` — determined via the
+  `portfolio_configs.emergency_asset_id` → `assets.strategy_bucket_id`
+  relationship, never by bucket name.
+
+## Risk Allocation vs. Total Portfolio Percentage
+
+Every bucket's allocation is reported with two distinct percentages
+(`backend/app/domain/allocation_engine.py`, Phase 5/6):
+
+- **`total_portfolio_percent`** — bucket value ÷ total portfolio value.
+  Always well-defined, for every bucket, including the one holding the
+  emergency asset.
+- **`risk_allocation_percent`** — bucket value ÷ the risk/investable
+  denominator (the same denominator described in "Emergency Cash" below).
+  This is `null` — never a misleading number like 1000% — for the bucket
+  excluded from risk allocation, since computing that bucket's own weight
+  against a denominator that excludes its value is mathematically
+  undefined, not merely large.
+
+`target_status`/`minimum_status`/`maximum_status` are evaluated against
+`risk_allocation_percent`; when it is `null` they report their "not
+applicable" variant (`NO_TARGET`/`NO_MINIMUM`/`NO_MAXIMUM`) rather than
+guessing.
 
 ## Emergency Cash
 

@@ -79,11 +79,48 @@ async def test_portfolio_allocation_endpoint_returns_calculated_percentages(db_s
     assert response.status_code == 200
     body = response.json()
 
-    assert body["denominator_basis"] == "total"
+    assert body["risk_denominator_basis"] == "total"
     bucket_out = next(b for b in body["buckets"] if b["bucket_name"] == "API Bucket")
     assert Decimal(bucket_out["actual_value"]) == Decimal("100.00")
-    assert Decimal(bucket_out["actual_percent"]) == Decimal("100.00")
+    assert Decimal(bucket_out["total_portfolio_percent"]) == Decimal("100.00")
+    assert Decimal(bucket_out["risk_allocation_percent"]) == Decimal("100.00")
     assert bucket_out["target_status"] == "NO_TARGET"
+    assert bucket_out["excluded_from_risk_allocation"] is False
+
+
+async def test_excluded_emergency_bucket_has_null_risk_allocation_percent_via_api(db_session, client):
+    """Resolves the Phase 5 caveat at the API boundary: the bucket holding
+    the emergency asset must never show a misleading (e.g. >100%) risk
+    allocation percentage when excluded from risk allocation."""
+    config = PortfolioConfig(name="Emergency Caveat Portfolio", base_currency="EGP", emergency_excluded=True)
+    db_session.add(config)
+    await db_session.flush()
+
+    emergency_bucket = StrategyBucket(portfolio_config_id=config.id, name="Emergency Cash")
+    db_session.add(emergency_bucket)
+    await db_session.flush()
+
+    emergency_asset = make_asset("CAVEATEMERG", asset_type=AssetType.SAVINGS, strategy_bucket_id=emergency_bucket.id)
+    db_session.add(emergency_asset)
+    await db_session.flush()
+    config.emergency_asset_id = emergency_asset.id
+    db_session.add(Holding(asset_id=emergency_asset.id, quantity=Decimal("1"), current_price=Decimal("100000")))
+
+    stock_asset = make_asset("CAVEATSTK")
+    db_session.add(stock_asset)
+    await db_session.flush()
+    db_session.add(Holding(asset_id=stock_asset.id, quantity=Decimal("100"), current_price=Decimal("100")))
+    await db_session.commit()
+
+    response = await client.get("/api/portfolio/allocation")
+    assert response.status_code == 200
+    body = response.json()
+
+    emergency_out = next(b for b in body["buckets"] if b["bucket_name"] == "Emergency Cash")
+    assert emergency_out["risk_allocation_percent"] is None
+    assert emergency_out["excluded_from_risk_allocation"] is True
+    # total_portfolio_percent stays well-defined: 100000 / 110000 * 100
+    assert Decimal(emergency_out["total_portfolio_percent"]) == Decimal("90.91")
 
 
 async def test_portfolio_summary_returns_404_when_not_configured(client):
