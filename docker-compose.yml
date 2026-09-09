@@ -1,0 +1,38 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-thndr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-thndr_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-thndr_portfolio}
+    ports:
+      - "5432:5432"
+    volumes:
+      - thndr_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-thndr}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_ENV: development
+      APP_DEBUG: "true"
+      DEV_MODE: "true"
+      BACKEND_CORS_ORIGINS: http://localhost:3000
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-thndr}:${POSTGRES_PASSWORD:-thndr_dev_password}@db:5432/${POSTGRES_DB:-thndr_portfolio}
+      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-thndr}:${POSTGRES_PASSWORD:-thndr_dev_password}@db:5432/${POSTGRES_DB:-thndr_portfolio}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+    ports:
+      - "8000:8000"
+
+volumes:
+  thndr_postgres_data:

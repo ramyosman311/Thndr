@@ -4,9 +4,9 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 1 — Repository & Architecture scaffolding. No backend
-> logic, database models, or frontend UI exist yet. See [Phase Plan](#phase-plan)
-> below.
+> **Status:** Phase 2 — Backend foundation (FastAPI, PostgreSQL connection,
+> Alembic, Docker, `/api/health`). No database business tables, financial
+> engine, or frontend UI exist yet. See [Phase Plan](#phase-plan) below.
 
 ## What this project does (target scope)
 
@@ -126,8 +126,93 @@ before the next begins.
 
 ## Local Development
 
-Setup instructions will be added as each phase introduces runnable code
-(Phase 2 onward). Nothing is runnable yet in Phase 1.
+### Backend
+
+**Prerequisites:** Python 3.12+ (3.11 also works for local dev; the Docker
+image pins 3.12), and a running PostgreSQL instance (local, dockerized, or
+Supabase).
+
+**1. Install dependencies**
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+**2. Configure environment**
+
+```bash
+cp ../.env.example .env
+# edit .env: set DATABASE_URL / DATABASE_URL_SYNC to a real PostgreSQL instance
+```
+
+**3. Run the backend**
+
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Then check:
+
+```bash
+curl http://localhost:8000/api/health
+# {"status":"ok","database":"connected"}
+```
+
+`status` reflects application liveness (stable for hosting health checks).
+`database` is diagnostic ("connected" or "unavailable") and does not flip
+the overall status to an error.
+
+**4. Run tests**
+
+```bash
+cd backend
+source .venv/bin/activate
+python -m pytest -v
+```
+
+Tests run against a real PostgreSQL connection (configured via `.env`) —
+no mocked database layer.
+
+**5. Database migrations (Alembic)**
+
+```bash
+cd backend
+source .venv/bin/activate
+alembic current   # show current DB revision
+alembic check     # compare models vs. latest migration
+alembic upgrade head
+```
+
+No migrations exist yet — models arrive in Phase 3.
+
+### Docker
+
+From the repository root:
+
+```bash
+docker compose up --build
+```
+
+This starts PostgreSQL and the backend together. The backend Dockerfile
+uses `python:3.12-slim`, runs as a non-root user, and exposes a container
+`HEALTHCHECK` against `/api/health`.
+
+> **Note:** building the image requires pulling `python:3.12-slim` from
+> Docker Hub. In network-restricted environments (e.g. this session's
+> sandboxed egress policy) that pull may be blocked — see
+> [DEPLOYMENT.md](./DEPLOYMENT.md) for details. The Dockerfile itself is
+> unaffected and builds normally wherever Docker Hub is reachable.
+
+### Required Environment Variables (Phase 2)
+
+See `.env.example` for the full list. Backend-relevant variables at this
+phase: `APP_ENV`, `APP_DEBUG`, `DEV_MODE`, `BACKEND_HOST`, `BACKEND_PORT`,
+`BACKEND_CORS_ORIGINS`, `DATABASE_URL`, `DATABASE_URL_SYNC`, `SECRET_KEY`.
+Telegram/market-data/Supabase/frontend variables are placeholders for later
+phases and are not read by any code yet.
 
 ## License
 

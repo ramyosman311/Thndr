@@ -19,6 +19,19 @@ this project builds toward.
 
 ## Docker (Phase 2+)
 
+> **Environment note (Phase 2 verification):** in this project's sandboxed
+> Claude Code session, outbound HTTPS is routed through a policy-enforcing
+> proxy that does not allow `docker.io`/CloudFront registry traffic. As a
+> result, `docker pull python:3.12-slim` and `docker build` for the backend
+> image were attempted but blocked with `403 Forbidden` at the proxy —
+> confirmed as a persistent egress policy denial, not a transient failure
+> or a Dockerfile defect. `docker-compose.yml` was validated with
+> `docker compose config` (parses and resolves correctly). The Dockerfile
+> and compose file are expected to build normally in any environment with
+> standard Docker Hub access (a developer machine, GitHub Actions, or the
+> target hosting platform's build step) — this should be re-verified there
+> before production deployment.
+
 - `backend/Dockerfile` — builds the FastAPI application image.
 - `docker-compose.yml` (repo root) — orchestrates backend + PostgreSQL (+
   frontend, once containerized) for local development.
