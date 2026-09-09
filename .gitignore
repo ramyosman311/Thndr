@@ -1,0 +1,58 @@
+# --- Environment ---
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# --- Python / Backend ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.sqlite3
+*.db
+
+# --- Node / Frontend ---
+node_modules/
+.next/
+out/
+build/
+dist/
+.turbo/
+*.tsbuildinfo
+.eslintcache
+
+# --- Capacitor / Mobile ---
+mobile/capacitor/ios/
+mobile/capacitor/android/
+mobile/capacitor/.gradle/
+
+# --- OS / Editor ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# --- Docker ---
+*.pid
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Secrets (never commit) ---
+*.pem
+*.key
+secrets/
