@@ -26,10 +26,16 @@ cost and a separately-supplied current price).
 
 from dataclasses import dataclass
 from decimal import Decimal
+from uuid import UUID
 
 
 class OversellError(ValueError):
     """Raised when a SELL's quantity exceeds the currently held quantity."""
+
+
+class InsufficientCashError(ValueError):
+    """Raised when a WITHDRAWAL's amount exceeds the currently held cash
+    balance (Phase 15's mirror of OversellError for DEPOSIT/WITHDRAWAL)."""
 
 
 @dataclass(frozen=True)
@@ -43,6 +49,12 @@ class HoldingAfterSell:
     quantity: Decimal
     average_cost: Decimal
     realized_pnl: Decimal
+
+
+@dataclass(frozen=True)
+class HoldingAfterCashFlow:
+    quantity: Decimal
+    average_cost: Decimal
 
 
 def apply_buy(
@@ -126,3 +138,101 @@ def apply_sell(
         average_cost=remaining_average_cost,
         realized_pnl=realized_pnl,
     )
+
+
+# --- DEPOSIT / WITHDRAWAL (Phase 15) ---------------------------------------
+#
+# Restricted at the service layer to assets whose asset_type is CASH or
+# SAVINGS (see services/transaction_service.py). For those assets, quantity
+# IS the cash balance, denominated 1:1 in the asset's own currency --
+# average_cost is always pinned at exactly 1 so cost_basis (quantity *
+# average_cost) always equals quantity and no artificial unrealized P/L is
+# ever generated for holding cash (see FINANCIAL_RULES.md, "Cash Flow Is
+# Not Profit"). Mixing BUY/SELL and DEPOSIT/WITHDRAWAL on the SAME asset is
+# undefined behavior and not guarded against here -- see DECISIONS.md,
+# "Phase 15 Known Limitations".
+
+_CASH_UNIT_COST = Decimal("1")
+
+
+def apply_deposit(*, current_quantity: Decimal, deposit_amount: Decimal) -> HoldingAfterCashFlow:
+    """new_quantity = current_quantity + deposit_amount; average_cost stays
+    pinned at 1. A deposit is external capital, never investment return --
+    see domain/twr_engine.py, which is the only place a deposit's effect on
+    performance is ever measured."""
+    if deposit_amount <= 0:
+        raise ValueError("deposit_amount must be greater than 0")
+    return HoldingAfterCashFlow(quantity=current_quantity + deposit_amount, average_cost=_CASH_UNIT_COST)
+
+
+def apply_withdrawal(*, current_quantity: Decimal, withdrawal_amount: Decimal) -> HoldingAfterCashFlow:
+    """new_quantity = current_quantity - withdrawal_amount; average_cost
+    stays pinned at 1. Rejected if it would drive the cash balance
+    negative -- the same oversell-style guard `apply_sell` already uses,
+    applied here to a cash balance instead of a share count."""
+    if withdrawal_amount <= 0:
+        raise ValueError("withdrawal_amount must be greater than 0")
+    if withdrawal_amount > current_quantity:
+        raise InsufficientCashError(
+            f"Cannot withdraw {withdrawal_amount}: only {current_quantity} currently held."
+        )
+    return HoldingAfterCashFlow(quantity=current_quantity - withdrawal_amount, average_cost=_CASH_UNIT_COST)
+
+
+# --- Cumulative realized P/L replay (Phase 15) -----------------------------
+
+
+@dataclass(frozen=True)
+class ReplayEvent:
+    """One BUY/SELL event, already resolved to plain values, for replay
+    through `replay_cumulative_realized_pnl` below. Deliberately excludes
+    DEPOSIT/WITHDRAWAL (they never produce realized P/L) and carries no
+    ordering information itself -- the caller is responsible for supplying
+    events in the exact deterministic order to replay (see
+    repositories/transaction_repository.py, `list_transactions_ordered`)."""
+
+    asset_id: UUID
+    transaction_type: str  # "BUY" | "SELL"
+    quantity: Decimal
+    price: Decimal
+    fees: Decimal
+
+
+def replay_cumulative_realized_pnl(events: list[ReplayEvent]) -> Decimal:
+    """Derives cumulative realized P/L across all-time SELL activity, as of
+    the end of the given (already chronologically ordered) event list, by
+    replaying each BUY/SELL through the exact same apply_buy/apply_sell
+    used for the live write path -- never a separately maintained ledger
+    (see FINANCIAL_RULES.md, "Realized P/L Is Never A Running Ledger", and
+    models/snapshot.py's `realized_pnl_cumulative` column docstring).
+
+    Pure re-derivation from immutable transaction history: given the same
+    events in the same order, this always returns the same result. Assets
+    are tracked independently of one another (a SELL on one asset never
+    reads state accumulated from a different asset)."""
+    state: dict[UUID, tuple[Decimal, Decimal]] = {}
+    total_realized = Decimal("0")
+
+    for event in events:
+        current_quantity, current_average_cost = state.get(event.asset_id, (Decimal("0"), Decimal("0")))
+        if event.transaction_type == "BUY":
+            result = apply_buy(
+                current_quantity=current_quantity,
+                current_average_cost=current_average_cost,
+                purchase_quantity=event.quantity,
+                purchase_price=event.price,
+                fees=event.fees,
+            )
+            state[event.asset_id] = (result.quantity, result.average_cost)
+        elif event.transaction_type == "SELL":
+            result = apply_sell(
+                current_quantity=current_quantity,
+                current_average_cost=current_average_cost,
+                sell_quantity=event.quantity,
+                sell_price=event.price,
+                fees=event.fees,
+            )
+            state[event.asset_id] = (result.quantity, result.average_cost)
+            total_realized += result.realized_pnl
+
+    return total_realized

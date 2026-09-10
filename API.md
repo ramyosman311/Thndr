@@ -10,10 +10,13 @@ This document specifies the planned REST API surface. Implemented so far:
 Alerts surface (**Phase 8**), `GET /api/assets` (**Phase 9**, added to
 support the frontend's Watchlist "add asset" picker — now also reused by
 the Phase 10 transaction form's asset picker), `POST`/`GET
-/api/transactions` (**Phase 10**, the Transaction + Holdings write path),
-and the price endpoints under `/api/assets/{id}/price...` (**Phase 11**
-— see "Prices" below). The rest arrive incrementally with their owning
-phases. This is the contract those phases implement against.
+/api/transactions` (**Phase 10**, the Transaction + Holdings write path,
+extended in **Phase 15** with DEPOSIT/WITHDRAWAL cash-flow semantics),
+the price endpoints under `/api/assets/{id}/price...` (**Phase 11** —
+see "Prices" below), and `GET /api/portfolio/analytics/history`
+(**Phase 15** — see "Wealth Analytics" below). The rest arrive
+incrementally with their owning phases. This is the contract those
+phases implement against.
 
 ## Conventions
 
@@ -286,18 +289,21 @@ unimplemented — transactions are immutable historical records (see
 FINANCIAL_RULES.md, "Transaction Immutability"); ordinary deletion was
 explicitly out of scope for Phase 10.
 
-**`POST /api/transactions`** records an executed BUY or SELL and
-atomically updates the resulting holding (average-cost accounting — see
-FINANCIAL_RULES.md, "Transaction Accounting"). This is **not** a
-recommendation: unlike `POST /api/cash-flow/allocate` (Smart Inflow), it
-writes a real, permanent transaction row and changes the current
-holding.
+**`POST /api/transactions`** records an executed BUY/SELL/DEPOSIT/
+WITHDRAWAL and atomically updates the resulting holding (average-cost
+accounting for BUY/SELL; a pinned 1:1 cash balance for DEPOSIT/
+WITHDRAWAL — see FINANCIAL_RULES.md, "Transaction Accounting" and "Cash
+Flow Is Not Profit"). This is **not** a recommendation: unlike
+`POST /api/cash-flow/allocate` (Smart Inflow), it writes a real,
+permanent transaction row and changes the current holding. A DEPOSIT/
+WITHDRAWAL additionally creates a post-flow `PortfolioSnapshot` in the
+same atomic write (Phase 15 — see DATABASE.md, `portfolio_snapshots`).
 
 Request:
 ```jsonc
 {
   "asset_id": "...",
-  "transaction_type": "BUY",   // "BUY" | "SELL" only — see below
+  "transaction_type": "BUY",   // "BUY" | "SELL" | "DEPOSIT" | "WITHDRAWAL" — see below
   "quantity": "10",
   "price": "100.00",
   "fees": "5.00",              // optional, defaults to "0"
@@ -307,10 +313,14 @@ Request:
 ```
 `quantity` must be `> 0`, `price` and `fees` must be `>= 0` — enforced by
 Pydantic field validators, `422` on violation. `transaction_type` accepts
-only `BUY`/`SELL` (`422` for anything else, including the model's other
-enum values `DIVIDEND`/`DEPOSIT`/`WITHDRAWAL`/`TRANSFER` — those have no
+`BUY`/`SELL`/`DEPOSIT`/`WITHDRAWAL` (`422` for anything else, including
+the model's remaining enum values `DIVIDEND`/`TRANSFER` — those have no
 holding-update semantics defined yet and are rejected explicitly rather
-than silently doing nothing).
+than silently doing nothing; see DECISIONS.md, "Phase 15" for why
+`TRANSFER` specifically was left unresolved). `DEPOSIT`/`WITHDRAWAL`
+additionally require: `asset_id` must reference a `CASH`/`SAVINGS`-type
+asset (`422` otherwise), `price` must be exactly `"1"`, and `fees` must
+be `"0"` (`422` otherwise) — `quantity` IS the cash amount.
 
 Response (`201`):
 ```jsonc
@@ -655,6 +665,46 @@ job (see "Strategy Engine" above); saving an incomplete or currently-
 invalid-in-aggregate configuration always succeeds here and is reported,
 never blocked or silently auto-corrected — see FINANCIAL_RULES.md,
 "Strategy Validation Ownership".
+
+## Wealth Analytics (Phase 15)
+
+```
+GET /api/portfolio/analytics/history?range=1M
+```
+
+Read-only. `range` is one of `1W`/`1M`/`3M`/`YTD`/`ALL` (default `1M`;
+`422` for anything else). Derived exclusively from persisted
+`PortfolioSnapshot` rows — never computed from today's live holdings,
+never interpolated/extrapolated (see FINANCIAL_RULES.md, "Phase 15").
+`404` if no portfolio configuration exists yet.
+
+Response (`200`):
+```jsonc
+{
+  "range": "1M",
+  "base_currency": "EGP",
+  "data": [
+    {
+      "date": "2026-09-01",
+      "portfolio_value": "125000.00",
+      "invested_capital": "110000.00",
+      "total_pnl": "15000.00",
+      "twr_percentage": "4.82"   // null when TWR is undefined up to this point — never a fabricated 0
+    }
+  ],
+  "insufficient_history": false,
+  "message": null
+}
+```
+When fewer than two eligible historical observations exist for the
+requested range, `data` is `[]` and `insufficient_history` is `true`
+with an explanatory `message` — the frontend must render this as an
+explicit "insufficient data" state, never as an empty/flat chart. Only
+snapshots created under the Phase 15 lifecycle (i.e. with
+`invested_capital` recorded) are eligible — the five original dev-seed
+snapshots are excluded rather than assigned a guessed `invested_capital`
+of `0`. No database IDs, `trigger_source`, or other internal metadata
+are ever included in the response.
 
 ## Not Yet Specified
 

@@ -473,3 +473,30 @@ export interface HealthOut {
   status: string;
   database: string;
 }
+
+// --- Wealth Analytics (Phase 15) ------------------------------------------
+
+export type AnalyticsRange = "1W" | "1M" | "3M" | "YTD" | "ALL";
+
+export interface AnalyticsPointOut {
+  /** ISO calendar date (UTC), e.g. "2026-09-01". */
+  date: string;
+  portfolio_value: DecimalStr;
+  invested_capital: DecimalStr;
+  total_pnl: DecimalStr;
+  /** Null exactly when Time-Weighted Return is undefined up to this
+   * point (see backend domain/twr_engine.py) — never a fabricated 0. */
+  twr_percentage: DecimalStr | null;
+}
+
+export interface PortfolioAnalyticsHistoryOut {
+  range: AnalyticsRange;
+  base_currency: string;
+  data: AnalyticsPointOut[];
+  /** True when `data` is empty because fewer than two eligible
+   * historical observations exist for the requested range — render an
+   * explicit "insufficient data" state, never an empty chart presented
+   * as a real flat/zero result. */
+  insufficient_history: boolean;
+  message: string | null;
+}

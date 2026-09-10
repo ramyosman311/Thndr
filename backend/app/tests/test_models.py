@@ -405,3 +405,129 @@ async def test_alert_rule_one_per_watchlist_entry(db_session):
     with pytest.raises(IntegrityError):
         await db_session.commit()
     await db_session.rollback()
+
+
+# --- Phase 15: snapshot idempotency + trigger_source constraints -----------
+
+
+async def test_two_eod_snapshots_same_utc_day_violates_unique_index(db_session):
+    config = make_portfolio_config()
+    db_session.add(config)
+    await db_session.flush()
+
+    db_session.add(
+        PortfolioSnapshot(
+            portfolio_config_id=config.id,
+            snapshot_at=datetime(2026, 4, 1, 8, 0, tzinfo=timezone.utc),
+            trigger_source="EOD",
+        )
+    )
+    await db_session.commit()
+
+    db_session.add(
+        PortfolioSnapshot(
+            portfolio_config_id=config.id,
+            snapshot_at=datetime(2026, 4, 1, 20, 0, tzinfo=timezone.utc),
+            trigger_source="EOD",
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+
+async def test_eod_snapshots_on_different_utc_days_are_both_allowed(db_session):
+    config = make_portfolio_config()
+    db_session.add(config)
+    await db_session.flush()
+
+    db_session.add(
+        PortfolioSnapshot(
+            portfolio_config_id=config.id,
+            snapshot_at=datetime(2026, 4, 1, 8, 0, tzinfo=timezone.utc),
+            trigger_source="EOD",
+        )
+    )
+    db_session.add(
+        PortfolioSnapshot(
+            portfolio_config_id=config.id,
+            snapshot_at=datetime(2026, 4, 2, 8, 0, tzinfo=timezone.utc),
+            trigger_source="EOD",
+        )
+    )
+    await db_session.commit()  # must not raise
+
+    count = (
+        await db_session.execute(
+            select(PortfolioSnapshot).where(PortfolioSnapshot.portfolio_config_id == config.id)
+        )
+    ).scalars().all()
+    assert len(count) == 2
+
+
+async def test_two_snapshots_for_the_same_source_transaction_violates_unique_index(db_session):
+    config = make_portfolio_config()
+    db_session.add(config)
+    await db_session.flush()
+    asset = make_asset(symbol="SNAPSOURCETXN", asset_type=AssetType.CASH)
+    db_session.add(asset)
+    await db_session.flush()
+    txn = Transaction(
+        asset_id=asset.id, transaction_type=TransactionType.DEPOSIT, quantity=Decimal("1"),
+        price=Decimal("1"), transaction_date=datetime.now(timezone.utc),
+    )
+    db_session.add(txn)
+    await db_session.flush()
+
+    db_session.add(
+        PortfolioSnapshot(
+            portfolio_config_id=config.id, snapshot_at=datetime.now(timezone.utc),
+            trigger_source="TRANSACTION", source_transaction_id=txn.id,
+        )
+    )
+    await db_session.commit()
+
+    db_session.add(
+        PortfolioSnapshot(
+            portfolio_config_id=config.id, snapshot_at=datetime.now(timezone.utc),
+            trigger_source="TRANSACTION", source_transaction_id=txn.id,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+
+async def test_trigger_source_rejects_an_arbitrary_value(db_session):
+    config = make_portfolio_config()
+    db_session.add(config)
+    await db_session.flush()
+
+    db_session.add(
+        PortfolioSnapshot(
+            portfolio_config_id=config.id, snapshot_at=datetime.now(timezone.utc), trigger_source="BOGUS"
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+
+async def test_pre_phase_15_style_snapshot_with_null_trigger_source_is_still_valid(db_session):
+    """The five original dev-seed snapshots (trigger_source NULL) must
+    remain a legal row shape after the Phase 15 migration -- nothing
+    about the new columns/constraints requires backfilling them."""
+    config = make_portfolio_config()
+    db_session.add(config)
+    await db_session.flush()
+
+    db_session.add(PortfolioSnapshot(portfolio_config_id=config.id, snapshot_at=datetime.now(timezone.utc)))
+    await db_session.commit()  # must not raise
+
+    snapshot = (
+        await db_session.execute(select(PortfolioSnapshot).where(PortfolioSnapshot.portfolio_config_id == config.id))
+    ).scalar_one()
+    assert snapshot.trigger_source is None
+    assert snapshot.total_cost_basis is None
+    assert snapshot.invested_capital is None
+    assert snapshot.realized_pnl_cumulative is None

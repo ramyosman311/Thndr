@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.routes import (
     alerts,
+    analytics,
     assets,
     cash_flow,
     health,
@@ -24,3 +25,4 @@ api_router.include_router(transactions.router)
 api_router.include_router(watchlist.router)
 api_router.include_router(alerts.router)
 api_router.include_router(prices.router)
+api_router.include_router(analytics.router)

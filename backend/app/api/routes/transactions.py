@@ -4,7 +4,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db_session
 from app.schemas.transaction import TransactionCreateRequest, TransactionOut, TransactionResultOut
 from app.services import transaction_service
-from app.services.transaction_service import AssetNotFoundError, OversellError
+from app.services.transaction_service import (
+    AssetNotFoundError,
+    InsufficientCashError,
+    InvalidCashFlowAmountError,
+    InvalidCashFlowAssetError,
+    OversellError,
+    PortfolioNotConfiguredError,
+)
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
@@ -13,9 +20,13 @@ router = APIRouter(prefix="/transactions", tags=["transactions"])
 async def create_transaction(
     request: TransactionCreateRequest, session: AsyncSession = Depends(get_db_session)
 ) -> TransactionResultOut:
-    """Records an executed BUY/SELL transaction and atomically updates the
-    resulting holding (average-cost accounting — see FINANCIAL_RULES.md,
-    "Transaction Accounting"). Both writes succeed or fail together.
+    """Records an executed BUY/SELL/DEPOSIT/WITHDRAWAL transaction and
+    atomically updates the resulting holding (average-cost accounting for
+    BUY/SELL, a pinned 1:1 cash balance for DEPOSIT/WITHDRAWAL — see
+    FINANCIAL_RULES.md, "Transaction Accounting" and "Cash Flow Is Not
+    Profit"). A DEPOSIT/WITHDRAWAL additionally creates a post-flow
+    portfolio snapshot in the same atomic write (Phase 15 — see
+    services/snapshot_service.py). All writes succeed or fail together.
 
     This is NOT a recommendation: it records a real, immutable historical
     event and changes the current holding, unlike
@@ -33,8 +44,12 @@ async def create_transaction(
         )
     except AssetNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    except OversellError as exc:
+    except PortfolioNotConfiguredError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except (OversellError, InsufficientCashError) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except (InvalidCashFlowAssetError, InvalidCashFlowAmountError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 @router.get("", response_model=list[TransactionOut])

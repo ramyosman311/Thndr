@@ -4,32 +4,32 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 14 — Telegram Notifications. Real Telegram delivery
-> now exists (`TelegramNotificationDispatcher`, `services/
-> telegram_dispatcher.py`), wired to the Phase 8 `NotificationDispatcher`
-> abstraction with no change to alert-evaluation semantics. Delivery is
-> strictly out-of-band: only a new worker, `python -m app.workers.
-> alert_notify` (mirroring Phase 11's `price_refresh` worker — a
-> standalone script meant for an external scheduler, since this project
-> has no in-repo scheduling infrastructure), ever constructs a
-> live-HTTP-capable dispatcher; the on-demand `POST /api/alerts/evaluate`
-> route always gets the safe `NullNotificationDispatcher` default, so it
-> never depends on a live Telegram call. A message is only ever sent when
-> all three of `TELEGRAM_ENABLED`+credentials, the portfolio's
-> `telegram_enabled` master switch, and the specific alert rule's own
-> `telegram_enabled` opt-in are true — both DB flags are now editable
-> through the Settings/Watchlist UI. `api.telegram.org` was confirmed
-> blocked by this environment's network egress policy (the same
-> default-deny pattern that blocked Yahoo/EGID/EGXAPI/Mubasher in Phase
-> 13), so the dispatcher is verified via comprehensive mocked-HTTP tests,
-> never a live send — see [DECISIONS.md](./DECISIONS.md), "Telegram
-> Delivery Decision" for the full design, including one disclosed
-> deviation from the originally specified message template (no "Change/
-> Change %" line, since no such data exists anywhere in the alert
-> engine's output). No database migration was required — both
-> `telegram_enabled` columns already existed since Phase 3. No broker
-> integration, automatic trading, authentication, or full multi-user/
-> multi-portfolio system exist yet. See [Phase Plan](#phase-plan) below.
+> **Status:** Phase 15 — Historical Snapshots & Wealth Analytics Engine.
+> Real, persisted portfolio history now exists: a DEPOSIT/WITHDRAWAL
+> transaction (restricted to `CASH`/`SAVINGS` assets, `services/
+> transaction_service.py`) atomically creates a post-flow
+> `PortfolioSnapshot`, and an out-of-band `python -m app.workers.
+> snapshot_eod` worker (same external-scheduler execution model as
+> `price_refresh`/`alert_notify`) creates one end-of-day snapshot per
+> portfolio per UTC calendar day — both idempotent at the database level
+> via partial unique indexes. `domain/twr_engine.py` computes true
+> Time-Weighted Return, isolating market performance from external cash
+> flows via a "snapshot-after-flow with algebraic pre-flow
+> reconstruction" convention (16 mathematically verified fixtures in
+> `test_domain_twr_engine.py`) — a deposit or withdrawal never appears as
+> investment gain or loss. `GET /api/portfolio/analytics/history` (1W/
+> 1M/3M/YTD/ALL) serves this to a real dashboard chart (Portfolio Value
+> vs. Invested Capital, with an explicit "insufficient historical data"
+> state — never a fabricated or interpolated point). `TRANSFER`
+> transaction semantics and an Egypt-local EOD boundary remain
+> unimplemented, disclosed limitations — see
+> [DECISIONS.md](./DECISIONS.md), "Phase 15 — Historical Snapshots &
+> Wealth Analytics" for the full design and known limitations. One
+> additive-only migration (`3210d10067b1`) added five nullable columns
+> and two partial unique indexes to `portfolio_snapshots`; the five
+> original dev-seed snapshots are untouched. No broker integration,
+> automatic trading, authentication, or full multi-user/multi-portfolio
+> system exist yet. See [Phase Plan](#phase-plan) below.
 
 ## What this project does (target scope)
 
@@ -152,13 +152,15 @@ before the next begins.
 11. Generic Hybrid Price Infrastructure (provider-driven prices, FX, non-blocking valuation) — done
 12. Portfolio & Asset Administration + Domain Readiness (Settings UI for Assets/Pricing/Portfolio/Strategy, single-portfolio assumption audit) — done
 13. EGX Market Data Provider Integration & Verification (EGID/EGXAPI investigated and rejected; Mubasher Egypt implemented as primary, mock-tested, with Yahoo Finance retained as secondary fallback for the real EGX equities) — done
-14. Telegram Notifications (real delivery, out-of-band worker, strict AND-gated enablement, mock-tested) — done *(current)*
-15. PWA (installable, offline-capable)
-16. Capacitor wrappers
-17. Production deployment prep
-18. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
-19. A verified EGID or EGXAPI adapter, or another zero-cost EGX-specific data source (deferred from Phase 13 — see [DECISIONS.md](./DECISIONS.md), requires network access and human-obtained API documentation this environment could not get)
-20. Live Telegram verification (deferred from Phase 14 — see [DECISIONS.md](./DECISIONS.md), `api.telegram.org` confirmed blocked by this environment's egress policy) and a "send test message" admin action (explicitly deferred by Phase 14's own approval)
+14. Telegram Notifications (real delivery, out-of-band worker, strict AND-gated enablement, mock-tested) — done
+15. Historical Snapshots & Wealth Analytics Engine (DEPOSIT/WITHDRAWAL cash-flow semantics, EOD + post-transaction snapshot lifecycle, Time-Weighted Return isolating market performance from cash flow, real snapshot-driven dashboard chart with 1W/1M/3M/YTD/ALL ranges) — done *(current)*
+16. PWA (installable, offline-capable)
+17. Capacitor wrappers
+18. Production deployment prep
+19. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
+20. A verified EGID or EGXAPI adapter, or another zero-cost EGX-specific data source (deferred from Phase 13 — see [DECISIONS.md](./DECISIONS.md), requires network access and human-obtained API documentation this environment could not get)
+21. Live Telegram verification (deferred from Phase 14 — see [DECISIONS.md](./DECISIONS.md), `api.telegram.org` confirmed blocked by this environment's egress policy) and a "send test message" admin action (explicitly deferred by Phase 14's own approval)
+22. TRANSFER transaction semantics, Egypt-local (Africa/Cairo) EOD trading-day boundary, and analytics coverage for pre-Phase-15 snapshot history (deferred from Phase 15 — see [DECISIONS.md](./DECISIONS.md))
 
 ## Local Development
 

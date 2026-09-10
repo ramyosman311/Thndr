@@ -595,3 +595,105 @@ the real dev database (Telegram unconfigured, so `_build_notifier()`
 correctly resolved to `NullNotificationDispatcher` — zero HTTP attempts,
 zero financial data changed), proving the non-Telegram parts of the
 pipeline work for real.
+
+## Phase 15 — Historical Snapshots & Wealth Analytics
+
+### Inspection findings (performed before writing any code)
+
+The audit (see the full report exchanged with the user before
+implementation) found: `portfolio_snapshots` existed only as a model,
+populated exclusively by the one-time dev seed — no service, repository,
+API route, or creation trigger existed anywhere. `domain/
+snapshot_comparison.py` (a pure value-change utility) was already written
+but wired into nothing. DEPOSIT/WITHDRAWAL/TRANSFER existed in the
+Postgres native `transaction_type` enum since the original Phase 3
+migration, but were unreachable at the application layer (`schemas/
+transaction.py`'s `Literal["BUY","SELL"]` and `transaction_service.py`'s
+two-branch if/else). No analytics endpoint, dashboard chart, or mock
+chart data existed to remove — the task brief's premise that mock data
+needed replacing did not match the repository's actual state, and this
+was reported rather than fabricating a removal step.
+
+### Cash Flow Semantics (approved design decision)
+
+DEPOSIT/WITHDRAWAL are restricted to assets whose `asset_type` is `CASH`
+or `SAVINGS`. This reuses the existing `transaction_type` enum values
+(already present in the DB — no migration needed for this) rather than
+inventing a new cash-flow representation. `average_cost` is pinned to
+exactly `1` for these — never blended via the average-cost math BUY/SELL
+use — so `cost_basis == quantity` trivially and no artificial unrealized
+P/L appears for holding cash. A `price != 1` or `fees != 0` is rejected
+outright rather than guessing what either would mean for "the deposited
+amount." `TRANSFER` was explicitly NOT implemented: its meaning (external
+wire vs. internal move between the user's own holdings) is genuinely
+ambiguous in the existing data model, and the approved instruction was to
+stop and report rather than invent a timing/semantic assumption — this
+is a disclosed, deliberate gap for a future phase.
+
+### TWR Convention (approved design decision)
+
+"Snapshot-after-flow with algebraic pre-flow reconstruction": every
+DEPOSIT/WITHDRAWAL triggers an atomic post-flow snapshot recording the
+signed flow amount; the pre-flow value is reconstructed as
+`post_flow_value − signed_flow` (exact, since the flow is defined as the
+only thing that changed in that instant). The sub-period ending at a flow
+is measured against this reconstructed value, so the flow itself
+contributes exactly 0% return by construction — see
+`domain/twr_engine.py` and its 16 fixture tests
+(`test_domain_twr_engine.py`) for the full derivation and verification,
+including the zero-starting-balance and insufficient-history edge cases
+explicitly required by the approved spec.
+
+### Deterministic Ordering (resolved without a design-review stop)
+
+The approved instructions required the implementation to be
+deterministic when multiple events share an identical or near-identical
+timestamp, and to stop and report rather than invent ordering if the
+existing model couldn't support it. Resolution: `(event_timestamp,
+created_at, id)` ascending, using columns the schema already has
+(`created_at` on every row, `id` as a final stable tiebreaker). This was
+judged safely resolvable from the existing schema — not a new
+architectural ambiguity requiring another stop — because it does not
+assert a false real-world chronology beyond what the system actually
+captured; it only guarantees the same input always produces the same
+output. It also mirrors a pre-existing, unremarked limitation already in
+the Phase 10 transaction write path (which likewise assumes real-world
+chronological entry order, with no support for true historical
+backdating/replay) — Phase 15 did not introduce or worsen that
+assumption, only made its ordering rule explicit where snapshot/TWR
+replay depends on it.
+
+### EOD Convention (approved design decision)
+
+UTC calendar day, matching every other timestamp already in this schema
+(all `TIMESTAMP(timezone=True)`). Egypt-local EGX market-close semantics
+were explicitly excluded from this phase's scope per the approval.
+
+### Migration (approved, additive only)
+
+`3210d10067b1`: five new nullable columns on `portfolio_snapshots`
+(`trigger_source`, `source_transaction_id`, `total_cost_basis`,
+`invested_capital`, `realized_pnl_cumulative`) plus two partial unique
+indexes for idempotency (EOD-per-UTC-day, one-snapshot-per-triggering-
+transaction). `total_value` was deliberately NOT added as a column — it
+remains derivable as `SUM(items.value)`, per "don't duplicate
+information unnecessarily." Verified before applying: the five existing
+seed rows keep every new column `NULL` and violate neither partial
+index (both are scoped to non-NULL/specific values the seed rows don't
+have); the downgrade path was exercised (`alembic downgrade -1` /
+`upgrade head` round-trip) and the full 535-test backend suite re-run
+clean afterward.
+
+### Known Limitations
+
+See FINANCIAL_RULES.md, "Phase 15: Historical Snapshots, Cash Flow, and
+Time-Weighted Return" — Known Limitations, for the full list (TRANSFER
+unimplemented; a CASH/SAVINGS asset needs its own manually-set usable
+price to be valued in a snapshot, since Phase 15 does not special-case
+cash pricing; mixing BUY/SELL and DEPOSIT/WITHDRAWAL on the same asset is
+undefined; pre-Phase-15 snapshots are excluded from analytics rather than
+backfilled). Separately: the roadmap in README.md's Phase Plan originally
+listed Phase 15 as "PWA" — this work was inserted under the same number
+at the user's explicit direction; the original PWA/Capacitor/production-
+deployment phases are renumbered further down rather than dropped (see
+README.md's Phase Plan).

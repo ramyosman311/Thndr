@@ -19,8 +19,16 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.transaction_engine import OversellError as DomainOversellError, apply_buy, apply_sell
-from app.models import Holding, Transaction
+from app.domain.transaction_engine import (
+    InsufficientCashError as DomainInsufficientCashError,
+    OversellError as DomainOversellError,
+    apply_buy,
+    apply_deposit,
+    apply_sell,
+    apply_withdrawal,
+)
+from app.models import AssetType, Holding, Transaction
+from app.repositories.portfolio_repository import get_portfolio_config
 from app.repositories.transaction_repository import (
     get_asset_by_id,
     get_holding_by_asset_id_for_update,
@@ -28,8 +36,10 @@ from app.repositories.transaction_repository import (
 )
 from app.schemas.transaction import HoldingSnapshotOut, TransactionOut, TransactionResultOut
 from app.services import price_service
+from app.services.snapshot_service import build_post_transaction_snapshot
 
 _PRESENTATION_QUANT = Decimal("0.01")
+_CASH_FLOW_ASSET_TYPES = {AssetType.CASH, AssetType.SAVINGS}
 
 
 class AssetNotFoundError(Exception):
@@ -39,6 +49,32 @@ class AssetNotFoundError(Exception):
 class OversellError(Exception):
     """Raised when a SELL's quantity exceeds the currently held quantity
     (including selling an asset with no holding at all)."""
+
+
+class InsufficientCashError(Exception):
+    """Raised when a WITHDRAWAL's amount exceeds the currently held cash
+    balance (including withdrawing from an asset with no holding at all)."""
+
+
+class InvalidCashFlowAssetError(Exception):
+    """Raised when a DEPOSIT/WITHDRAWAL targets an asset whose asset_type
+    is not CASH or SAVINGS (Phase 15 approved design decision -- see
+    DECISIONS.md, "Phase 15 Cash Flow Semantics")."""
+
+
+class InvalidCashFlowAmountError(Exception):
+    """Raised for a DEPOSIT/WITHDRAWAL whose price/fees don't satisfy the
+    fixed 1:1 cash-unit convention (see schemas/transaction.py's
+    model_validator, which already rejects this at the API boundary --
+    this is a defensive re-check for any other caller of this service)."""
+
+
+class PortfolioNotConfiguredError(Exception):
+    """Raised when a DEPOSIT/WITHDRAWAL is attempted before any
+    portfolio_configs row exists yet (mirrors the same-named exception
+    already defined independently in portfolio_service.py/
+    inflow_service.py -- each service raises its own per this codebase's
+    established convention)."""
 
 
 def _round(value: Decimal) -> Decimal:
@@ -83,6 +119,7 @@ async def create_transaction(
     current_average_cost = holding.average_cost if holding is not None else Decimal("0")
 
     realized_pnl: Decimal | None = None
+    snapshot_pending = False
     if transaction_type == "BUY":
         result = apply_buy(
             current_quantity=current_quantity,
@@ -91,7 +128,7 @@ async def create_transaction(
             purchase_price=price,
             fees=fees,
         )
-    else:
+    elif transaction_type == "SELL":
         if holding is None or current_quantity == 0:
             raise OversellError(f"Cannot sell {quantity}: no holding currently exists for this asset.")
         try:
@@ -106,10 +143,39 @@ async def create_transaction(
             raise OversellError(str(exc)) from exc
         result = sell_result
         realized_pnl = sell_result.realized_pnl
+    else:
+        # DEPOSIT / WITHDRAWAL (Phase 15) -- see domain/transaction_engine.py.
+        # Restricted to CASH/SAVINGS assets: quantity is the cash balance
+        # itself, average_cost stays pinned at 1, never treated as
+        # investment return (see FINANCIAL_RULES.md, "Cash Flow Is Not
+        # Profit").
+        if asset.asset_type not in _CASH_FLOW_ASSET_TYPES:
+            raise InvalidCashFlowAssetError(
+                f"DEPOSIT/WITHDRAWAL is only allowed for CASH/SAVINGS assets, not {asset.asset_type.value}."
+            )
+        if price != 1 or fees != 0:
+            raise InvalidCashFlowAmountError("DEPOSIT/WITHDRAWAL requires price=1 and fees=0.")
+        if transaction_type == "DEPOSIT":
+            result = apply_deposit(current_quantity=current_quantity, deposit_amount=quantity)
+        else:
+            try:
+                result = apply_withdrawal(current_quantity=current_quantity, withdrawal_amount=quantity)
+            except DomainInsufficientCashError as exc:
+                raise InsufficientCashError(str(exc)) from exc
+        snapshot_pending = True
 
     if holding is None:
         holding = Holding(asset_id=asset_id, quantity=result.quantity, average_cost=result.average_cost)
         session.add(holding)
+        # Also wire the in-memory relationship, not just the FK column:
+        # `asset` may already be identity-mapped with `.holding` cached as
+        # None from an earlier query in this same session (e.g. Phase 15's
+        # snapshot valuation re-querying active assets) -- a bare
+        # `session.add(holding)` does not retroactively refresh that
+        # cached relationship, so a same-transaction read immediately
+        # after this would otherwise see a stale "no holding" via
+        # `asset.holding` even though the row now exists.
+        asset.holding = holding
     else:
         holding.quantity = result.quantity
         holding.average_cost = result.average_cost
@@ -124,6 +190,19 @@ async def create_transaction(
         notes=notes,
     )
     session.add(transaction)
+
+    if snapshot_pending:
+        # Flush (not commit) so `transaction.id` exists and the holding
+        # change above is visible to the snapshot's own valuation read --
+        # the snapshot is added to the SAME still-open transaction, so it
+        # commits atomically with the transaction/holding write below (see
+        # services/snapshot_service.py's module docstring).
+        await session.flush()
+        config = await get_portfolio_config(session)
+        if config is None:
+            raise PortfolioNotConfiguredError("No portfolio configuration exists yet.")
+        snapshot = await build_post_transaction_snapshot(session, config=config, transaction=transaction)
+        session.add(snapshot)
 
     await session.commit()
     await session.refresh(transaction)

@@ -6,8 +6,10 @@ This document describes the architecture of MIZAN Smart Portfolio Manager. The
 backend (FastAPI, domain/service/repository layering) is implemented
 through Phase 11; the frontend (Next.js) is implemented as of Phase 9,
 extended for price states in Phase 11 — see "Frontend Layering" below
-for what exists today. Real Telegram delivery was added in Phase 14 (see
-"Workers" below). This document remains the contract later phases (PWA,
+for what exists today. Real Telegram delivery was added in Phase 14, and
+a real historical snapshot lifecycle + Time-Weighted Return wealth
+analytics engine in Phase 15 (see "Workers" below and FINANCIAL_RULES.md,
+"Phase 15"). This document remains the contract later phases (PWA,
 Capacitor, deployment) build against.
 
 ## High-Level Overview
@@ -24,15 +26,16 @@ Capacitor, deployment) build against.
                                 │  Workers (external-   │  HTTP  │  Telegram Bot   │
                                 │  scheduler invoked):   │──────▶ │  API            │
                                 │  price_refresh,        │        └─────────────────┘
-                                │  alert_notify          │
+                                │  alert_notify,          │
+                                │  snapshot_eod           │
                                 └──────────────────────┘
 ```
 
-Both workers share the same execution model: a standalone
+All three workers share the same execution model: a standalone
 `python -m app.workers.<name>` script, invoked periodically by an
 external scheduler (cron, a platform's scheduled-job feature) — never
-started by, or run inside, the FastAPI/Uvicorn process. Neither worker
-exists as an in-repo scheduling loop; see DEPLOYMENT.md, "Workers".
+started by, or run inside, the FastAPI/Uvicorn process. None exists as
+an in-repo scheduling loop; see DEPLOYMENT.md, "Workers".
 
 ## Backend Layering
 
@@ -123,10 +126,13 @@ The backend follows strict separation of concerns, from outer to inner layers:
    `POST /api/alerts/evaluate` route (Phase 8) still runs synchronously
    but always gets the safe `NullNotificationDispatcher` default, so an
    on-demand "check now" request from the Watchlist screen never depends
-   on a live Telegram call. Both workers keep the non-blocking guarantee
-   (see "Price Infrastructure" below) structural rather than a
-   convention someone could accidentally violate from inside a request
-   handler.
+   on a live Telegram call. Phase 15 adds `snapshot_eod.py` —
+   `python -m app.workers.snapshot_eod` — the entrypoint that creates one
+   end-of-day `PortfolioSnapshot` per portfolio per UTC calendar day
+   (idempotent; safe to run more than once a day). All three workers keep
+   the non-blocking guarantee (see "Price Infrastructure" below)
+   structural rather than a convention someone could accidentally violate
+   from inside a request handler.
 9. **`core/`** — Cross-cutting concerns: configuration (`config.py`),
    database engine/session setup (`database.py`), and security utilities
    (`security.py`).

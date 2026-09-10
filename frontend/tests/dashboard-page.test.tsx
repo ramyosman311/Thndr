@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   portfolioAllocation: vi.fn(),
   strategyValidation: vi.fn(),
   listWatchlist: vi.fn(),
+  portfolioAnalyticsHistory: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async () => {
@@ -18,6 +19,7 @@ vi.mock("@/lib/api", async () => {
       portfolioAllocation: mocks.portfolioAllocation,
       strategyValidation: mocks.strategyValidation,
       listWatchlist: mocks.listWatchlist,
+      portfolioAnalyticsHistory: mocks.portfolioAnalyticsHistory,
     },
   };
 });
@@ -30,6 +32,9 @@ describe("DashboardPage", () => {
     mocks.portfolioAllocation.mockRejectedValue(new ApiError("not_configured", 404, "No portfolio configuration exists yet."));
     mocks.strategyValidation.mockRejectedValue(new ApiError("not_configured", 404, "No portfolio configuration exists yet."));
     mocks.listWatchlist.mockResolvedValue([]);
+    mocks.portfolioAnalyticsHistory.mockRejectedValue(
+      new ApiError("not_configured", 404, "No portfolio configuration exists yet.")
+    );
 
     render(<DashboardPage />);
 
@@ -84,6 +89,13 @@ describe("DashboardPage", () => {
         alert_rule: { id: "r1", watchlist_id: "w1", enabled: true, allocation_alert_enabled: false, allocation_max_percent: null, price_target_enabled: false, price_target: null, dip_buy_enabled: false, dip_buy_price: null, telegram_enabled: false, last_triggered_at: null },
       },
     ]);
+    mocks.portfolioAnalyticsHistory.mockResolvedValue({
+      range: "1M",
+      base_currency: "EGP",
+      data: [],
+      insufficient_history: true,
+      message: "Insufficient historical data for this range.",
+    });
 
     render(<DashboardPage />);
 

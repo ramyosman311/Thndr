@@ -155,12 +155,15 @@ phase).
 | created_at        | timestamp | |
 
 Indexed on `(asset_id, transaction_date)`. CHECK constraints:
-`quantity >= 0`, `price >= 0`, `fees >= 0`. Only `BUY`/`SELL` are
-writable via `POST /api/transactions` as of Phase 10 — the other enum
-values exist for a future phase and have no defined holding-update
-behavior yet. Rows are immutable once written: Phase 10 adds no
-update/delete path for this table (see FINANCIAL_RULES.md, "Transaction
-Accounting").
+`quantity >= 0`, `price >= 0`, `fees >= 0`. `BUY`/`SELL` (Phase 10) and
+`DEPOSIT`/`WITHDRAWAL` (Phase 15, restricted to `CASH`/`SAVINGS` assets,
+`price` fixed at `1`, `fees` fixed at `0` — see FINANCIAL_RULES.md, "Cash
+Flow Is Not Profit") are writable via `POST /api/transactions`.
+`TRANSFER`/`DIVIDEND` remain unwritable — no defined holding-update
+semantics exist for them yet (see FINANCIAL_RULES.md, "Phase 15: ...
+Known Limitations" for why `TRANSFER` specifically was left unresolved).
+Rows are immutable once written: no update/delete path exists for this
+table (see FINANCIAL_RULES.md, "Transaction Accounting").
 
 ### `portfolio_configs`
 
@@ -288,8 +291,25 @@ change:
 | snapshot_at          | timestamp | when the snapshot represents |
 | label                | string, nullable | |
 | created_at           | timestamp | |
+| trigger_source       | `VARCHAR(20)`, nullable (Phase 15) | `'EOD'` \| `'TRANSACTION'` \| `NULL` (pre-Phase-15 rows) — CHECK constraint enforces the two literal values or NULL |
+| source_transaction_id | UUID, nullable (FK → transactions, `ON DELETE SET NULL`) (Phase 15) | set only when `trigger_source='TRANSACTION'` |
+| total_cost_basis     | `NUMERIC(18,2)`, nullable (Phase 15) | sum(quantity × average_cost) across held positions at snapshot time |
+| invested_capital     | `NUMERIC(18,2)`, nullable (Phase 15) | cumulative net DEPOSIT − WITHDRAWAL as of snapshot time |
+| realized_pnl_cumulative | `NUMERIC(18,2)`, nullable (Phase 15) | cumulative realized P/L as of snapshot time, derived by replay — never a maintained ledger (see FINANCIAL_RULES.md) |
 
-Indexed on `(portfolio_config_id, snapshot_at)`.
+Indexed on `(portfolio_config_id, snapshot_at)`. Two Phase 15 partial
+unique indexes provide snapshot idempotency:
+- `uq_portfolio_snapshot_eod_per_day` — unique on
+  `(portfolio_config_id, (snapshot_at AT TIME ZONE 'UTC')::date)` WHERE
+  `trigger_source = 'EOD'` — at most one EOD snapshot per portfolio per
+  UTC calendar day.
+- `uq_portfolio_snapshot_source_transaction` — unique on
+  `source_transaction_id` WHERE NOT NULL — at most one snapshot per
+  triggering DEPOSIT/WITHDRAWAL transaction.
+
+All five Phase 15 columns are nullable and additive (migration
+`3210d10067b1`); the five original dev-seed snapshots keep them `NULL` —
+never backfilled or guessed (see FINANCIAL_RULES.md, "Phase 15").
 
 **`portfolio_snapshot_items`**
 

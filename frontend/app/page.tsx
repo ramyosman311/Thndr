@@ -10,6 +10,7 @@ import {
   TotalValueCard,
   ValueSplitCard,
   WatchlistSummaryCard,
+  WealthHistoryCard,
 } from "@/components/dashboard";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { formatCurrency, formatPercent, isNegative, isZero } from "@/lib/format";
@@ -50,6 +51,8 @@ export default function DashboardPage() {
           )
         }
       </QueryBoundary>
+
+      <WealthHistoryCard />
 
       <QueryBoundary state={watchlistQuery} onRetry={watchlistQuery.refetch} loadingLabel="جارٍ تحميل المتابعة...">
         {(watchlist) => <WatchlistSummaryCard watchlist={watchlist} />}

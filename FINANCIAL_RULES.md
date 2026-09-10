@@ -499,6 +499,14 @@ value observations**, not trade records.
   does not tell you how many shares were held or at what price — only the
   recorded value.
 
+Phase 15 adds `trigger_source`, `source_transaction_id`, `total_cost_basis`,
+`invested_capital`, and `realized_pnl_cumulative` to `portfolio_snapshots`
+(all nullable/additive — see DATABASE.md and "Phase 15" below). These
+remain point-in-time *observations*, computed once at write time from
+already-persisted state; they never turn a snapshot into a second
+transaction system, and the five original dev-seed snapshots correctly
+keep all of them `NULL` (that context was genuinely never captured).
+
 ## Price Infrastructure (Phase 11)
 
 Supersedes the earlier "Market Data Integrity" placeholder (a
@@ -772,6 +780,119 @@ unrelated foreign companies, not the Egyptian instruments of the same
 short code. See `app/seed/data.py`'s `SEED_ASSET_PRICE_CONFIGS` for the
 exact configuration and reasoning.
 
+## Phase 15: Historical Snapshots, Cash Flow, and Time-Weighted Return
+
+Implemented in `domain/twr_engine.py`, `domain/transaction_engine.py`
+(DEPOSIT/WITHDRAWAL additions), `services/snapshot_service.py`,
+`services/portfolio_analytics_service.py`, `workers/snapshot_eod.py`.
+
+**Cash Flow Is Not Profit (NON-NEGOTIABLE).** A DEPOSIT/WITHDRAWAL is
+external capital moving into or out of the portfolio — it must never be
+counted as investment return, and TWR is specifically the mechanism that
+guarantees this (see below). DEPOSIT/WITHDRAWAL are restricted to assets
+whose `asset_type` is `CASH` or `SAVINGS`; for those, `quantity` IS the
+cash balance and `average_cost` is pinned at exactly `1` (never blended
+via `apply_buy`/`apply_sell`), so `cost_basis == quantity` always and no
+artificial unrealized P/L is ever generated for holding cash. A
+DEPOSIT/WITHDRAWAL requires `price == 1` and `fees == 0` — rejected
+otherwise, rather than guessing what a non-1 price or a fee would mean
+for "the amount." **`TRANSFER` remains unimplemented and rejected** — its
+meaning (an external wire vs. an internal move between two of the user's
+own holdings) is genuinely ambiguous in this system's data model, and
+guessing wrong would silently corrupt TWR; this is a disclosed limitation
+for a future phase, not a decision made here.
+
+**Realized P/L Is Never A Running Ledger (still true).** The Phase 10
+rule above is unchanged: no column on `transactions` or `holdings` is
+incrementally updated on each SELL. `portfolio_snapshots.realized_pnl_cumulative`
+is a different kind of thing — a point-in-time *observation*, computed
+once at snapshot-write time by replaying every BUY/SELL transaction
+in deterministic order through the exact same, unmodified
+`apply_buy`/`apply_sell` math. It is a derived snapshot field, exactly
+like `total_cost_basis`, not a maintained ledger column that `SELL`
+itself writes to.
+
+**Snapshot Lifecycle.** Two trigger sources exist, recorded on
+`trigger_source`:
+- **EOD** — created by the out-of-band `app/workers/snapshot_eod.py`
+  worker (external scheduler, same execution model as
+  `price_refresh.py`/`alert_notify.py`). Idempotent per portfolio per
+  **UTC calendar day** — running the worker again the same day is a
+  no-op, enforced both at the application level (a lookup before
+  writing) and at the database level (a partial unique index,
+  `uq_portfolio_snapshot_eod_per_day`).
+- **TRANSACTION** — created synchronously, atomically, in the same
+  database transaction as a DEPOSIT/WITHDRAWAL write (one
+  `session.commit()` covers the transaction, the holding update, and the
+  snapshot together — see "Transaction Atomicity"). BUY/SELL never
+  trigger a snapshot (they change composition, not total value, in a way
+  that needs a separate historical point). Idempotent per triggering
+  transaction via `uq_portfolio_snapshot_source_transaction`.
+
+**EOD Convention (explicit, deliberately narrow).** "End of day" means
+**UTC calendar day** — every timestamp in this schema is already
+`TIMESTAMP(timezone=True)` (UTC-normalized), and no other boundary
+existed anywhere in the codebase before this phase. **This does NOT yet
+represent Egypt-local EGX market close** — introducing Africa/Cairo
+trading-day semantics is explicitly out of scope for this phase and is a
+disclosed limitation, not an oversight.
+
+**TWR Convention: Snapshot-After-Flow With Algebraic Pre-Flow
+Reconstruction.** For a DEPOSIT/WITHDRAWAL, the snapshot records the
+value *after* the flow has landed, together with the signed flow amount.
+The pre-flow value is reconstructed exactly as
+`pre_flow_value = post_flow_value − signed_flow` — exact, not assumed,
+because the flow is defined to be the only thing that changed in that
+instant. The sub-period ending at a flow is measured against this
+reconstructed pre-flow value (so the flow itself contributes exactly 0%
+return by construction), and the post-flow value becomes the new
+baseline for whatever comes next. This is standard sub-period TWR; see
+`domain/twr_engine.py`'s module docstring for the full derivation and
+`test_domain_twr_engine.py` for 16 mathematically verified fixtures
+(flat market + deposit → 0%, growth alone → the exact market return,
+consecutive deposits/withdrawals net to 0% absent real growth, a
+zero-starting-balance case resolves to a defined 0% rather than
+NaN/Infinity, insufficient history is reported explicitly rather than as
+a fabricated 0%, and so on).
+
+**Deterministic Ordering.** Both snapshot replay (for TWR) and
+transaction replay (for `realized_pnl_cumulative`/`invested_capital`) use
+`(event_timestamp, created_at, id)` ascending as the sort key. `id` (a
+random UUIDv4) is a final, stable tiebreaker for two events sharing an
+identical timestamp down to stored precision — it makes the result
+deterministic and reproducible, but it does **not** claim to reconstruct
+a true real-world sub-instant order the system never actually captured.
+This mirrors an existing, unremarked limitation already present in the
+Phase 10 transaction write path (which also assumes transactions are
+entered in real-world chronological order, with no support for
+true historical backdating/replay) — Phase 15 does not change or fix
+that pre-existing assumption, only makes its ordering rule explicit.
+
+**Analytics never fabricates a data point.** `services/
+portfolio_analytics_service.py` reads only persisted `PortfolioSnapshot`
+rows — never today's live holdings, never an interpolated/extrapolated
+point. Only snapshots with `invested_capital IS NOT NULL` (i.e. created
+under this phase's lifecycle) are eligible; the five pre-Phase-15 seed
+snapshots are excluded rather than assigned a guessed `invested_capital`
+of `0`. A requested range with fewer than two eligible snapshots reports
+`insufficient_history: true` with an empty `data` list — never a
+misleading flat/empty chart presented as a real result.
+
+**Known Limitations (disclosed, not silently worked around):**
+- `TRANSFER` is unimplemented (see above).
+- A CASH/SAVINGS asset used for DEPOSIT/WITHDRAWAL needs its own usable
+  price (e.g. a manual price of `1`, via the existing Phase 11 manual
+  price endpoint) to be included in a snapshot's `total_value`/items —
+  Phase 15 does not special-case pricing for cash; it reuses the
+  existing Price Service exactly as every other asset does.
+- Mixing BUY/SELL and DEPOSIT/WITHDRAWAL on the *same* asset is undefined
+  behavior and not guarded against (a DEPOSIT/WITHDRAWAL always pins
+  `average_cost` to `1`, which would silently overwrite a
+  BUY-established average cost on that same asset).
+- Historical data predating this phase (the five original dev-seed
+  snapshots) is excluded from analytics/TWR, not retroactively
+  backfilled.
+
 ## Summary of Non-Negotiable Distinctions
 
 - **Target ≠ Maximum**
@@ -785,6 +906,8 @@ exact configuration and reasoning.
 - **Asset ≠ Holding ≠ Transaction ≠ Price Observation** (Phase 12 — an asset is an instrument; a holding and a transaction are portfolio-scoped facts about it; a price observation is neither — administration never collapses these into one editable record)
 - **Configuration Change ≠ Historical Rewrite** (Phase 12 — an admin write changes future behavior only; it never alters a transaction's price/quantity/timestamp, a holding's quantity/average cost, a past price observation, or a snapshot value)
 - **Evaluation ≠ Delivery** (Phase 14 — the alert engine decides a condition is newly true; a separate, isolated `NotificationDispatcher` decides whether/how to tell someone. A delivery failure never breaks evaluation, and evaluation never blocks on a live delivery call)
+- **Cash Flow ≠ Investment Return** (Phase 15 — a DEPOSIT/WITHDRAWAL is external capital, never counted as market performance; Time-Weighted Return exists specifically to isolate the two)
+- **A Snapshot Observation ≠ A Ledger** (Phase 15 — `realized_pnl_cumulative`/`total_cost_basis`/`invested_capital` on `portfolio_snapshots` are computed once at write time from already-persisted state; they are not incrementally-maintained columns that `transactions`/`holdings` themselves write to)
 
 These distinctions must be preserved end-to-end: in the database schema
 (DATABASE.md), the domain logic (this document), the API contract

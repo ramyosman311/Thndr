@@ -12,6 +12,7 @@ import type {
   AllocationTargetCreateRequest,
   AllocationTargetOut,
   AllocationTargetUpdateRequest,
+  AnalyticsRange,
   AssetCreateRequest,
   AssetOut,
   AssetPriceConfigOut,
@@ -19,6 +20,7 @@ import type {
   AssetUpdateRequest,
   HealthOut,
   InflowAllocationOut,
+  PortfolioAnalyticsHistoryOut,
   ManualPriceCreateRequest,
   PortfolioAllocationOut,
   PortfolioConfigCreateRequest,
@@ -123,6 +125,9 @@ export const api = {
   portfolioSummary: () => request<PortfolioSummaryOut>("/portfolio/summary"),
   portfolioAllocation: () => request<PortfolioAllocationOut>("/portfolio/allocation"),
   strategyValidation: () => request<StrategyValidationOut>("/portfolio/strategy/validation"),
+
+  portfolioAnalyticsHistory: (range: AnalyticsRange) =>
+    request<PortfolioAnalyticsHistoryOut>(`/portfolio/analytics/history?range=${range}`),
 
   getPortfolioConfig: () => request<PortfolioConfigOut>("/portfolio/config"),
   createPortfolioConfig: (payload: PortfolioConfigCreateRequest) =>
