@@ -686,6 +686,27 @@ a real admin write and then re-queries the exact historical row by ID,
 asserting every financial field (price, quantity, fees, timestamp,
 average cost, realized P&L inputs) is byte-for-byte unchanged.
 
+## EGX Provider Configuration (Phase 13)
+
+Two candidate EGX-specific market-data providers (EGID/Ticker
+DelayedFeed, EGXAPI) were investigated and **neither was implemented** —
+one is not verifiably free, the other is architecturally a brokerage/
+order-execution API rather than a market-data feed, and this sandbox's
+network policy blocked live verification of either. No fabricated
+adapter was written for either. See DECISIONS.md, "Phase 13 — EGX Market
+Data Provider Integration" for the complete investigation.
+
+The existing Phase 11 Yahoo Finance provider (unchanged) is configured,
+via seed data, for the EGX-listed equities actually present in this
+project (`TMGH`, `ETEL`, `EFID`) — verified per-symbol against public web
+evidence rather than assumed from a shared ticker-suffix pattern (a naive
+`.CA`-suffix assumption for two other short symbols was checked and
+rejected: it resolved to unrelated foreign companies, not the Egyptian
+instruments of the same short code). `BWA` and `AZN` are mutual-fund NAV
+assets, not EGX-listed equities, and are deliberately never assigned any
+stock-exchange provider — see `app/seed/data.py`'s `SEED_ASSET_PRICE_CONFIGS`
+for the exact configuration and reasoning.
+
 ## Summary of Non-Negotiable Distinctions
 
 - **Target ≠ Maximum**

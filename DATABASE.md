@@ -485,6 +485,22 @@ Audit findings (full detail in [DECISIONS.md](./DECISIONS.md)):
 
 No table gained or lost a column, index, or constraint in Phase 12.
 
+## Phase 13: EGX Provider Integration — No Migration Required
+
+Phase 13 (EGX Market Data Provider Integration) needed no schema change
+either — `asset_price_configs` already had every column (`primary_provider`,
+`primary_provider_symbol`, `automated_fetching_enabled`) the integration
+required. `alembic current` remains `7dbad9d06fb1`, unchanged since Phase
+11. Only rows were added: three `asset_price_configs` rows (for the EGX
+equities `TMGH`/`ETEL`/`EFID`), via a new idempotent seed function
+(`app/seed/seed.py`'s `seed_asset_price_configs`, "create if missing,"
+keyed by `asset_id` — never overwrites a config an admin already
+hand-edited through the Phase 12 Settings UI). See
+[DECISIONS.md](./DECISIONS.md), "Phase 13 — EGX Market Data Provider
+Integration" for why neither EGID nor EGXAPI was implemented and why
+`BWA`/`AZN` deliberately receive no provider configuration at all (they
+are `asset_type=FUND`, not EGX-listed equities).
+
 ## Known Warning: Circular-Dependency Sort
 
 Running `alembic check` or `alembic revision --autogenerate` prints:

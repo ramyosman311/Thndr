@@ -5,15 +5,18 @@ from sqlalchemy import func, select
 from app.models import (
     AllocationTarget,
     Asset,
+    AssetPriceConfig,
     PortfolioConfig,
     PortfolioSnapshot,
     PortfolioSnapshotItem,
     StrategyBucket,
     Transaction,
 )
+from app.models.enums import AssetType
 from app.seed.data import (
     PORTFOLIO_CONFIG_NAME,
     SEED_ALLOCATION_TARGETS,
+    SEED_ASSET_PRICE_CONFIGS,
     SEED_ASSETS,
     SEED_SNAPSHOTS,
     SEED_STRATEGY_BUCKETS,
@@ -188,3 +191,63 @@ async def test_seed_is_idempotent_when_run_twice(db_session):
     assert await _count(db_session, AllocationTarget) == len(SEED_ALLOCATION_TARGETS)
     assert await _count(db_session, PortfolioSnapshot) == 5
     assert await _count(db_session, PortfolioSnapshotItem) == 5 * 7
+    assert await _count(db_session, AssetPriceConfig) == len(SEED_ASSET_PRICE_CONFIGS)
+
+
+# --- Phase 13: EGX price configuration seeding ----------------------------
+
+
+async def test_seed_creates_price_configs_only_for_egx_equities(db_session):
+    """Only TMGH/ETEL/EFID (asset_type=STOCK, market="EGX") get a seeded
+    price config -- see SEED_ASSET_PRICE_CONFIGS's own comment for why
+    BWA/AZN (FUND-type, not exchange-traded equities) are excluded."""
+    await run_seed(db_session)
+
+    assert set(SEED_ASSET_PRICE_CONFIGS.keys()) == {"TMGH", "ETEL", "EFID"}
+    assert await _count(db_session, AssetPriceConfig) == 3
+
+    result = await db_session.execute(select(Asset).where(Asset.symbol.in_(["BWA", "AZN"])))
+    fund_assets = result.scalars().all()
+    assert len(fund_assets) == 2
+    for asset in fund_assets:
+        assert asset.asset_type == AssetType.FUND
+        assert asset.market is None
+
+
+async def test_seed_egx_price_configs_use_yahoo_with_distinct_symbols(db_session):
+    await run_seed(db_session)
+
+    result = await db_session.execute(select(Asset).where(Asset.symbol.in_(SEED_ASSET_PRICE_CONFIGS)))
+    assets_by_symbol = {asset.symbol: asset for asset in result.scalars().all()}
+
+    result = await db_session.execute(
+        select(AssetPriceConfig).where(
+            AssetPriceConfig.asset_id.in_([a.id for a in assets_by_symbol.values()])
+        )
+    )
+    configs_by_asset_id = {c.asset_id: c for c in result.scalars().all()}
+
+    provider_symbols_seen = set()
+    for symbol, spec in SEED_ASSET_PRICE_CONFIGS.items():
+        asset = assets_by_symbol[symbol]
+        config = configs_by_asset_id[asset.id]
+        assert config.primary_provider == "yahoo"
+        assert config.primary_provider_symbol == spec["primary_provider_symbol"]
+        assert config.automated_fetching_enabled == spec["automated_fetching_enabled"]
+        # No two EGX assets accidentally share one provider symbol.
+        assert config.primary_provider_symbol not in provider_symbols_seen
+        provider_symbols_seen.add(config.primary_provider_symbol)
+
+
+async def test_seed_does_not_assign_any_provider_to_non_egx_assets(db_session):
+    await run_seed(db_session)
+
+    non_egx_symbols = {spec["symbol"] for spec in SEED_ASSETS} - set(SEED_ASSET_PRICE_CONFIGS)
+    assert non_egx_symbols == {"CLOUDZ", "BWA", "AZN", "GOLD"}
+
+    result = await db_session.execute(select(Asset).where(Asset.symbol.in_(non_egx_symbols)))
+    assets = result.scalars().all()
+    result = await db_session.execute(
+        select(AssetPriceConfig).where(AssetPriceConfig.asset_id.in_([a.id for a in assets]))
+    )
+    assert result.scalars().all() == []

@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import (
     AllocationTarget,
     Asset,
+    AssetPriceConfig,
     PortfolioConfig,
     PortfolioSnapshot,
     PortfolioSnapshotItem,
@@ -28,6 +29,7 @@ from app.models import (
 from app.seed.data import (
     EMERGENCY_ASSET_SYMBOL,
     SEED_ALLOCATION_TARGETS,
+    SEED_ASSET_PRICE_CONFIGS,
     SEED_ASSETS,
     SEED_PORTFOLIO_CONFIG,
     SEED_SNAPSHOTS,
@@ -166,6 +168,31 @@ async def seed_snapshots(
     return snapshots
 
 
+async def seed_asset_price_configs(
+    session: AsyncSession, assets_by_symbol: dict[str, Asset]
+) -> dict[str, AssetPriceConfig]:
+    """Create any missing asset price configs, keyed by asset_id (Phase 13).
+
+    Only ever touches the symbols listed in SEED_ASSET_PRICE_CONFIGS --
+    deliberately not all assets (see that constant's own comment for why
+    BWA/AZN/CLOUDZ/GOLD are excluded). A config that already exists for an
+    asset (e.g. edited later via the Phase 12 admin UI) is left untouched,
+    same "create if missing" rule as every other seed function here."""
+    configs_by_symbol: dict[str, AssetPriceConfig] = {}
+    for symbol, spec in SEED_ASSET_PRICE_CONFIGS.items():
+        asset = assets_by_symbol[symbol]
+        result = await session.execute(
+            select(AssetPriceConfig).where(AssetPriceConfig.asset_id == asset.id)
+        )
+        config = result.scalar_one_or_none()
+        if config is None:
+            config = AssetPriceConfig(asset_id=asset.id, **spec)
+            session.add(config)
+            await session.flush()
+        configs_by_symbol[symbol] = config
+    return configs_by_symbol
+
+
 async def run_seed(session: AsyncSession) -> None:
     """Run the full idempotent seed sequence and commit."""
     assets_by_symbol = await seed_assets(session)
@@ -174,4 +201,5 @@ async def run_seed(session: AsyncSession) -> None:
     buckets_by_name = await seed_strategy_buckets(session, config, assets_by_symbol)
     await seed_allocation_targets(session, config, buckets_by_name)
     await seed_snapshots(session, config, assets_by_symbol)
+    await seed_asset_price_configs(session, assets_by_symbol)
     await session.commit()

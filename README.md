@@ -4,30 +4,29 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 12 — Portfolio & Asset Administration + Domain
-> Readiness. A full audit of the existing schema/services for accidental
-> single-portfolio or single-user assumptions was performed first (see
-> [DECISIONS.md](./DECISIONS.md) for the complete findings — what was
-> already correct, what single-portfolio assumptions remain and why they
-> were deliberately deferred rather than fixed here). On top of that
-> audit, a safe administration layer now exists over Assets, Asset Price
-> Configuration, Portfolio Configuration, and Strategy Buckets/Allocation
-> Targets — reachable at `/settings` — so configuration no longer
-> requires a direct database write. Financially sensitive changes
-> (an asset's currency, the portfolio's base currency) are rejected by
-> the backend once real transaction/price history would make them unsafe,
-> rather than silently applied. No new database migration was required.
-> Phase 11's price infrastructure is unchanged: every asset price still
-> flows through one provider-driven, non-blocking pipeline — a
-> `PriceProvider` abstraction (Yahoo Finance implemented; EGX/fund-NAV
-> left unconfigured rather than fabricated), a Price Orchestrator that
-> runs only in the out-of-band background refresh worker
-> (`python -m app.workers.price_refresh`), and a Price Service that every
-> request-time read uses instead, only ever reading the immutable
-> `asset_prices` history table. See FINANCIAL_RULES.md and DECISIONS.md
-> for full methodology. No broker integration, automatic trading,
-> Telegram delivery, authentication, or full multi-user/multi-portfolio
-> system exist yet. See [Phase Plan](#phase-plan) below.
+> **Status:** Phase 13 — EGX Market Data Provider Integration &
+> Verification. Both prioritized EGX candidates (EGID/Ticker DelayedFeed,
+> EGXAPI) were investigated to the fullest extent this environment
+> allows and neither cleared verification — EGID's technical API contract
+> could not be found anywhere public and its own marketing describes a
+> paid tier, not a free API; EGXAPI is architecturally a brokerage/
+> order-execution platform (out of this project's scope) with unverified
+> data-licensing terms. Both hosts are also blocked by this environment's
+> network egress policy, so no live request could be executed against
+> either. See [DECISIONS.md](./DECISIONS.md), "Phase 13 — EGX Market Data
+> Provider Integration" for the full investigation, including why no
+> fabricated adapter was written for either. Real, verified progress was
+> still made: the existing Phase 11 Yahoo Finance provider (unchanged) is
+> now configured, per-symbol and only after individually checking each
+> one, for the three assets in the current seed data that are genuinely
+> EGX-listed equities (`TMGH`, `ETEL`, `EFID`) — and explicitly NOT for
+> `BWA`/`AZN`, which turned out to be mutual-fund NAV assets rather than
+> exchange-traded equities, a correction to the phase's own brief.
+> No database migration was required. Phase 12's administration layer
+> and Phase 11's price infrastructure are otherwise unchanged. No broker
+> integration, automatic trading, Telegram delivery, authentication, or
+> full multi-user/multi-portfolio system exist yet. See
+> [Phase Plan](#phase-plan) below.
 
 ## What this project does (target scope)
 
@@ -148,12 +147,14 @@ before the next begins.
 9. Next.js Frontend (Portfolio Dashboard, mobile-first, RTL, dark mode) — done
 10. Transaction & Holdings Engine (BUY/SELL, average-cost accounting) — done
 11. Generic Hybrid Price Infrastructure (provider-driven prices, FX, non-blocking valuation) — done
-12. Portfolio & Asset Administration + Domain Readiness (Settings UI for Assets/Pricing/Portfolio/Strategy, single-portfolio assumption audit) — done *(current)*
-13. Telegram Notifications
-14. PWA (installable, offline-capable)
-15. Capacitor wrappers
-16. Production deployment prep
-17. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
+12. Portfolio & Asset Administration + Domain Readiness (Settings UI for Assets/Pricing/Portfolio/Strategy, single-portfolio assumption audit) — done
+13. EGX Market Data Provider Integration & Verification (EGID/EGXAPI investigated and rejected; Yahoo Finance configured for the real EGX equities in seed data) — done *(current)*
+14. Telegram Notifications
+15. PWA (installable, offline-capable)
+16. Capacitor wrappers
+17. Production deployment prep
+18. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
+19. A verified EGID or EGXAPI adapter, or another zero-cost EGX-specific data source (deferred from Phase 13 — see [DECISIONS.md](./DECISIONS.md), requires network access and human-obtained API documentation this environment could not get)
 
 ## Local Development
 
