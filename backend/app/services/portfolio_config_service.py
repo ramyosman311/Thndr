@@ -115,6 +115,8 @@ async def update_config(session: AsyncSession, request: PortfolioConfigUpdateReq
         config.emergency_asset_id = request.emergency_asset_id
     if request.emergency_excluded is not None:
         config.emergency_excluded = request.emergency_excluded
+    if request.telegram_enabled is not None:
+        config.telegram_enabled = request.telegram_enabled
 
     await session.commit()
     return _to_out(config)

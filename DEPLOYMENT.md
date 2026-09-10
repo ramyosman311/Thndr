@@ -15,7 +15,7 @@ this project builds toward.
 | Backend | Docker (docker-compose), FastAPI + Uvicorn | Container on Render/Railway (or equivalent) |
 | Database | Dockerized PostgreSQL | Supabase-hosted PostgreSQL |
 | Frontend | `next dev` | Deployed as a Next.js app (e.g. Vercel) or containerized alongside the backend |
-| Workers (alerts, Telegram, price refresh) | Runs alongside backend in dev | Scheduled/long-running process in production |
+| Workers (`price_refresh`, `alert_notify`) | Run manually/on-demand in dev | Scheduled process in production (no in-repo scheduler — external cron/platform feature required) |
 
 **Price refresh worker (Phase 11):** `python -m app.workers.price_refresh`
 is a standalone, idempotent, out-of-band process — invoke it on a
@@ -25,6 +25,21 @@ automated-fetching-enabled assets need refreshing. It is never started
 by, or run inside, the FastAPI/Uvicorn process — see ARCHITECTURE.md,
 "Price Infrastructure", and FINANCIAL_RULES.md, "Non-Blocking
 Valuation" for why that separation is structural, not incidental.
+
+**Alert notify worker (Phase 14):** `python -m app.workers.alert_notify`
+follows the identical execution model — a standalone, out-of-band
+process invoked on a schedule by the same external mechanism as
+price refresh. It evaluates every configured alert rule (same logic as
+the on-demand `POST /api/alerts/evaluate` route) and, for any rule/
+portfolio that has opted in, delivers new triggers to Telegram. **This
+project has no in-repo scheduling infrastructure** (no APScheduler, no
+Celery beat, no cron) for either worker — the operator must configure
+an external trigger; this is a disclosed, minimum-mechanism limitation,
+not an oversight. See FINANCIAL_RULES.md, "Telegram Delivery (Phase 14)"
+and DECISIONS.md, "Telegram Delivery Decision" for the full design,
+including the strict AND-gate (`TELEGRAM_ENABLED` + credentials +
+`portfolio_configs.telegram_enabled` + `alert_rules.telegram_enabled`)
+that must all be true before any message is actually sent.
 
 ## Docker (Phase 2+)
 
@@ -110,6 +125,7 @@ automated deployment here.
 - [ ] `DEV_MODE=false`, real authentication boundary decided or explicitly
       accepted as an interim network-level protection
 - [ ] CORS restricted to production frontend origin
-- [ ] Telegram credentials configured server-side only
+- [ ] Telegram credentials (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) configured server-side only, `TELEGRAM_ENABLED=true`
+- [ ] `python -m app.workers.alert_notify` scheduled externally (cron/platform scheduled job) if Telegram delivery is wanted
 - [ ] Health check wired into hosting platform monitoring
 - [ ] Frontend served over HTTPS with correct PWA caching headers

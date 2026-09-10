@@ -23,6 +23,7 @@ export function AlertRuleForm({ watchlistId, existing, onSaved }: Props) {
   const [dipEnabled, setDipEnabled] = useState(existing?.dip_buy_enabled ?? false);
   const [dipPrice, setDipPrice] = useState(existing?.dip_buy_price ?? "");
   const [enabled, setEnabled] = useState(existing?.enabled ?? true);
+  const [telegramEnabled, setTelegramEnabled] = useState(existing?.telegram_enabled ?? false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
 
@@ -51,6 +52,7 @@ export function AlertRuleForm({ watchlistId, existing, onSaved }: Props) {
       price_target: priceEnabled ? priceTarget : null,
       dip_buy_enabled: dipEnabled,
       dip_buy_price: dipEnabled ? dipPrice : null,
+      telegram_enabled: telegramEnabled,
     };
 
     setSaving(true);
@@ -106,6 +108,20 @@ export function AlertRuleForm({ watchlistId, existing, onSaved }: Props) {
           className="tabular-nums w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs outline-none focus:border-primary"
         />
       </CheckField>
+
+      <div className="flex flex-col gap-1">
+        <label className="flex items-center justify-between text-xs font-medium text-foreground">
+          إرسال تنبيه عبر تيليجرام
+          <input
+            type="checkbox"
+            checked={telegramEnabled}
+            onChange={(e) => setTelegramEnabled(e.target.checked)}
+          />
+        </label>
+        <p className="text-[11px] text-muted-foreground">
+          يتطلب أيضًا تفعيل تيليجرام من إعدادات المحفظة، وضبط بيانات الاعتماد من الخادم.
+        </p>
+      </div>
 
       {error ? <ErrorBlock error={error} /> : null}
 

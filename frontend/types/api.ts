@@ -118,6 +118,7 @@ export interface PortfolioConfigUpdateRequest {
   emergency_asset_id?: string;
   clear_emergency_asset?: boolean;
   emergency_excluded?: boolean;
+  telegram_enabled?: boolean;
 }
 
 // --- Strategy Validation (Phase 6) -------------------------------------

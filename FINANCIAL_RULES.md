@@ -261,11 +261,15 @@ never executes a trade.
   (`test_rebalance_suggestion_is_a_suggestion_only_no_trade_fields`,
   `test_evaluate_rebalance_suggestion_is_a_suggestion_never_a_trade`).
 - **Price Target and Dip Buy take `current_price` as an explicit input**
-  (in practice, `holdings.current_price` — the same field the Portfolio
-  Engine already uses). No live market-data provider is invented for
-  this: see "Market Data Integrity" above. A `None`/unknown price means
-  the check reports `condition_met: false, reason: "current price
-  unknown"` — never a fabricated value.
+  (in practice, sourced from the Phase 11 Price Service —
+  `services/price_service.get_prices_for_assets`, the same DB-only,
+  non-blocking read every other valuation path uses — not the legacy,
+  no-longer-written `holdings.current_price` column; this note was
+  corrected in Phase 14 to match the Phase 11 rewiring, which had made
+  it stale). No live market-data provider is invented for this: see
+  "Market Data Integrity" above. A `None`/unknown price means the check
+  reports `condition_met: false, reason: "current price unknown"` —
+  never a fabricated value.
 - **Recurring Income Maturity is prepared but not wired to persistence.**
   `check_income_maturity` is a pure, fully tested standalone function
   (maturity date vs. a lookahead window), but no `alert_rules` column
@@ -300,10 +304,60 @@ never executes a trade.
 - **Notification delivery is a separate concern.** The alert engine's
   job ends at "this condition is newly triggered"; a
   `NotificationDispatcher` abstraction (`backend/app/services/
-  notification_dispatcher.py`) is called only for new triggers, and no
-  real delivery mechanism (Telegram or otherwise) exists yet — a
-  `NullNotificationDispatcher` is the default. Domain code never imports
-  or calls a dispatcher directly.
+  notification_dispatcher.py`, Phase 8) is called only for new triggers.
+  Domain code (`domain/alert_engine.py`) never imports or calls a
+  dispatcher directly — evaluation semantics are completely unchanged by
+  Phase 14. A real delivery mechanism now exists
+  (`TelegramNotificationDispatcher`, Phase 14, see "Telegram Delivery"
+  below), but `NullNotificationDispatcher` remains the default whenever
+  the caller passes no notifier — which the user-facing
+  `POST /api/alerts/evaluate` route always does, so an on-demand
+  evaluation request never depends on a live Telegram call.
+
+### Telegram Delivery (Phase 14)
+
+Real delivery exists but is deliberately never reachable from the
+on-demand API route — see ARCHITECTURE.md, "Workers" and DECISIONS.md,
+"Telegram Delivery Decision" for the full design. Summary:
+
+- **Out-of-band only.** The only code path that ever constructs a
+  live-HTTP-capable `TelegramNotificationDispatcher` is
+  `app/workers/alert_notify.py`, a standalone script meant to be invoked
+  periodically by an external scheduler (cron, a platform's
+  scheduled-job feature) — never started by, or run inside, the
+  FastAPI/Uvicorn process, exactly mirroring `app/workers/
+  price_refresh.py`'s (Phase 11) existing execution model. This project
+  has no in-repo scheduling infrastructure (no APScheduler, no Celery
+  beat); none was added — the worker script is the minimum mechanism,
+  identical in shape to the already-accepted price-refresh precedent.
+- **Strict three-condition AND-gate**, checked in
+  `alert_service.evaluate_alerts` regardless of which concrete notifier
+  was supplied: (1) `TELEGRAM_ENABLED` plus both `TELEGRAM_BOT_TOKEN`/
+  `TELEGRAM_CHAT_ID` actually set (deployment-level), (2)
+  `portfolio_configs.telegram_enabled` (portfolio master switch), (3)
+  `alert_rules.telegram_enabled` (per-rule opt-in). Any one false or
+  missing means no delivery — a rule cannot receive Telegram messages
+  merely because the portfolio switch is on, and vice versa.
+- **A dispatch failure can never break evaluation.**
+  `TelegramNotificationDispatcher.dispatch()` catches every failure mode
+  (timeout, network error, non-200 HTTP, malformed JSON, a Telegram
+  `{"ok": false}` response) internally and never raises; the call site
+  in `evaluate_alerts` wraps it in a second try/except regardless, so
+  even a future/alternate dispatcher implementation that didn't follow
+  this contract still cannot break the alert-evaluation response.
+- **The bot token is never logged, never in an exception message, never
+  returned to any caller.** It is embedded only in the outbound request
+  URL (Telegram's own API design); every log line references only the
+  watchlist id, an HTTP status code, or Telegram's own non-secret
+  `description` field.
+- **Message content uses only fields that exist.** No "Change"/"Change
+  %" line is included — no such field exists anywhere in
+  `AlertCheckResult` or the Price Service, and none was invented for
+  this feature (see `domain/notification_formatting.py`'s own
+  docstring). The message uses `alert_type` (as a display label) and
+  `reason` (already a complete, human-readable sentence produced by the
+  pure domain check functions above), plus the asset symbol and the
+  notification's own send timestamp.
 
 ## Transaction Accounting (Phase 10)
 
@@ -730,6 +784,7 @@ exact configuration and reasoning.
 - **Manual Override ≠ silently overwritable** (Phase 11 — an automated fetch only supersedes a manual price with a strictly newer timestamp, or never, if locked)
 - **Asset ≠ Holding ≠ Transaction ≠ Price Observation** (Phase 12 — an asset is an instrument; a holding and a transaction are portfolio-scoped facts about it; a price observation is neither — administration never collapses these into one editable record)
 - **Configuration Change ≠ Historical Rewrite** (Phase 12 — an admin write changes future behavior only; it never alters a transaction's price/quantity/timestamp, a holding's quantity/average cost, a past price observation, or a snapshot value)
+- **Evaluation ≠ Delivery** (Phase 14 — the alert engine decides a condition is newly true; a separate, isolated `NotificationDispatcher` decides whether/how to tell someone. A delivery failure never breaks evaluation, and evaluation never blocks on a live delivery call)
 
 These distinctions must be preserved end-to-end: in the database schema
 (DATABASE.md), the domain logic (this document), the API contract

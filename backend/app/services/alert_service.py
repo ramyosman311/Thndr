@@ -12,11 +12,13 @@ Reuse, not duplication: allocation-related checks are driven entirely by
 never recomputes an allocation percentage itself.
 """
 
+import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.domain.alert_engine import (
     AlertCheckResult,
     check_allocation_breach,
@@ -25,6 +27,7 @@ from app.domain.alert_engine import (
     check_rebalance_suggestion,
 )
 from app.models import AlertRule
+from app.repositories.portfolio_repository import get_portfolio_config
 from app.repositories.watchlist_repository import (
     get_alert_rule_by_id,
     get_alert_rule_by_watchlist_id,
@@ -36,6 +39,8 @@ from app.services.notification_dispatcher import NotificationDispatcher, NullNot
 from app.services.portfolio_service import PortfolioNotConfiguredError, get_portfolio_allocation
 from app.services.watchlist_service import WatchlistEntryNotFoundError, list_evaluation_candidates
 from app.services.watchlist_shared import to_alert_rule_out
+
+logger = logging.getLogger(__name__)
 
 
 class AlertRuleNotFoundError(Exception):
@@ -157,13 +162,41 @@ async def evaluate_alerts(
     """Evaluate every enabled alert rule on every enabled watchlist entry
     whose asset is active. Returns one entry per check performed (not
     just new triggers) so the caller gets a full diagnostic response;
-    `is_new_trigger` marks which ones are new events for a future
-    notifier to deliver.
+    `is_new_trigger` marks which ones are new events for a notifier to
+    deliver.
 
     Writes only to `alert_rules.last_triggered_at` — never to holdings,
     transactions, snapshots, allocation_targets, or portfolio_configs.
+
+    Notification delivery is gated by strict AND semantics (Phase 14
+    approval): a new trigger is only ever handed to `notifier.dispatch()`
+    when ALL of (1) Telegram is globally configured/enabled
+    (`TELEGRAM_ENABLED` + both credentials set), (2) this portfolio's
+    `telegram_enabled` master switch is on, and (3) this specific rule's
+    own `telegram_enabled` opt-in is on. Any one of these being
+    false/missing means no delivery — evaluated here regardless of which
+    concrete `notifier` was supplied, so a caller passing a real
+    `TelegramNotificationDispatcher` still cannot bypass the gate. The
+    default `notifier` (when the caller passes none, as the on-demand
+    `POST /api/alerts/evaluate` route always does) remains
+    `NullNotificationDispatcher` — this function never constructs a
+    live-HTTP-capable dispatcher itself; only
+    `app/workers/alert_notify.py` does that, out-of-band from any
+    user-facing request (see ARCHITECTURE.md, "Workers").
+
+    A `notifier.dispatch()` failure is isolated here as a second layer of
+    defense (the real Telegram dispatcher already never raises) so that
+    even a future/alternate `NotificationDispatcher` implementation can
+    never break evaluation.
     """
     notifier = notifier or NullNotificationDispatcher()
+
+    settings = get_settings()
+    telegram_globally_configured = bool(
+        settings.telegram_enabled and settings.telegram_bot_token and settings.telegram_chat_id
+    )
+    portfolio_config = await get_portfolio_config(session)
+    portfolio_telegram_enabled = bool(portfolio_config and portfolio_config.telegram_enabled)
 
     try:
         allocation = await get_portfolio_allocation(session)
@@ -252,7 +285,19 @@ async def evaluate_alerts(
                 )
             )
             if check.is_new_trigger:
-                await notifier.dispatch(check, asset_symbol=asset.symbol, watchlist_id=str(watchlist_entry.id))
+                should_notify = (
+                    telegram_globally_configured and portfolio_telegram_enabled and rule.telegram_enabled
+                )
+                if should_notify:
+                    try:
+                        await notifier.dispatch(
+                            check, asset_symbol=asset.symbol, watchlist_id=str(watchlist_entry.id)
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Notification dispatch failed for watchlist %s; evaluation continues.",
+                            watchlist_entry.id,
+                        )
 
     await session.commit()
     return AlertEvaluationOut(results=results)

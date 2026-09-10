@@ -506,6 +506,18 @@ for why neither EGID nor EGXAPI was implemented, why Mubasher was, and
 why `BWA`/`AZN` deliberately receive no provider configuration at all
 (they are `asset_type=FUND`, not EGX-listed equities).
 
+## Phase 14: Telegram Notifications — No Migration Required
+
+Both columns Phase 14 needed already existed since **Phase 3**:
+`portfolio_configs.telegram_enabled` and `alert_rules.telegram_enabled`
+were part of the original core schema, simply never read by any code
+path until now. `alembic current` remains `7dbad9d06fb1`, unchanged.
+`portfolio_configs.telegram_enabled` also gained its first admin write
+path (`PATCH /api/portfolio/config`, Phase 12's existing mechanism) —
+previously stored and displayed but not updatable. See
+[DECISIONS.md](./DECISIONS.md), "Telegram Delivery Decision" for the
+full design.
+
 ## Known Warning: Circular-Dependency Sort
 
 Running `alembic check` or `alembic revision --autogenerate` prints:

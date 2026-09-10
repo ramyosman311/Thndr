@@ -91,6 +91,33 @@ describe("PortfolioSettings", () => {
     await waitFor(() => expect(mocks.updatePortfolioConfig).toHaveBeenCalled());
   });
 
+  it("toggles the portfolio-level telegram_enabled master switch", async () => {
+    mocks.getPortfolioConfig.mockResolvedValue({
+      id: "p1", name: "My Portfolio", base_currency: "EGP", emergency_asset_id: null,
+      emergency_excluded: false, telegram_enabled: false,
+    });
+    mocks.listAssets.mockResolvedValue([]);
+    mocks.updatePortfolioConfig.mockResolvedValue({
+      id: "p1", name: "My Portfolio", base_currency: "EGP", emergency_asset_id: null,
+      emergency_excluded: false, telegram_enabled: true,
+    });
+
+    const user = userEvent.setup();
+    render(<PortfolioSettings />);
+    await waitFor(() => expect(screen.getByDisplayValue("My Portfolio")).toBeInTheDocument());
+
+    const telegramCheckbox = screen.getByLabelText(/تفعيل إشعارات تيليجرام/);
+    expect(telegramCheckbox).not.toBeChecked();
+    await user.click(telegramCheckbox);
+    await user.click(screen.getByRole("button", { name: "حفظ الإعدادات" }));
+
+    await waitFor(() =>
+      expect(mocks.updatePortfolioConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ telegram_enabled: true })
+      )
+    );
+  });
+
   it("surfaces the backend's rejection when base_currency change is blocked by existing transactions", async () => {
     mocks.getPortfolioConfig.mockResolvedValue({
       id: "p1", name: "My Portfolio", base_currency: "EGP", emergency_asset_id: null,

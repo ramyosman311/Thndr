@@ -154,6 +154,7 @@ class PortfolioConfigUpdateRequest(BaseModel):
     emergency_asset_id: UUID | None = None
     clear_emergency_asset: bool = False
     emergency_excluded: bool | None = None
+    telegram_enabled: bool | None = None
 
     @field_validator("name")
     @classmethod

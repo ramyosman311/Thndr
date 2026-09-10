@@ -40,6 +40,10 @@ class Settings(BaseSettings):
 
     secret_key: str = Field(default="change-me-in-production", alias="SECRET_KEY")
 
+    telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
+    telegram_enabled: bool = Field(default=False, alias="TELEGRAM_ENABLED")
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.backend_cors_origins.split(",") if origin.strip()]

@@ -6,8 +6,9 @@ This document describes the architecture of THNDR Smart Portfolio. The
 backend (FastAPI, domain/service/repository layering) is implemented
 through Phase 11; the frontend (Next.js) is implemented as of Phase 9,
 extended for price states in Phase 11 — see "Frontend Layering" below
-for what exists today. This document remains the contract later phases
-(Telegram, PWA, Capacitor, deployment) build against.
+for what exists today. Real Telegram delivery was added in Phase 14 (see
+"Workers" below). This document remains the contract later phases (PWA,
+Capacitor, deployment) build against.
 
 ## High-Level Overview
 
@@ -19,11 +20,19 @@ for what exists today. This document remains the contract later phases
 └─────────────────────┘  JSON  └──────────────────────────┘        └────────────────────┘
                                           │
                                           ▼
-                                ┌──────────────────────┐
-                                │  Workers / Watchdog   │
-                                │  (alerts, Telegram)   │
+                                ┌──────────────────────┐        ┌─────────────────┐
+                                │  Workers (external-   │  HTTP  │  Telegram Bot   │
+                                │  scheduler invoked):   │──────▶ │  API            │
+                                │  price_refresh,        │        └─────────────────┘
+                                │  alert_notify          │
                                 └──────────────────────┘
 ```
+
+Both workers share the same execution model: a standalone
+`python -m app.workers.<name>` script, invoked periodically by an
+external scheduler (cron, a platform's scheduled-job feature) — never
+started by, or run inside, the FastAPI/Uvicorn process. Neither worker
+exists as an in-repo scheduling loop; see DEPLOYMENT.md, "Workers".
 
 ## Backend Layering
 
@@ -104,15 +113,20 @@ The backend follows strict separation of concerns, from outer to inner layers:
    `services/price_service.record_manual_price`. See "Price
    Infrastructure" below.
 8. **`workers/`** — Background/scheduled jobs, run out-of-band from the
-   FastAPI process (see DEPLOYMENT.md, "Workers"). Alert evaluation
-   still runs synchronously via `POST /api/alerts/evaluate`
-   (Telegram delivery remains a future phase); Phase 11 adds
+   FastAPI process (see DEPLOYMENT.md, "Workers"). Phase 11 adds
    `price_refresh.py` — `python -m app.workers.price_refresh` — the only
    entrypoint allowed to call `services/price_orchestrator.py`, which is
-   in turn the only code allowed to call a live `PriceProvider`. This
-   keeps the non-blocking valuation guarantee (see "Price
-   Infrastructure" below) structural rather than a convention someone
-   could accidentally violate from inside a request handler.
+   in turn the only code allowed to call a live `PriceProvider`. Phase 14
+   adds `alert_notify.py` — `python -m app.workers.alert_notify` — the
+   only entrypoint that ever constructs a live-HTTP-capable
+   `TelegramNotificationDispatcher`; the user-facing
+   `POST /api/alerts/evaluate` route (Phase 8) still runs synchronously
+   but always gets the safe `NullNotificationDispatcher` default, so an
+   on-demand "check now" request from the Watchlist screen never depends
+   on a live Telegram call. Both workers keep the non-blocking guarantee
+   (see "Price Infrastructure" below) structural rather than a
+   convention someone could accidentally violate from inside a request
+   handler.
 9. **`core/`** — Cross-cutting concerns: configuration (`config.py`),
    database engine/session setup (`database.py`), and security utilities
    (`security.py`).

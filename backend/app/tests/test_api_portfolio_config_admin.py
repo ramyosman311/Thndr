@@ -71,6 +71,22 @@ async def test_update_config_name(db_session, client):
     assert response.json()["name"] == "New Name"
 
 
+async def test_update_config_telegram_enabled(db_session, client):
+    """Phase 14: telegram_enabled is the portfolio-level master switch
+    gating Telegram delivery -- must be updatable through the same admin
+    mechanism as every other field, not stuck at its Phase 3 default."""
+    db_session.add(make_portfolio_config())
+    await db_session.commit()
+
+    response = await client.patch("/api/portfolio/config", json={"telegram_enabled": True})
+    assert response.status_code == 200
+    assert response.json()["telegram_enabled"] is True
+
+    response = await client.patch("/api/portfolio/config", json={"telegram_enabled": False})
+    assert response.status_code == 200
+    assert response.json()["telegram_enabled"] is False
+
+
 async def test_update_config_base_currency_allowed_with_no_transactions(db_session, client):
     db_session.add(make_portfolio_config(base_currency="EGP"))
     await db_session.commit()

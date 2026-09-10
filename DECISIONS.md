@@ -450,3 +450,148 @@ against the database before and after this change — no price-config row
 exists for any of the three, consistent with them being FUND/GOLD-type
 assets rather than EGX-listed equities (see the EGX Provider Integration
 section above).
+
+## Telegram Delivery Decision (Phase 14)
+
+Phase 14's own approval carried explicit, non-negotiable architectural
+decisions rather than leaving them to be inferred; this section records
+what was implemented and why, and the two places a deviation from the
+literal instructions was necessary and disclosed.
+
+### Alert lifecycle trace (performed before writing any code)
+
+- **Who triggers evaluation today?** Only a human, via the Watchlist
+  screen's "Evaluate" button (`components/watchlist/evaluate-panel.tsx`)
+  → `POST /api/alerts/evaluate` → `alert_service.evaluate_alerts()`.
+  Confirmed by grepping every caller of `evaluate_alerts` in the
+  codebase: the only production call site is that one route.
+- **Who creates/queues notification work?** Nobody, before Phase 14 —
+  `evaluate_alerts()` calls `notifier.dispatch()` synchronously inline
+  for each `is_new_trigger`, using whatever `notifier` was passed
+  (default: `NullNotificationDispatcher`, a no-op).
+- **Who delivered Telegram before Phase 14?** Nobody — no such
+  dispatcher existed.
+- **Scheduler mechanism:** none exists in this repository. Confirmed:
+  no APScheduler, Celery beat, or cron dependency anywhere in
+  `requirements.txt`; `app/workers/price_refresh.py` (Phase 11) is
+  itself only a standalone script meant for an *external* scheduler to
+  invoke — the same disclosed limitation applies here. No scheduling
+  infrastructure was invented for Phase 14; `app/workers/alert_notify.py`
+  follows the identical shape.
+
+### Delivery model implemented
+
+The on-demand `POST /api/alerts/evaluate` route was left completely
+unchanged — it still calls `evaluate_alerts(session)` with no notifier
+argument, which still defaults to `NullNotificationDispatcher`. This is
+what guarantees the route can never depend on a live Telegram call,
+without needing any special-casing in the route itself.
+
+A new worker, `app/workers/alert_notify.py`, mirrors
+`price_refresh.py`'s exact shape (`python -m app.workers.alert_notify`,
+standalone, meant for external-scheduler invocation, never started by
+the API process). It is the *only* code path that ever constructs a
+live-HTTP-capable `TelegramNotificationDispatcher` (via its
+`_build_notifier()`, which returns `NullNotificationDispatcher` unless
+`TELEGRAM_ENABLED` and both credentials are set) and passes it into the
+same `evaluate_alerts()` function the on-demand route also calls —
+evaluation logic itself is identical either way; only which notifier
+object is supplied differs.
+
+### Enablement semantics implemented exactly as specified
+
+Strict AND across three conditions, evaluated in
+`alert_service.evaluate_alerts` itself (not delegated to the notifier),
+so the gate applies regardless of which concrete `notifier` object was
+passed in:
+
+1. `TELEGRAM_ENABLED=true` AND both `TELEGRAM_BOT_TOKEN`/
+   `TELEGRAM_CHAT_ID` non-empty (read via `core/config.Settings`).
+2. `portfolio_configs.telegram_enabled == true` (fetched once per
+   evaluation run via the existing `portfolio_repository.
+   get_portfolio_config`).
+3. `alert_rules.telegram_enabled == true` (per rule, already a model
+   column since Phase 3).
+
+Any one false/missing → `notifier.dispatch()` is never called for that
+trigger. This was previously untested and unenforced: the pre-Phase-14
+code ignored both DB flags entirely and dispatched unconditionally on
+every new trigger. The one pre-existing test asserting that behavior
+(`test_evaluate_dispatches_notification_only_for_new_triggers`) was
+updated (not deleted) to explicitly enable all three conditions, plus
+four new tests were added proving each condition independently blocks
+delivery when false.
+
+### Message format: one disclosed, necessary deviation from the literal template
+
+The approved template specified a `Change: {change} ({change_percentage}%)`
+line. No such data exists anywhere in this pipeline —
+`AlertCheckResult` (the only object passed to a dispatcher) carries only
+`alert_type`, `condition_met`, `is_new_trigger`, `should_clear`,
+`reason`, and unitless `current_value`/`threshold_value` Decimals (a
+percent for `ALLOCATION_BREACH`/`REBALANCE_SUGGESTED`, a native-currency
+price for `PRICE_TARGET`/`DIP_BUY`, `None`/`None` for
+`REBALANCE_SUGGESTED`). No prior/previous-close price is computed or
+stored anywhere in the Price Service or alert engine. Per the phase's
+own overriding instruction ("Only include fields actually available...
+Do not invent market data... Do not introduce a new financial
+calculation layer just for notifications"), the Change line was
+**omitted** rather than fabricated. The final format instead uses
+`reason` — already a complete, human-readable sentence the pure domain
+check functions produce (e.g. "price 58.50 >= target 55.00") — as the
+"human-readable alert condition" the template asked for, alongside the
+asset symbol, an `alert_type` display label, and the notification's own
+send timestamp. See `domain/notification_formatting.py`'s own docstring
+for the same rationale, kept next to the code it documents.
+
+### Provider naming and module placement (consistency, not new patterns)
+
+`TelegramNotificationDispatcher` lives in `services/telegram_dispatcher.py`,
+not `providers/` — the `providers/` package is an established, narrower
+convention specifically for `PriceProvider` implementations (a data
+*source*); Telegram is a data *sink*, and `notification_dispatcher.py`
+(the Protocol it implements) already lives in `services/`. Placing the
+implementation elsewhere would have split one concern across two
+directories for no reason.
+
+### Security
+
+The bot token is embedded in the Telegram Bot API's own URL scheme
+(`https://api.telegram.org/bot{TOKEN}/sendMessage`) — this is Telegram's
+design, not a choice made here. `TelegramNotificationDispatcher.dispatch()`
+never raises (every HTTP/timeout/malformed-response/API-error failure is
+caught and logged internally), and every log line references only the
+watchlist id, an HTTP status code, or Telegram's own non-secret
+`description` field — never the request URL or the token. Verified
+directly: `test_bot_token_never_appears_in_logs_on_any_failure_path`/
+`..._on_http_error` assert the literal token string is absent from every
+captured log record across both failure paths.
+
+### Licensing / cost
+
+Telegram's Bot API is free to use for a bot you create; no payment or
+subscription is involved in sending messages via `sendMessage`. This is
+a different situation from the paid/unverified-licensing candidates in
+the EGX Provider Integration section above and is not marked
+`LICENSING_NOT_VERIFIED`.
+
+### Live network status
+
+`api.telegram.org` was directly tested from this environment (`curl`
+against `getMe`) and confirmed **BLOCKED_BY_SANDBOX_EGRESS**: DNS
+resolves correctly, but the CONNECT tunnel is rejected with `403
+connect_rejected` — the identical default-deny policy that independently
+blocked `query1.finance.yahoo.com`, `ticker.egidegypt.com`,
+`egxapi.com`, and `www.mubasher.info` (see the EGX Provider Integration
+and Mubasher Provider Decision sections above). A control request to an
+arbitrary unrelated host (`example.com`) was rejected identically in the
+same test, confirming this is a general egress policy, not anything
+specific to Telegram. No live Telegram call was attempted or claimed;
+`TelegramNotificationDispatcher` is verified exclusively via mocked HTTP
+transport (`test_telegram_dispatcher.py`, 13 tests) against Telegram's
+real, publicly documented `sendMessage` request/response shape. The
+`app.workers.alert_notify` worker was, however, run end-to-end against
+the real dev database (Telegram unconfigured, so `_build_notifier()`
+correctly resolved to `NullNotificationDispatcher` — zero HTTP attempts,
+zero financial data changed), proving the non-Telegram parts of the
+pipeline work for real.

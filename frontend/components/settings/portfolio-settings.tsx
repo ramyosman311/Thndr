@@ -106,6 +106,7 @@ function PortfolioConfigForm({
   const [baseCurrency, setBaseCurrency] = useState(config.base_currency);
   const [emergencyAssetId, setEmergencyAssetId] = useState(config.emergency_asset_id ?? "");
   const [emergencyExcluded, setEmergencyExcluded] = useState(config.emergency_excluded);
+  const [telegramEnabled, setTelegramEnabled] = useState(config.telegram_enabled);
   const [confirmingCurrencyChange, setConfirmingCurrencyChange] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
@@ -123,6 +124,7 @@ function PortfolioConfigForm({
         base_currency: baseCurrency.trim().toUpperCase(),
         ...(emergencyAssetId ? { emergency_asset_id: emergencyAssetId } : { clear_emergency_asset: true }),
         emergency_excluded: emergencyExcluded,
+        telegram_enabled: telegramEnabled,
       });
       setSavedMessage(true);
       onSaved();
@@ -199,6 +201,22 @@ function PortfolioConfigForm({
             />
             استبعاد النقد الاحتياطي من حسابات التوزيع
           </label>
+
+          <div className="flex flex-col gap-1">
+            <label className="flex items-center gap-2 text-sm text-foreground">
+              <input
+                type="checkbox"
+                checked={telegramEnabled}
+                onChange={(e) => setTelegramEnabled(e.target.checked)}
+                className="h-4 w-4 rounded border-border"
+              />
+              تفعيل إشعارات تيليجرام (المفتاح الرئيسي للمحفظة)
+            </label>
+            <p className="text-[11px] text-muted-foreground">
+              كل قاعدة تنبيه يجب أن تُفعّل تيليجرام أيضًا بشكل مستقل، ويجب ضبط بيانات اعتماد البوت من إعدادات
+              الخادم.
+            </p>
+          </div>
 
           {error ? <ErrorBlock error={error} /> : null}
           {savedMessage && !error ? <p className="text-xs text-success">تم الحفظ بنجاح.</p> : null}

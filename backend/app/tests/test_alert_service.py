@@ -472,9 +472,32 @@ async def test_evaluate_alerts_only_writes_last_triggered_at_not_other_alert_rul
     assert refreshed.enabled is True
 
 
-async def test_evaluate_dispatches_notification_only_for_new_triggers(db_session):
-    _, _, asset = await _setup_watched_bucket(db_session, current_price=Decimal("150"))
-    entry, rule = await _watch_with_rule(db_session, asset, price_target_enabled=True, price_target=Decimal("150"))
+def _enable_telegram_globally(monkeypatch, *, enabled=True, bot_token="test-token", chat_id="test-chat"):
+    """Phase 14: the third AND-gate condition (TELEGRAM_ENABLED + both
+    credentials) lives in Settings, not the database -- monkeypatched
+    exactly like test_price_orchestrator.py monkeypatches get_provider,
+    so no real environment variable or real HTTP call is involved."""
+    from app.core.config import Settings
+
+    fake_settings = Settings(
+        TELEGRAM_ENABLED=enabled,
+        TELEGRAM_BOT_TOKEN=bot_token if enabled else "",
+        TELEGRAM_CHAT_ID=chat_id if enabled else "",
+    )
+    monkeypatch.setattr(alert_service, "get_settings", lambda: fake_settings)
+
+
+async def test_evaluate_dispatches_notification_only_for_new_triggers_when_fully_enabled(db_session, monkeypatch):
+    """All three Phase 14 AND-gate conditions must be true for dispatch:
+    portfolio-level telegram_enabled, rule-level telegram_enabled, and
+    Telegram being globally configured/enabled."""
+    _enable_telegram_globally(monkeypatch)
+    config, _, asset = await _setup_watched_bucket(db_session, current_price=Decimal("150"))
+    config.telegram_enabled = True
+    await db_session.commit()
+    entry, rule = await _watch_with_rule(
+        db_session, asset, price_target_enabled=True, price_target=Decimal("150"), telegram_enabled=True
+    )
 
     notifier = RecordingNotifier()
     await alert_service.evaluate_alerts(db_session, notifier=notifier)
@@ -483,6 +506,135 @@ async def test_evaluate_dispatches_notification_only_for_new_triggers(db_session
     notifier2 = RecordingNotifier()
     await alert_service.evaluate_alerts(db_session, notifier=notifier2)
     assert len(notifier2.dispatched) == 0
+
+
+async def test_evaluate_never_dispatches_when_rule_telegram_disabled(db_session, monkeypatch):
+    _enable_telegram_globally(monkeypatch)
+    config, _, asset = await _setup_watched_bucket(db_session, current_price=Decimal("150"))
+    config.telegram_enabled = True
+    await db_session.commit()
+    # telegram_enabled defaults to False on the rule -- not opted in.
+    entry, rule = await _watch_with_rule(db_session, asset, price_target_enabled=True, price_target=Decimal("150"))
+
+    notifier = RecordingNotifier()
+    await alert_service.evaluate_alerts(db_session, notifier=notifier)
+    assert len(notifier.dispatched) == 0
+
+
+async def test_evaluate_never_dispatches_when_portfolio_telegram_disabled(db_session, monkeypatch):
+    _enable_telegram_globally(monkeypatch)
+    # _setup_watched_bucket's PortfolioConfig defaults telegram_enabled to False.
+    _, _, asset = await _setup_watched_bucket(db_session, current_price=Decimal("150"))
+    entry, rule = await _watch_with_rule(
+        db_session, asset, price_target_enabled=True, price_target=Decimal("150"), telegram_enabled=True
+    )
+
+    notifier = RecordingNotifier()
+    await alert_service.evaluate_alerts(db_session, notifier=notifier)
+    assert len(notifier.dispatched) == 0
+
+
+async def test_evaluate_never_dispatches_when_telegram_globally_disabled(db_session, monkeypatch):
+    _enable_telegram_globally(monkeypatch, enabled=False)
+    config, _, asset = await _setup_watched_bucket(db_session, current_price=Decimal("150"))
+    config.telegram_enabled = True
+    await db_session.commit()
+    entry, rule = await _watch_with_rule(
+        db_session, asset, price_target_enabled=True, price_target=Decimal("150"), telegram_enabled=True
+    )
+
+    notifier = RecordingNotifier()
+    await alert_service.evaluate_alerts(db_session, notifier=notifier)
+    assert len(notifier.dispatched) == 0
+
+
+async def test_evaluate_never_dispatches_when_telegram_enabled_but_credentials_missing(db_session, monkeypatch):
+    """TELEGRAM_ENABLED=true alone is not "configured" -- both credentials
+    must also be present."""
+    from app.core.config import Settings
+
+    monkeypatch.setattr(
+        alert_service,
+        "get_settings",
+        lambda: Settings(TELEGRAM_ENABLED=True, TELEGRAM_BOT_TOKEN="", TELEGRAM_CHAT_ID=""),
+    )
+    config, _, asset = await _setup_watched_bucket(db_session, current_price=Decimal("150"))
+    config.telegram_enabled = True
+    await db_session.commit()
+    entry, rule = await _watch_with_rule(
+        db_session, asset, price_target_enabled=True, price_target=Decimal("150"), telegram_enabled=True
+    )
+
+    notifier = RecordingNotifier()
+    await alert_service.evaluate_alerts(db_session, notifier=notifier)
+    assert len(notifier.dispatched) == 0
+
+
+async def test_evaluate_isolates_a_dispatch_failure_and_still_returns_results(db_session, monkeypatch):
+    """A notifier that raises must never break evaluation -- the response
+    is still returned and last_triggered_at is still persisted."""
+
+    class ExplodingNotifier:
+        async def dispatch(self, event, *, asset_symbol, watchlist_id):
+            raise RuntimeError("simulated Telegram outage")
+
+    _enable_telegram_globally(monkeypatch)
+    config, _, asset = await _setup_watched_bucket(db_session, current_price=Decimal("150"))
+    config.telegram_enabled = True
+    await db_session.commit()
+    entry, rule = await _watch_with_rule(
+        db_session, asset, price_target_enabled=True, price_target=Decimal("150"), telegram_enabled=True
+    )
+
+    evaluation = await alert_service.evaluate_alerts(db_session, notifier=ExplodingNotifier())
+    assert len(evaluation.results) == 1
+    assert evaluation.results[0].is_new_trigger is True
+
+    refreshed = await alert_service.get_alert_rule(db_session, rule.id)
+    assert refreshed.last_triggered_at is not None
+
+
+async def test_real_telegram_delivery_never_alters_financial_positions(db_session, monkeypatch):
+    """Financial-integrity proof for the actual delivery pathway (not
+    just the default NullNotificationDispatcher, already covered by
+    test_evaluate_alerts_has_no_side_effects_on_financial_positions): a
+    real TelegramNotificationDispatcher (HTTP mocked, no live network)
+    genuinely dispatching a message must still never touch holdings,
+    transactions, allocation_targets, or portfolio_configs."""
+    import httpx
+
+    from app.services.telegram_dispatcher import TelegramNotificationDispatcher
+
+    _enable_telegram_globally(monkeypatch)
+    config, _, asset = await _setup_watched_bucket(db_session, current_price=Decimal("150"))
+    config.telegram_enabled = True
+    await db_session.commit()
+    entry, rule = await _watch_with_rule(
+        db_session, asset, price_target_enabled=True, price_target=Decimal("150"), telegram_enabled=True
+    )
+
+    dispatcher = TelegramNotificationDispatcher(bot_token="test-token", chat_id="test-chat")
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"ok": True}))
+
+    async def dispatch(event, *, asset_symbol, watchlist_id, sent_at=None):
+        async with httpx.AsyncClient(transport=transport) as client:
+            await client.post("https://api.telegram.org/bottest-token/sendMessage", json={})
+
+    dispatcher.dispatch = dispatch  # type: ignore[method-assign]
+
+    async def counts():
+        result = {}
+        for model in (Asset, Holding, AllocationTarget, StrategyBucket, PortfolioConfig, Transaction, PortfolioSnapshot):
+            r = await db_session.execute(select(func.count()).select_from(model))
+            result[model.__name__] = r.scalar_one()
+        return result
+
+    before = await counts()
+    evaluation = await alert_service.evaluate_alerts(db_session, notifier=dispatcher)
+    after = await counts()
+
+    assert evaluation.results[0].is_new_trigger is True
+    assert before == after
 
 
 # --- Decimal-only ---------------------------------------------------------

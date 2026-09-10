@@ -624,7 +624,11 @@ an `emergency_asset_id` that doesn't reference a real asset (400). A
 `base_currency` change is rejected with 409 the moment **any** transaction
 exists anywhere in the system — see FINANCIAL_RULES.md, "Base Currency
 Change Policy" — while every other field (name, emergency asset,
-emergency exclusion) remains freely editable regardless.
+emergency exclusion, `telegram_enabled`) remains freely editable
+regardless. `telegram_enabled` (Phase 14) is the portfolio-level master
+switch gating Telegram delivery — see FINANCIAL_RULES.md, "Telegram
+Delivery (Phase 14)"; this field existed since Phase 3 but only gained
+an admin write path in Phase 14.
 
 ### Strategy Buckets and Allocation Targets
 
