@@ -696,16 +696,27 @@ network policy blocked live verification of either. No fabricated
 adapter was written for either. See DECISIONS.md, "Phase 13 — EGX Market
 Data Provider Integration" for the complete investigation.
 
-The existing Phase 11 Yahoo Finance provider (unchanged) is configured,
-via seed data, for the EGX-listed equities actually present in this
-project (`TMGH`, `ETEL`, `EFID`) — verified per-symbol against public web
-evidence rather than assumed from a shared ticker-suffix pattern (a naive
-`.CA`-suffix assumption for two other short symbols was checked and
-rejected: it resolved to unrelated foreign companies, not the Egyptian
-instruments of the same short code). `BWA` and `AZN` are mutual-fund NAV
-assets, not EGX-listed equities, and are deliberately never assigned any
-stock-exchange provider — see `app/seed/data.py`'s `SEED_ASSET_PRICE_CONFIGS`
-for the exact configuration and reasoning.
+A Mubasher Egypt adapter (`providers/mubasher_provider.py`) was added
+later and is now `primary_provider` for the EGX-listed equities actually
+present in this project (`TMGH`, `ETEL`, `EFID`), with the existing Phase
+11 Yahoo Finance provider retained as `secondary_provider` for each —
+the pre-existing primary→secondary→DB→`PRICE_UNAVAILABLE` fallback chain
+is unchanged, just now trying Mubasher before Yahoo. Mubasher's payload
+contract was verified via a live network test performed OUTSIDE this
+sandbox (this sandbox's own network blocks `www.mubasher.info`, same as
+Yahoo/EGID/EGXAPI); the adapter is therefore mock-tested against that
+externally-reported shape, not live-tested from within this environment
+— see DECISIONS.md, "Mubasher Provider Decision" for the full account,
+including why its currency field (absent from Mubasher's schema) is a
+disclosed fixed `"EGP"` rather than an inferred one, and why its
+licensing is marked `LICENSING_NOT_VERIFIED`. `BWA` and `AZN` are
+mutual-fund NAV assets, not EGX-listed equities, and are deliberately
+never assigned any stock-exchange provider (Mubasher, Yahoo, or
+otherwise) — a naive ticker-suffix assumption for both was checked and
+rejected during the original Yahoo investigation, since it resolved to
+unrelated foreign companies, not the Egyptian instruments of the same
+short code. See `app/seed/data.py`'s `SEED_ASSET_PRICE_CONFIGS` for the
+exact configuration and reasoning.
 
 ## Summary of Non-Negotiable Distinctions
 

@@ -1,23 +1,25 @@
 """Phase 13 -- EGX price configuration correctness and financial integrity.
 
-No new PriceProvider adapter exists for EGID or EGXAPI (see DECISIONS.md,
-"EGX Provider Decision (Phase 13)" for why both failed verification). The
-only Phase 13 code change is wiring the existing, already-tested Yahoo
-provider (Phase 11) onto the real EGX-equity assets via seed data, and
-correcting an asset-classification error in the task brief (BWA/AZN are
-FUND-type assets, not EGX equities, and must never receive a stock-market
-provider). This file locks in that correctness plus proves the seeding
-operation never touches pre-existing financial history -- the same
-byte-for-byte proof pattern as test_admin_financial_integrity.py (Phase 12),
-applied here to `seed_asset_price_configs` specifically.
+No PriceProvider adapter exists for EGID or EGXAPI (see DECISIONS.md,
+"EGX Provider Decision (Phase 13)" for why both failed verification). A
+Mubasher adapter was added later (see DECISIONS.md, "Mubasher Provider
+Decision") and is now `primary_provider` for TMGH/ETEL/EFID, with Yahoo
+(Phase 11) retained as `secondary_provider` -- the seed data wires this
+onto the real EGX-equity assets, and corrects an asset-classification
+error in the original Phase 13 task brief (BWA/AZN are FUND-type assets,
+not EGX equities, and must never receive a stock-market provider). This
+file locks in that correctness plus proves the seeding operation never
+touches pre-existing financial history -- the same byte-for-byte proof
+pattern as test_admin_financial_integrity.py (Phase 12), applied here to
+`seed_asset_price_configs` specifically.
 
 Provider-level behavior (HTTP error, timeout, malformed response, missing
 price, invalid timestamp) and orchestrator-level behavior (primary ->
 secondary fallback, manual precedence, batch isolation) are NOT
-re-tested here: no new provider joined the registry, so
-test_providers_yahoo.py and test_price_orchestrator.py (Phase 11) already
-cover that generic machinery completely, using fakes that are provider-
-name-agnostic. Duplicating them here would test nothing new.
+re-tested here: test_providers_yahoo.py, test_providers_mubasher.py, and
+test_price_orchestrator.py already cover that generic machinery
+completely, using fakes/mocks that are provider-name-agnostic.
+Duplicating them here would test nothing new.
 """
 
 from datetime import datetime, timezone
@@ -46,6 +48,7 @@ async def test_no_egid_or_egxapi_provider_is_registered():
     assert is_registered_provider_name("egid") is False
     assert is_registered_provider_name("egxapi") is False
     assert is_registered_provider_name("yahoo") is True
+    assert is_registered_provider_name("mubasher") is True
 
 
 # --- EGX symbol mapping is data-driven, never hardcoded in application code

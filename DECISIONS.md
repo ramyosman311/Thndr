@@ -366,3 +366,87 @@ UI).
 4. Register it in `providers/registry.py`; no other file needs to change
    — the orchestrator, price service, and admin UI are already fully
    generic over provider name.
+
+## Mubasher Provider Decision (Phase 13 follow-up)
+
+A newly discovered Mubasher Egypt public market-data endpoint
+(`https://www.mubasher.info/api/1/stocks/prices?symbol={symbol}&country=eg`)
+was investigated and, unlike EGID/EGXAPI, resulted in an actual
+implemented `PriceProvider` adapter (`providers/mubasher_provider.py`,
+registered as `"mubasher"`). This section documents exactly what was
+verified, by whom, and what was not.
+
+**Endpoint reachability from this sandbox: BLOCKED, same as every other
+external provider host.** A direct diagnostic test from inside this
+environment (`httpx`/`curl` against `www.mubasher.info`) failed with the
+identical default-deny egress-proxy `403 connect_rejected` pattern that
+also blocks `query1.finance.yahoo.com`, `ticker.egidegypt.com`, and
+`egxapi.com` — confirmed as a policy denial (not DNS, not TLS, not a
+Mubasher-side rejection) via a control request to an arbitrary
+unrelated host (`example.com`, also rejected) alongside a request to an
+explicitly allowlisted host (`pypi.org`, succeeded).
+
+**Payload contract: independently verified OUTSIDE this sandbox, by the
+user, not by this environment.** The response shape below was reported
+as the result of a live network test performed from a real
+Internet-connected device, not derived from documentation, search
+snippets, or inference:
+
+```json
+[{"symbol": "TMGH", "name": "Talaat Moustafa Group Holding",
+  "lastPrice": 58.50, "price": 58.50, "change": 1.25,
+  "changePercentage": 2.18, "updatedAt": "2026-09-10T11:30:00.000Z"}]
+```
+
+This environment could not independently re-verify that payload (see
+above), so the adapter's parsing logic is **mock-tested against this
+externally-reported shape, not live-tested**. This distinction is
+deliberate and load-bearing:
+
+- `tests/test_providers_mubasher.py` (22 tests) and
+  `tests/test_orchestrator_mubasher_integration.py` (3 tests) prove the
+  adapter and the real registry/orchestrator correctly parse this exact
+  shape, its single-object variant, and every documented failure mode —
+  using `httpx.MockTransport`, never a real network call.
+- No claim of measured latency, rate limits, uptime, or live pricing
+  accuracy is made anywhere in this codebase or its docs. `DECISIONS.md`
+  and code comments explicitly say `LIVE_NETWORK_STATUS: BLOCKED_BY_
+  SANDBOX_EGRESS` rather than reporting a number that was never observed.
+
+**Currency: not part of Mubasher's schema — a disclosed adapter decision,
+not a fabricated field.** The verified payload has no currency field at
+all. Because this endpoint is architecturally Egypt-only by construction
+(the request always sends `country=eg`, a fixed property of the URL
+template, not something looked up per-asset), the adapter reports a
+fixed `"EGP"` currency for every quote. This is documented in the
+adapter's own module docstring as a deliberate provider-level decision,
+distinct from inferring a currency from any specific asset's
+configuration.
+
+**Naming convention: `"mubasher"` (lowercase), not `"MUBASHER"`.** The
+existing registry already established an all-lowercase convention
+(`"yahoo"`); introducing an uppercase name for only this one provider
+would have been exactly the kind of "invent a new configuration pattern"
+the project's own conventions warn against. Both the registry key and
+every seeded `asset_price_configs` row use `"mubasher"`.
+
+**Fallback ordering: Mubasher primary, Yahoo secondary — the existing
+two-slot mechanism, not a new one.** `TMGH`, `ETEL`, and `EFID` are
+configured with `primary_provider="mubasher"` and `secondary_provider=
+"yahoo"` (retaining each asset's already-configured Yahoo symbol), so
+the pre-existing primary→secondary→DB→`PRICE_UNAVAILABLE` chain
+(`price_orchestrator.py`, unchanged) now tries Mubasher first and Yahoo
+second, rather than requiring a new fallback concept.
+
+**Licensing: NOT independently verified.** No terms-of-service,
+attribution requirement, or redistribution policy for Mubasher's data
+was found or confirmed by this environment or supplied by the user.
+This is explicitly marked `LICENSING_NOT_VERIFIED` rather than assumed
+free-to-use merely because the endpoint has no visible paywall — the
+same standard applied to EGID and EGXAPI above.
+
+**BWA/AZN/GOLD: unchanged, still manual-only.** Confirmed directly
+against the database before and after this change — no price-config row
+exists for any of the three, consistent with them being FUND/GOLD-type
+assets rather than EGX-listed equities (see the EGX Provider Integration
+section above).

@@ -487,19 +487,24 @@ No table gained or lost a column, index, or constraint in Phase 12.
 
 ## Phase 13: EGX Provider Integration — No Migration Required
 
-Phase 13 (EGX Market Data Provider Integration) needed no schema change
-either — `asset_price_configs` already had every column (`primary_provider`,
-`primary_provider_symbol`, `automated_fetching_enabled`) the integration
-required. `alembic current` remains `7dbad9d06fb1`, unchanged since Phase
-11. Only rows were added: three `asset_price_configs` rows (for the EGX
-equities `TMGH`/`ETEL`/`EFID`), via a new idempotent seed function
+Phase 13 (EGX Market Data Provider Integration, plus a later Mubasher
+follow-up) needed no schema change either — `asset_price_configs`
+already had every column (`primary_provider`, `primary_provider_symbol`,
+`secondary_provider`, `secondary_provider_symbol`,
+`automated_fetching_enabled`) both integrations required.
+`alembic current` remains `7dbad9d06fb1`, unchanged since Phase 11. Only
+rows were added/updated: `asset_price_configs` rows for the EGX equities
+`TMGH`/`ETEL`/`EFID`, via the idempotent seed function
 (`app/seed/seed.py`'s `seed_asset_price_configs`, "create if missing,"
 keyed by `asset_id` — never overwrites a config an admin already
-hand-edited through the Phase 12 Settings UI). See
-[DECISIONS.md](./DECISIONS.md), "Phase 13 — EGX Market Data Provider
-Integration" for why neither EGID nor EGXAPI was implemented and why
-`BWA`/`AZN` deliberately receive no provider configuration at all (they
-are `asset_type=FUND`, not EGX-listed equities).
+hand-edited through the Phase 12 Settings UI; the already-seeded dev
+database's three rows were updated to the new Mubasher-primary/
+Yahoo-secondary values via the same Phase 12 admin API a real user would
+use, not a raw DB edit). See [DECISIONS.md](./DECISIONS.md), "Phase 13 —
+EGX Market Data Provider Integration" and "Mubasher Provider Decision"
+for why neither EGID nor EGXAPI was implemented, why Mubasher was, and
+why `BWA`/`AZN` deliberately receive no provider configuration at all
+(they are `asset_type=FUND`, not EGX-listed equities).
 
 ## Known Warning: Circular-Dependency Sort
 

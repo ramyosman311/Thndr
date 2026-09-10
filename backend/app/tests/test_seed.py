@@ -214,7 +214,10 @@ async def test_seed_creates_price_configs_only_for_egx_equities(db_session):
         assert asset.market is None
 
 
-async def test_seed_egx_price_configs_use_yahoo_with_distinct_symbols(db_session):
+async def test_seed_egx_price_configs_use_mubasher_primary_yahoo_secondary(db_session):
+    """Mubasher is primary for every seeded EGX equity, with Yahoo
+    retained as the secondary fallback (not dropped) -- see
+    SEED_ASSET_PRICE_CONFIGS's own comment for why."""
     await run_seed(db_session)
 
     result = await db_session.execute(select(Asset).where(Asset.symbol.in_(SEED_ASSET_PRICE_CONFIGS)))
@@ -231,10 +234,12 @@ async def test_seed_egx_price_configs_use_yahoo_with_distinct_symbols(db_session
     for symbol, spec in SEED_ASSET_PRICE_CONFIGS.items():
         asset = assets_by_symbol[symbol]
         config = configs_by_asset_id[asset.id]
-        assert config.primary_provider == "yahoo"
+        assert config.primary_provider == "mubasher"
         assert config.primary_provider_symbol == spec["primary_provider_symbol"]
+        assert config.secondary_provider == "yahoo"
+        assert config.secondary_provider_symbol == spec["secondary_provider_symbol"]
         assert config.automated_fetching_enabled == spec["automated_fetching_enabled"]
-        # No two EGX assets accidentally share one provider symbol.
+        # No two EGX assets accidentally share one primary provider symbol.
         assert config.primary_provider_symbol not in provider_symbols_seen
         provider_symbols_seen.add(config.primary_provider_symbol)
 

@@ -42,42 +42,47 @@ SEED_ASSETS = [
     {"symbol": "GOLD", "name": "Thndr Gold", "asset_type": AssetType.GOLD, "currency": "EGP", "market": None},
 ]
 
-# --- EGX price configuration (Phase 13) -----------------------------------
+# --- EGX price configuration (Phase 13, updated with Mubasher) ------------
 # Provider configuration for the EGX-listed EQUITY assets only -- TMGH,
 # ETEL, EFID (asset_type=STOCK, market="EGX" above). BWA and AZN are
 # deliberately excluded here even though an earlier phase brief listed them
 # as "potential EGX assets": both are FUND-type (mutual fund NAV) assets in
 # this seed data with no `market` set, not EGX-listed equities, so no stock-
-# exchange provider (Yahoo or otherwise) applies to them -- see
-# DECISIONS.md, "EGX Provider Decision (Phase 13)". CLOUDZ and GOLD are
-# likewise never assigned an EGX equity provider.
+# exchange provider applies to them -- see DECISIONS.md, "EGX Provider
+# Decision (Phase 13)". CLOUDZ and GOLD are likewise never assigned an EGX
+# equity provider.
 #
-# Yahoo Finance is the only implemented provider for these (Phase 11); no
-# EGID/EGXAPI adapter exists (see DECISIONS.md for why). Confidence for each
-# `provider_symbol` is PARTIALLY_VERIFIED, not VERIFIED: this sandbox's
-# outbound network blocks Yahoo itself, so no live API call could confirm
-# these -- they are corroborated only by independently indexed public Yahoo
-# Finance quote pages for the exact symbol + company name pair. TMGH and
-# ETEL had specific, unambiguous matches and are enabled for automated
-# fetching; EFID had only a longer, non-mnemonic security-code symbol with
-# no corroborating simple ticker, so it is configured but left OFF
-# (automated_fetching_enabled=False) pending a human confirming it via the
-# existing single-asset POST /api/assets/{id}/price/refresh endpoint.
+# Mubasher (providers/mubasher_provider.py) is primary for all three --
+# its payload shape was independently verified via a live network test
+# performed OUTSIDE this sandbox (this sandbox's own outbound network
+# blocks www.mubasher.info, same default-deny policy that also blocks
+# Yahoo/EGID/EGXAPI -- see DECISIONS.md, "Mubasher Provider Decision").
+# The adapter itself is therefore mock-tested, not live-tested from within
+# this environment. Yahoo is retained as `secondary_provider` for each --
+# the exact same symbols Phase 13 already configured -- so the existing
+# primary-\>secondary-\>DB-\>PRICE_UNAVAILABLE fallback chain is preserved
+# rather than narrowed to a single provider.
 SEED_ASSET_PRICE_CONFIGS = {
     "TMGH": {
-        "primary_provider": "yahoo",
-        "primary_provider_symbol": "TMGH.CA",
+        "primary_provider": "mubasher",
+        "primary_provider_symbol": "TMGH",
+        "secondary_provider": "yahoo",
+        "secondary_provider_symbol": "TMGH.CA",
         "automated_fetching_enabled": True,
     },
     "ETEL": {
-        "primary_provider": "yahoo",
-        "primary_provider_symbol": "ETEL.CA",
+        "primary_provider": "mubasher",
+        "primary_provider_symbol": "ETEL",
+        "secondary_provider": "yahoo",
+        "secondary_provider_symbol": "ETEL.CA",
         "automated_fetching_enabled": True,
     },
     "EFID": {
-        "primary_provider": "yahoo",
-        "primary_provider_symbol": "EGS305I1C011.CA",
-        "automated_fetching_enabled": False,
+        "primary_provider": "mubasher",
+        "primary_provider_symbol": "EFID",
+        "secondary_provider": "yahoo",
+        "secondary_provider_symbol": "EGS305I1C011.CA",
+        "automated_fetching_enabled": True,
     },
 }
 

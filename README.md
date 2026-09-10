@@ -5,27 +5,33 @@ an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
 > **Status:** Phase 13 — EGX Market Data Provider Integration &
-> Verification. Both prioritized EGX candidates (EGID/Ticker DelayedFeed,
-> EGXAPI) were investigated to the fullest extent this environment
-> allows and neither cleared verification — EGID's technical API contract
-> could not be found anywhere public and its own marketing describes a
-> paid tier, not a free API; EGXAPI is architecturally a brokerage/
-> order-execution platform (out of this project's scope) with unverified
-> data-licensing terms. Both hosts are also blocked by this environment's
-> network egress policy, so no live request could be executed against
-> either. See [DECISIONS.md](./DECISIONS.md), "Phase 13 — EGX Market Data
-> Provider Integration" for the full investigation, including why no
-> fabricated adapter was written for either. Real, verified progress was
-> still made: the existing Phase 11 Yahoo Finance provider (unchanged) is
-> now configured, per-symbol and only after individually checking each
-> one, for the three assets in the current seed data that are genuinely
-> EGX-listed equities (`TMGH`, `ETEL`, `EFID`) — and explicitly NOT for
-> `BWA`/`AZN`, which turned out to be mutual-fund NAV assets rather than
-> exchange-traded equities, a correction to the phase's own brief.
-> No database migration was required. Phase 12's administration layer
-> and Phase 11's price infrastructure are otherwise unchanged. No broker
-> integration, automatic trading, Telegram delivery, authentication, or
-> full multi-user/multi-portfolio system exist yet. See
+> Verification, plus a Mubasher Egypt provider follow-up. The two
+> originally prioritized EGX candidates (EGID/Ticker DelayedFeed, EGXAPI)
+> were investigated to the fullest extent this environment allows and
+> neither cleared verification — EGID's technical API contract could not
+> be found anywhere public and its own marketing describes a paid tier,
+> not a free API; EGXAPI is architecturally a brokerage/order-execution
+> platform (out of this project's scope) with unverified data-licensing
+> terms. A third candidate, Mubasher Egypt, was investigated afterward and
+> resulted in an implemented `MubasherPriceProvider` — its payload
+> contract was verified via a live network test performed OUTSIDE this
+> sandbox (this environment's own network egress policy blocks all three
+> hosts, plus Yahoo Finance itself, with an identical default-deny
+> pattern, confirmed against an arbitrary control host), so the adapter
+> is mock-tested against that externally-reported shape, not live-tested
+> from within this environment. See [DECISIONS.md](./DECISIONS.md), "Phase
+> 13 — EGX Market Data Provider Integration" and "Mubasher Provider
+> Decision" for the full investigation, including why no fabricated
+> adapter was written for EGID/EGXAPI. The three assets in the current
+> seed data that are genuinely EGX-listed equities (`TMGH`, `ETEL`,
+> `EFID`) are now configured with Mubasher as `primary_provider` and
+> Yahoo Finance retained as `secondary_provider`, preserving the existing
+> fallback chain — and explicitly NOT `BWA`/`AZN`, which turned out to be
+> mutual-fund NAV assets rather than exchange-traded equities, a
+> correction to the phase's own original brief. No database migration was
+> required. Phase 12's administration layer is otherwise unchanged. No
+> broker integration, automatic trading, Telegram delivery, authentication,
+> or full multi-user/multi-portfolio system exist yet. See
 > [Phase Plan](#phase-plan) below.
 
 ## What this project does (target scope)
@@ -148,7 +154,7 @@ before the next begins.
 10. Transaction & Holdings Engine (BUY/SELL, average-cost accounting) — done
 11. Generic Hybrid Price Infrastructure (provider-driven prices, FX, non-blocking valuation) — done
 12. Portfolio & Asset Administration + Domain Readiness (Settings UI for Assets/Pricing/Portfolio/Strategy, single-portfolio assumption audit) — done
-13. EGX Market Data Provider Integration & Verification (EGID/EGXAPI investigated and rejected; Yahoo Finance configured for the real EGX equities in seed data) — done *(current)*
+13. EGX Market Data Provider Integration & Verification (EGID/EGXAPI investigated and rejected; Mubasher Egypt implemented as primary, mock-tested, with Yahoo Finance retained as secondary fallback for the real EGX equities) — done *(current)*
 14. Telegram Notifications
 15. PWA (installable, offline-capable)
 16. Capacitor wrappers

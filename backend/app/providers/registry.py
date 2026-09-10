@@ -16,10 +16,12 @@ Provider").
 """
 
 from app.providers.base import PriceProvider
+from app.providers.mubasher_provider import MubasherPriceProvider
 from app.providers.yahoo_provider import YahooFinanceProvider
 
 _PROVIDERS: dict[str, PriceProvider] = {
     "yahoo": YahooFinanceProvider(),
+    "mubasher": MubasherPriceProvider(),
 }
 
 

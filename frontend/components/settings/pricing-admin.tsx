@@ -16,7 +16,7 @@ const labelClass = "text-xs font-medium text-muted-foreground";
  * against the real registry regardless, but offering only real choices
  * here avoids a round-trip just to discover a typo (see
  * FINANCIAL_RULES.md, "Provider Configuration Is Data, Not Code"). */
-const KNOWN_PROVIDERS = ["yahoo"];
+const KNOWN_PROVIDERS = ["mubasher", "yahoo"];
 
 export function PricingAdmin() {
   const assetsQuery = useApiQuery(() => api.listAssets(true));
