@@ -6,8 +6,8 @@ from sqlalchemy import func, select
 
 from app.core.database import get_db_session
 from app.main import app
-from app.models import AssetType, Holding, PortfolioConfig, StrategyBucket, Transaction
-from app.tests.conftest import make_asset
+from app.models import Holding, PortfolioConfig, StrategyBucket, Transaction
+from app.tests.conftest import make_asset, make_current_price
 
 
 @pytest_asyncio.fixture
@@ -35,7 +35,8 @@ async def _setup_simple_portfolio(session, *, emergency_excluded=False):
     asset = make_asset("APIINFLOW", strategy_bucket_id=bucket.id)
     session.add(asset)
     await session.flush()
-    session.add(Holding(asset_id=asset.id, quantity=Decimal("10"), current_price=Decimal("10")))  # value 100
+    session.add(Holding(asset_id=asset.id, quantity=Decimal("10")))  # value 100
+    await make_current_price(session, asset, Decimal("10"))
     session.add(
         AllocationTarget(portfolio_config_id=config.id, strategy_bucket_id=bucket.id, target_percent=Decimal("50"), priority=1)
     )
@@ -50,7 +51,8 @@ async def _setup_simple_portfolio(session, *, emergency_excluded=False):
     other_asset = make_asset("APIOTHER", strategy_bucket_id=other_bucket.id)
     session.add(other_asset)
     await session.flush()
-    session.add(Holding(asset_id=other_asset.id, quantity=Decimal("90"), current_price=Decimal("10")))  # value 900
+    session.add(Holding(asset_id=other_asset.id, quantity=Decimal("90")))  # value 900
+    await make_current_price(session, other_asset, Decimal("10"))
 
     await session.commit()
     return config, bucket, asset

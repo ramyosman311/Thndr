@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.allocation_engine import evaluate_bucket_allocation
 from app.domain.pnl_engine import HoldingPnL, calculate_holding_pnl, calculate_portfolio_pnl_totals
 from app.domain.portfolio_engine import calculate_portfolio_totals
+from app.domain.price_types import PriceStatus
 from app.repositories.portfolio_repository import (
     get_active_allocation_targets,
     get_active_assets,
@@ -24,6 +25,7 @@ from app.repositories.portfolio_repository import (
     get_portfolio_config,
 )
 from app.schemas.portfolio import BucketAllocationOut, HoldingPnLOut, PortfolioAllocationOut, PortfolioSummaryOut
+from app.services import price_service
 from app.services.portfolio_shared import build_positions, find_emergency_bucket_id
 
 _PRESENTATION_QUANT = Decimal("0.01")
@@ -46,7 +48,8 @@ async def get_portfolio_summary(session: AsyncSession) -> PortfolioSummaryOut:
         raise PortfolioNotConfiguredError("No portfolio configuration exists yet.")
 
     assets = await get_active_assets(session)
-    positions = build_positions(assets, config.emergency_asset_id)
+    prices = await price_service.get_prices_for_assets_in_base_currency(session, assets, config.base_currency)
+    positions = build_positions(assets, config.emergency_asset_id, prices)
     totals = calculate_portfolio_totals(positions, emergency_excluded=config.emergency_excluded)
 
     holdings_pnl: list[HoldingPnLOut] = []
@@ -55,10 +58,12 @@ async def get_portfolio_summary(session: AsyncSession) -> PortfolioSummaryOut:
         holding = asset.holding
         if holding is None or holding.quantity == 0:
             continue
+        price_result = prices.get(asset.id)
+        current_price = price_result.price if price_result is not None and price_result.is_usable else None
         pnl = calculate_holding_pnl(
             quantity=holding.quantity,
             average_cost=holding.average_cost,
-            current_price=holding.current_price,
+            current_price=current_price,
         )
         raw_pnls.append(pnl)
         holdings_pnl.append(
@@ -67,10 +72,14 @@ async def get_portfolio_summary(session: AsyncSession) -> PortfolioSummaryOut:
                 symbol=asset.symbol,
                 quantity=holding.quantity,
                 average_cost=holding.average_cost,
-                current_price=holding.current_price,
-                market_value=_round(pnl.market_value),
-                cost_basis=_round(pnl.cost_basis),
-                unrealized_pnl=_round(pnl.unrealized_pnl),
+                asset_currency=asset.currency,
+                current_price=current_price,
+                price_status=price_result.status.value if price_result else PriceStatus.UNAVAILABLE.value,
+                price_recorded_at=price_result.recorded_at if price_result else None,
+                price_is_stale=price_result.is_stale if price_result else False,
+                market_value=_round(pnl.market_value) if pnl.market_value is not None else None,
+                cost_basis=_round(pnl.cost_basis) if pnl.cost_basis is not None else None,
+                unrealized_pnl=_round(pnl.unrealized_pnl) if pnl.unrealized_pnl is not None else None,
                 unrealized_pnl_percent=(
                     _round(pnl.unrealized_pnl_percent) if pnl.unrealized_pnl_percent is not None else None
                 ),
@@ -87,6 +96,8 @@ async def get_portfolio_summary(session: AsyncSession) -> PortfolioSummaryOut:
         denominator_basis=totals.denominator_basis,
         denominator_value=_round(totals.denominator_value),
         emergency_excluded=config.emergency_excluded,
+        is_complete=totals.is_complete,
+        unpriced_asset_ids=sorted(totals.unpriced_asset_ids, key=str),
         holdings_pnl=holdings_pnl,
         total_unrealized_pnl=_round(pnl_totals.total_unrealized_pnl),
         total_unrealized_pnl_percent=(
@@ -103,7 +114,8 @@ async def get_portfolio_allocation(session: AsyncSession) -> PortfolioAllocation
         raise PortfolioNotConfiguredError("No portfolio configuration exists yet.")
 
     assets = await get_active_assets(session)
-    positions = build_positions(assets, config.emergency_asset_id)
+    prices = await price_service.get_prices_for_assets_in_base_currency(session, assets, config.base_currency)
+    positions = build_positions(assets, config.emergency_asset_id, prices)
     totals = calculate_portfolio_totals(positions, emergency_excluded=config.emergency_excluded)
 
     buckets = await get_active_strategy_buckets(session, config.id)
@@ -145,6 +157,7 @@ async def get_portfolio_allocation(session: AsyncSession) -> PortfolioAllocation
                 maximum_status=result.maximum_status.value,
                 buy_allowed=result.buy_allowed,
                 excluded_from_risk_allocation=result.excluded_from_risk_allocation,
+                has_unpriced_positions=result.has_unpriced_positions,
             )
         )
 
@@ -153,5 +166,7 @@ async def get_portfolio_allocation(session: AsyncSession) -> PortfolioAllocation
         risk_denominator_basis=totals.denominator_basis,
         risk_denominator_value=_round(totals.denominator_value),
         emergency_excluded=config.emergency_excluded,
+        is_complete=totals.is_complete,
+        unpriced_asset_ids=sorted(totals.unpriced_asset_ids, key=str),
         buckets=bucket_outs,
     )

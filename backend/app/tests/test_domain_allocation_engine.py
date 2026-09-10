@@ -17,7 +17,7 @@ def make_position(bucket_id, quantity, price, is_emergency=False):
         is_emergency=is_emergency,
         strategy_bucket_id=bucket_id,
         quantity=Decimal(quantity),
-        current_price=Decimal(price),
+        current_price=None if price is None else Decimal(price),
     )
 
 
@@ -257,3 +257,43 @@ def test_excluded_bucket_with_a_configured_maximum_reports_not_applicable_rather
     assert result.maximum_status == MaximumStatus.NO_MAXIMUM
     # Buying is not frozen by an unevaluable maximum.
     assert result.buy_allowed is True
+
+
+# --- Phase 11: unpriced positions surfaced, never silently zeroed -----------
+
+
+def test_bucket_with_a_fully_unpriced_position_reports_has_unpriced_positions():
+    bucket_id = uuid4()
+    positions = [make_position(bucket_id, "10", None)]
+    result = evaluate_bucket_allocation(
+        strategy_bucket_id=bucket_id,
+        bucket_name="Test",
+        positions=positions,
+        total_value=Decimal("0"),
+        risk_denominator_value=Decimal("0"),
+        excluded_from_risk_allocation=False,
+        target_percent=None,
+        minimum_percent=None,
+        maximum_percent=None,
+        allow_new_buy=None,
+    )
+    assert result.has_unpriced_positions is True
+    assert result.actual_value == Decimal("0")  # excluded from the sum, not counted as 0-priced
+
+
+def test_bucket_with_all_positions_priced_reports_no_unpriced_positions():
+    bucket_id = uuid4()
+    positions = [make_position(bucket_id, "10", "5")]
+    result = evaluate_bucket_allocation(
+        strategy_bucket_id=bucket_id,
+        bucket_name="Test",
+        positions=positions,
+        total_value=Decimal("50"),
+        risk_denominator_value=Decimal("50"),
+        excluded_from_risk_allocation=False,
+        target_percent=None,
+        minimum_percent=None,
+        maximum_percent=None,
+        allow_new_buy=None,
+    )
+    assert result.has_unpriced_positions is False

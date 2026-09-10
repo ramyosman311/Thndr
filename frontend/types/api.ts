@@ -12,15 +12,31 @@ export type DecimalStr = string;
 
 // --- Portfolio (Phase 5) ----------------------------------------------
 
+/** Phase 11: matches domain/price_types.py's PriceStatus exactly. */
+export type PriceStatus =
+  | "CURRENT_PRICE_AVAILABLE"
+  | "LAST_KNOWN_PRICE"
+  | "PRICE_UNAVAILABLE"
+  | "CURRENCY_CONVERSION_UNAVAILABLE";
+
 export interface HoldingPnLOut {
   asset_id: string;
   symbol: string;
   quantity: DecimalStr;
   average_cost: DecimalStr;
-  current_price: DecimalStr;
-  market_value: DecimalStr;
-  cost_basis: DecimalStr;
-  unrealized_pnl: DecimalStr;
+  /** The asset's OWN currency — a manual price submission must use
+   * this, not the portfolio's base_currency `current_price` is shown
+   * in below. */
+  asset_currency: string;
+  /** Phase 11: null when the Price Service has no usable price — never
+   * a fabricated 0. Never render this as "0.00"; use `price_status`. */
+  current_price: DecimalStr | null;
+  price_status: PriceStatus;
+  price_recorded_at: string | null;
+  price_is_stale: boolean;
+  market_value: DecimalStr | null;
+  cost_basis: DecimalStr | null;
+  unrealized_pnl: DecimalStr | null;
   unrealized_pnl_percent: DecimalStr | null;
 }
 
@@ -32,6 +48,11 @@ export interface PortfolioSummaryOut {
   denominator_basis: string;
   denominator_value: DecimalStr;
   emergency_excluded: boolean;
+  /** Phase 11: False when at least one held asset had no usable price —
+   * the totals above EXCLUDE that asset's value rather than treating it
+   * as 0. See `unpriced_asset_ids`. */
+  is_complete: boolean;
+  unpriced_asset_ids: string[];
   holdings_pnl: HoldingPnLOut[];
   /** Aggregated across holdings_pnl by the backend (Phase 9 addition to
    * PortfolioSummaryOut) — never recompute this client-side. */
@@ -58,6 +79,9 @@ export interface BucketAllocationOut {
   maximum_status: MaximumStatus;
   buy_allowed: boolean;
   excluded_from_risk_allocation: boolean;
+  /** Phase 11: True when this bucket's actual_value excludes at least
+   * one held-but-unpriced position. */
+  has_unpriced_positions: boolean;
 }
 
 export interface PortfolioAllocationOut {
@@ -65,6 +89,8 @@ export interface PortfolioAllocationOut {
   risk_denominator_basis: string;
   risk_denominator_value: DecimalStr;
   emergency_excluded: boolean;
+  is_complete: boolean;
+  unpriced_asset_ids: string[];
   buckets: BucketAllocationOut[];
 }
 
@@ -148,6 +174,7 @@ export interface InflowAllocationOut {
   unallocated_cash: DecimalStr;
   strategy_status: StrategyValidationStatus;
   strategy_is_valid: boolean;
+  is_complete: boolean;
   recommendations: InflowRecommendationOut[];
 }
 
@@ -256,7 +283,9 @@ export interface TransactionOut {
 export interface HoldingSnapshotOut {
   quantity: DecimalStr;
   average_cost: DecimalStr;
-  current_price: DecimalStr;
+  /** Phase 11: null when the Price Service has no usable price. */
+  current_price: DecimalStr | null;
+  price_status: PriceStatus;
 }
 
 export interface TransactionResultOut {
@@ -275,6 +304,37 @@ export interface AssetOut {
   asset_type: string;
   currency: string;
   is_active: boolean;
+}
+
+// --- Prices (Phase 11) ----------------------------------------------------
+
+export interface PriceOut {
+  asset_id: string;
+  status: PriceStatus;
+  price: DecimalStr | null;
+  currency: string | null;
+  provider: string | null;
+  provider_symbol: string | null;
+  recorded_at: string | null;
+  age_seconds: number | null;
+  is_stale: boolean;
+  reason: string | null;
+}
+
+export interface PriceObservationOut {
+  id: string;
+  price: DecimalStr;
+  currency: string;
+  provider: string;
+  source: string | null;
+  provider_symbol: string | null;
+  recorded_at: string;
+  is_manual: boolean;
+}
+
+export interface ManualPriceCreateRequest {
+  price: DecimalStr;
+  currency: string;
 }
 
 // --- Health --------------------------------------------------------------

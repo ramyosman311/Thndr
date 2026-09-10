@@ -9,10 +9,11 @@ This document specifies the planned REST API surface. Implemented so far:
 `POST /api/cash-flow/allocate` (**Phase 7**), the full Watchlist +
 Alerts surface (**Phase 8**), `GET /api/assets` (**Phase 9**, added to
 support the frontend's Watchlist "add asset" picker — now also reused by
-the Phase 10 transaction form's asset picker), and `POST`/`GET
-/api/transactions` (**Phase 10**, the Transaction + Holdings write path).
-The rest arrive incrementally with their owning phases. This is the
-contract those phases implement against.
+the Phase 10 transaction form's asset picker), `POST`/`GET
+/api/transactions` (**Phase 10**, the Transaction + Holdings write path),
+and the price endpoints under `/api/assets/{id}/price...` (**Phase 11**
+— see "Prices" below). The rest arrive incrementally with their owning
+phases. This is the contract those phases implement against.
 
 ## Conventions
 
@@ -80,14 +81,21 @@ transactions, snapshots, or configuration.
   "denominator_basis": "investable", // "investable" | "total" — driven by portfolio_configs.emergency_excluded
   "denominator_value": "10000.00",
   "emergency_excluded": true,
+  "is_complete": true,          // Phase 11: false if any held asset had no usable price (see below)
+  "unpriced_asset_ids": [],     // asset ids EXCLUDED from the totals above, never counted as 0
   "holdings_pnl": [
     {
       "asset_id": "...", "symbol": "BWA",
-      "quantity": "100.00000000", "average_cost": "90.00000000", "current_price": "100.00000000",
+      "quantity": "100.00000000", "average_cost": "90.00000000", "asset_currency": "EGP",
+      "current_price": "100.00000000",           // null when price_status is *_UNAVAILABLE — never a fabricated 0
+      "price_status": "CURRENT_PRICE_AVAILABLE",  // Phase 11 — same vocabulary as GET .../price
+      "price_recorded_at": "2026-09-10T06:40:15Z",
+      "price_is_stale": false,
       "market_value": "10000.00", "cost_basis": "9000.00",
       "unrealized_pnl": "1000.00", "unrealized_pnl_percent": "11.11"
-      // unrealized_pnl_percent is null when cost_basis is 0 (division is
-      // undefined, never fabricated) — see FINANCIAL_RULES.md.
+      // market_value/unrealized_pnl/unrealized_pnl_percent are null
+      // exactly when current_price is null, OR when cost_basis is 0
+      // (division undefined) — never fabricated either way.
     }
   ],
   "total_unrealized_pnl": "1000.00",       // added in Phase 9 — sum of holdings_pnl[].unrealized_pnl
@@ -99,7 +107,13 @@ precision survives the API boundary (see FINANCIAL_RULES.md,
 "Precision"). Only holdings with `quantity != 0` appear in `holdings_pnl`.
 `total_unrealized_pnl`/`total_unrealized_pnl_percent` (Phase 9) aggregate
 the already-computed per-holding figures for the dashboard's headline P/L
-— see FINANCIAL_RULES.md, "Portfolio-Level P/L Aggregation".
+— see FINANCIAL_RULES.md, "Portfolio-Level P/L Aggregation". Every price
+field here comes from the Phase 11 Price Service (a DB read only — this
+endpoint never calls a live provider, so its latency and success are
+independent of any provider's — see FINANCIAL_RULES.md, "Non-Blocking
+Valuation"); `current_price` is already converted into `base_currency`
+when the asset's own currency differs (see "Base Currency & FX
+Conversion").
 
 **`GET /api/portfolio/allocation`** — same `404` behavior. Otherwise, one
 entry per active strategy bucket (all of them — a bucket with no
@@ -112,6 +126,8 @@ and `allow_new_buy: null`):
   "risk_denominator_basis": "investable",
   "risk_denominator_value": "10000.00",
   "emergency_excluded": true,
+  "is_complete": true,        // Phase 11 — same meaning as PortfolioSummaryOut.is_complete
+  "unpriced_asset_ids": [],
   "buckets": [
     {
       "strategy_bucket_id": "...", "bucket_name": "Individual Stocks",
@@ -122,7 +138,8 @@ and `allow_new_buy: null`):
       "allow_new_buy": true,
       "target_status": "NO_TARGET", "minimum_status": "NO_MINIMUM", "maximum_status": "WITHIN_MAXIMUM",
       "buy_allowed": true,
-      "excluded_from_risk_allocation": false
+      "excluded_from_risk_allocation": false,
+      "has_unpriced_positions": false   // Phase 11: true if actual_value excludes an unpriced position
     }
   ]
 }
@@ -187,11 +204,76 @@ reports.
 
 No dedicated endpoint — a holding is always the automatic *result* of a
 transaction (see below), never directly created or edited. Current
-holdings are read via `holdings_pnl` in `GET /api/portfolio/summary`
-(Phase 5). `PATCH /api/holdings/{id}` remains unimplemented: Phase 10
-deliberately does not add a way to set `current_price` manually — see
-FINANCIAL_RULES.md, "Current Price Is Not Set By Transactions" for the
-disclosed consequence.
+holdings (`quantity`/`average_cost`) are read via `holdings_pnl` in
+`GET /api/portfolio/summary` (Phase 5); each entry's price now comes
+from the Phase 11 Price Service (see "Prices" below), not from a
+`holdings` column. `PATCH /api/holdings/{id}` remains unimplemented —
+`quantity`/`average_cost` still can't be set directly (only
+transaction-derived), and price is now set instead via
+`POST /api/assets/{id}/price/manual` (Phase 11), which only ever writes
+a price observation, never a holding field.
+
+### Prices (implemented, Phase 11)
+
+```
+GET  /api/assets/{asset_id}/price
+GET  /api/assets/{asset_id}/prices
+POST /api/assets/{asset_id}/price/manual
+POST /api/assets/{asset_id}/price/refresh
+```
+
+Every route here is served by `services/price_service.py` reading
+`asset_prices` — a pure DB read, **except** `.../price/refresh`, the
+one deliberate, user-initiated exception to the non-blocking valuation
+rule (see FINANCIAL_RULES.md, "Non-Blocking Valuation"). No route here
+exposes provider credentials or lets a client choose an arbitrary
+provider/symbol for an asset — that remains configuration
+(`asset_price_configs`), not request input.
+
+**`GET /api/assets/{asset_id}/price`** — the asset's current price as
+classified by the Price Service.
+```jsonc
+{
+  "asset_id": "...",
+  "status": "CURRENT_PRICE_AVAILABLE",  // | "LAST_KNOWN_PRICE" | "PRICE_UNAVAILABLE" | "CURRENCY_CONVERSION_UNAVAILABLE"
+  "price": "9.25000000",                // null when status is *_UNAVAILABLE
+  "currency": "EGP",
+  "provider": "yahoo",
+  "provider_symbol": "TMGH.CA",
+  "recorded_at": "2026-09-10T06:40:15Z",
+  "age_seconds": 300.0,
+  "is_stale": false,
+  "reason": null                        // set only for an unavailable/conversion-unavailable result
+}
+```
+`404` if the asset doesn't exist. Never `200` with a fabricated price —
+an asset with no observation on record returns `status:
+"PRICE_UNAVAILABLE"`, `price: null`.
+
+**`GET /api/assets/{asset_id}/prices`** — full observation history for
+the asset (`PriceObservationOut[]`, most recent `recorded_at` first;
+`?limit=` caps the count, default 100). Read-only.
+
+**`POST /api/assets/{asset_id}/price/manual`** — records a new manual
+price observation.
+```jsonc
+// request
+{ "price": "18.75", "currency": "EGP" }   // currency MUST equal the asset's own currency
+```
+`400` if `currency` doesn't match the asset's own currency, or the
+schema-level positive-price check fails (`422`). Returns the same
+`PriceOut` shape as `GET .../price`, now reflecting the new
+observation (`201`). Never alters any transaction, holding quantity, or
+average cost — see FINANCIAL_RULES.md, "Manual Price Never Touches
+Transaction History".
+
+**`POST /api/assets/{asset_id}/price/refresh`** — synchronously fetches
+this ONE asset's price from its configured provider right now. `409`
+if the asset has no `asset_price_configs` row with
+`automated_fetching_enabled=true` (nothing to refresh; the asset's last
+known price is left untouched). This is the only endpoint in the
+entire system allowed to call a live provider inline with a request —
+every other read in the app is served purely from `asset_prices`.
 
 ### Transactions (implemented, Phase 10)
 
@@ -238,7 +320,10 @@ Response (`201`):
     "quantity": "10.00000000", "price": "100.00000000", "fees": "5.00",
     "transaction_date": "2026-01-01T00:00:00Z", "notes": "optional", "created_at": "..."
   },
-  "holding": { "quantity": "10.00000000", "average_cost": "100.50000000", "current_price": "0E-8" },
+  "holding": {
+    "quantity": "10.00000000", "average_cost": "100.50000000",
+    "current_price": null, "price_status": "PRICE_UNAVAILABLE"  // Phase 11: from the Price Service, null when no observation exists
+  },
   "realized_pnl": null   // a Decimal string for SELL only — see FINANCIAL_RULES.md, "Realized P/L"
 }
 ```
@@ -373,10 +458,12 @@ early-warning threshold and the strategy's own configured cap are two
 different numbers. `REBALANCE_SUGGESTED` is a **suggestion only**: no
 sell, no buy, no transaction is ever created from it.
 
-`PRICE_TARGET`/`DIP_BUY` compare against `holdings.current_price` (no
-live market-data provider exists yet — see FINANCIAL_RULES.md,
-"Market Data Integrity"); a `null` `current_value` means the price is
-currently unknown (e.g. no `holdings` row yet), never a fabricated 0.
+`PRICE_TARGET`/`DIP_BUY` compare against the asset's own native-currency
+price from the Phase 11 Price Service (`services/price_service.py`,
+batched across every candidate — a DB read only, never a live provider
+call within this request). A `null` `current_value` means the Price
+Service currently has no usable price for that asset
+(`PRICE_UNAVAILABLE`), never a fabricated 0.
 
 **Recurring Income Maturity** — a fifth alert category
 (`check_income_maturity` in `backend/app/domain/alert_engine.py`) is
@@ -430,6 +517,7 @@ seeded strategy with a single 1000 EGP TMGH holding as investable value):
   "unallocated_cash": "150.00",
   "strategy_status": "INCOMPLETE_TARGET_ALLOCATION",  // reuses the Strategy Engine (Phase 6), not re-validated here
   "strategy_is_valid": false,
+  "is_complete": true,   // Phase 11: false if the investable value above excludes an unpriced position
   "recommendations": [
     {
       "strategy_bucket_id": "...", "bucket_name": "Growth / Investment Funds",
@@ -475,10 +563,12 @@ presentation rounding).
 
 ## Not Yet Specified
 
-Endpoints for future tables (`cash_flows`, `alert_events`, `market_quotes`,
+Endpoints for future tables (`cash_flows`, `alert_events`,
 `scheduled_income`, `users`, `audit_logs`) are deferred until those tables
 are introduced (see [DATABASE.md](./DATABASE.md)) and will be documented
 here at that time. This now includes an income-maturity alert endpoint
 (needs `scheduled_income`-like columns) and a per-condition-type alert
 event history endpoint (needs `alert_events`) — see DATABASE.md, "Known
-Schema Limitations (Phase 8)".
+Schema Limitations (Phase 8)". (`market_quotes` was in this list through
+Phase 10; Phase 11 implemented it as `asset_price_configs`/
+`asset_prices`/`fx_rates` — see "Prices" above.)

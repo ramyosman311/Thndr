@@ -4,25 +4,30 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 10 — Transaction & Holdings Engine.
-> `POST /api/transactions` records a real, executed BUY/SELL and
-> atomically updates the resulting holding using average-cost accounting
-> (never FIFO/LIFO) — `holdings.quantity`/`average_cost` are now fully
-> transaction-derived, and the existing Portfolio/P/L/Allocation Engines
-> (Phase 5/6) pick up the result automatically, with no second
-> calculation path. Oversells are rejected outright (`409`, nothing
-> written); fees affect cost basis/proceeds; concurrent writes to the
-> same asset are serialized with a row lock. The Next.js frontend's
-> `/portfolio` screen (Phase 9) now includes a mobile-first transaction
-> entry form (explicit review-then-confirm, clearly labeled as an
-> executed transaction, never a recommendation) and a transaction
-> history view. Backend-wise: Phase 5 (Portfolio Engine) through Phase 9
-> (Frontend) remain implemented and tested; see FINANCIAL_RULES.md,
-> "Transaction Accounting" for the full methodology and disclosed
-> limitations (no correction/reversal path; `current_price` is still
-> never set automatically). No rebalancing execution, broker integration,
-> Telegram delivery, or real market data exist yet. See
-> [Phase Plan](#phase-plan) below.
+> **Status:** Phase 11 — Generic Hybrid Price Infrastructure.
+> Every asset price now flows through one provider-driven, non-blocking
+> pipeline: a `PriceProvider` abstraction (Yahoo Finance implemented;
+> EGX/fund-NAV left unconfigured rather than fabricated), a Price
+> Orchestrator that runs only in the out-of-band background refresh
+> worker (`python -m app.workers.price_refresh`), and a Price Service
+> that every request-time read (Portfolio, Allocation, P/L, Dashboard,
+> Alerts, the transaction response) uses instead — it only ever reads
+> the immutable `asset_prices` history table, **never** calls a live
+> provider, so a provider outage or timeout can never slow down or break
+> a page. Asset-type-aware stale thresholds (never one universal
+> duration), a manual-vs-automated precedence rule (manual wins until a
+> strictly newer automated observation arrives, or is locked), and a
+> generic FX layer (`fx_rates`, provider-driven, no hardcoded currency
+> pairs) round out the pipeline. `holdings.current_price` is no longer
+> read or written anywhere — the Price Service is the single source of
+> truth. A holding with no usable price is excluded from portfolio
+> totals rather than counted as zero, and the API/UI both expose this as
+> an explicit "incomplete valuation" rather than hiding it. See
+> FINANCIAL_RULES.md ("Non-Blocking Valuation", "Stale Price Policy",
+> "Manual-vs-Automated Precedence", "Base Currency & FX Conversion") for
+> the full methodology. No broker integration, automatic trading,
+> Telegram delivery, authentication, or full multi-user/multi-portfolio
+> system exist yet. See [Phase Plan](#phase-plan) below.
 
 ## What this project does (target scope)
 
@@ -107,9 +112,13 @@ thndr-smart-portfolio/
    [ARCHITECTURE.md](./ARCHITECTURE.md).
 3. **The system recommends, it does not execute.** Rebalancing and inflow
    allocation produce recommendations only — no automated trading.
-4. **No fabricated data.** Market data comes from an explicit provider
-   abstraction; when no real provider is configured, a `MockMarketDataProvider`
-   is used and clearly labeled as mock — never presented as real.
+4. **No fabricated data.** Every price flows through an explicit
+   `PriceProvider` abstraction (Phase 11) — Yahoo Finance where
+   supported, a first-class manual entry path otherwise. An asset class
+   with no genuinely available/documented provider (EGX, generic fund
+   NAV) is left unconfigured rather than backed by an invented endpoint
+   or fabricated data; a price that cannot currently be determined is
+   reported as unavailable, never guessed or shown as zero.
 5. **Incremental, verified delivery.** Every phase is implemented, run,
    tested, and documented before moving to the next. See the Phase Plan.
 
@@ -135,11 +144,12 @@ before the next begins.
 7. Smart Inflow Allocator — done
 8. Watchlist + Alerts — done
 9. Next.js Frontend (Portfolio Dashboard, mobile-first, RTL, dark mode) — done
-10. Transaction & Holdings Engine (BUY/SELL, average-cost accounting) — done *(current; reordered ahead of Telegram per approval)*
-11. Telegram Notifications
-12. PWA (installable, offline-capable)
-13. Capacitor wrappers
-14. Production deployment prep
+10. Transaction & Holdings Engine (BUY/SELL, average-cost accounting) — done
+11. Generic Hybrid Price Infrastructure (provider-driven prices, FX, non-blocking valuation) — done *(current; reordered ahead of Telegram per approval)*
+12. Telegram Notifications
+13. PWA (installable, offline-capable)
+14. Capacitor wrappers
+15. Production deployment prep
 
 ## Local Development
 

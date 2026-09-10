@@ -12,8 +12,11 @@ import type {
   AssetOut,
   HealthOut,
   InflowAllocationOut,
+  ManualPriceCreateRequest,
   PortfolioAllocationOut,
   PortfolioSummaryOut,
+  PriceObservationOut,
+  PriceOut,
   StrategyValidationOut,
   TransactionCreateRequest,
   TransactionOut,
@@ -124,4 +127,11 @@ export const api = {
     request<AlertRuleOut>(`/alerts/${alertRuleId}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteAlertRule: (alertRuleId: string) => request<void>(`/alerts/${alertRuleId}`, { method: "DELETE" }),
   evaluateAlerts: () => request<AlertEvaluationOut>("/alerts/evaluate", { method: "POST" }),
+
+  getAssetPrice: (assetId: string) => request<PriceOut>(`/assets/${assetId}/price`),
+  listAssetPrices: (assetId: string) => request<PriceObservationOut[]>(`/assets/${assetId}/prices`),
+  setManualPrice: (assetId: string, payload: ManualPriceCreateRequest) =>
+    request<PriceOut>(`/assets/${assetId}/price/manual`, { method: "POST", body: JSON.stringify(payload) }),
+  refreshAssetPrice: (assetId: string) =>
+    request<PriceOut>(`/assets/${assetId}/price/refresh`, { method: "POST" }),
 };

@@ -6,7 +6,7 @@ from httpx import ASGITransport, AsyncClient
 from app.core.database import get_db_session
 from app.main import app
 from app.models import AssetType, Holding, PortfolioConfig, StrategyBucket
-from app.tests.conftest import make_asset
+from app.tests.conftest import make_asset, make_current_price
 
 
 @pytest_asyncio.fixture
@@ -35,12 +35,14 @@ async def test_portfolio_summary_endpoint_returns_calculated_values(db_session, 
     db_session.add(emergency_asset)
     await db_session.flush()
     config.emergency_asset_id = emergency_asset.id
-    db_session.add(Holding(asset_id=emergency_asset.id, quantity=Decimal("1"), current_price=Decimal("100000")))
+    db_session.add(Holding(asset_id=emergency_asset.id, quantity=Decimal("1")))
+    await make_current_price(db_session, emergency_asset, Decimal("100000"))
 
     stock_asset = make_asset("APISTK")
     db_session.add(stock_asset)
     await db_session.flush()
-    db_session.add(Holding(asset_id=stock_asset.id, quantity=Decimal("100"), current_price=Decimal("100")))
+    db_session.add(Holding(asset_id=stock_asset.id, quantity=Decimal("100")))
+    await make_current_price(db_session, stock_asset, Decimal("100"))
     await db_session.commit()
 
     response = await client.get("/api/portfolio/summary")
@@ -77,16 +79,14 @@ async def test_portfolio_summary_total_unrealized_pnl_percent_uses_total_cost_ba
     asset_a = make_asset("APIPNLA")
     db_session.add(asset_a)
     await db_session.flush()
-    db_session.add(
-        Holding(asset_id=asset_a.id, quantity=Decimal("10"), average_cost=Decimal("50"), current_price=Decimal("60"))
-    )  # cost basis 500, market value 600, pnl +100
+    db_session.add(Holding(asset_id=asset_a.id, quantity=Decimal("10"), average_cost=Decimal("50")))
+    await make_current_price(db_session, asset_a, Decimal("60"))  # cost basis 500, market value 600, pnl +100
 
     asset_b = make_asset("APIPNLB")
     db_session.add(asset_b)
     await db_session.flush()
-    db_session.add(
-        Holding(asset_id=asset_b.id, quantity=Decimal("5"), average_cost=Decimal("100"), current_price=Decimal("90"))
-    )  # cost basis 500, market value 450, pnl -50
+    db_session.add(Holding(asset_id=asset_b.id, quantity=Decimal("5"), average_cost=Decimal("100")))
+    await make_current_price(db_session, asset_b, Decimal("90"))  # cost basis 500, market value 450, pnl -50
     await db_session.commit()
 
     response = await client.get("/api/portfolio/summary")
@@ -110,7 +110,8 @@ async def test_portfolio_allocation_endpoint_returns_calculated_percentages(db_s
     asset = make_asset("APIALLOC", strategy_bucket_id=bucket.id)
     db_session.add(asset)
     await db_session.flush()
-    db_session.add(Holding(asset_id=asset.id, quantity=Decimal("10"), current_price=Decimal("10")))  # value 100
+    db_session.add(Holding(asset_id=asset.id, quantity=Decimal("10")))  # value 100
+    await make_current_price(db_session, asset, Decimal("10"))
     await db_session.commit()
 
     response = await client.get("/api/portfolio/allocation")
@@ -142,12 +143,14 @@ async def test_excluded_emergency_bucket_has_null_risk_allocation_percent_via_ap
     db_session.add(emergency_asset)
     await db_session.flush()
     config.emergency_asset_id = emergency_asset.id
-    db_session.add(Holding(asset_id=emergency_asset.id, quantity=Decimal("1"), current_price=Decimal("100000")))
+    db_session.add(Holding(asset_id=emergency_asset.id, quantity=Decimal("1")))
+    await make_current_price(db_session, emergency_asset, Decimal("100000"))
 
     stock_asset = make_asset("CAVEATSTK")
     db_session.add(stock_asset)
     await db_session.flush()
-    db_session.add(Holding(asset_id=stock_asset.id, quantity=Decimal("100"), current_price=Decimal("100")))
+    db_session.add(Holding(asset_id=stock_asset.id, quantity=Decimal("100")))
+    await make_current_price(db_session, stock_asset, Decimal("100"))
     await db_session.commit()
 
     response = await client.get("/api/portfolio/allocation")
@@ -179,7 +182,8 @@ async def test_api_calls_do_not_mutate_database(db_session, client):
     asset = make_asset("NOMUT")
     db_session.add(asset)
     await db_session.flush()
-    db_session.add(Holding(asset_id=asset.id, quantity=Decimal("1"), current_price=Decimal("42")))
+    db_session.add(Holding(asset_id=asset.id, quantity=Decimal("1")))
+    await make_current_price(db_session, asset, Decimal("42"))
     await db_session.commit()
 
     from sqlalchemy import func, select

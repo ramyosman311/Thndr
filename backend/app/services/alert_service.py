@@ -31,6 +31,7 @@ from app.repositories.watchlist_repository import (
     get_watchlist_entry_by_id,
 )
 from app.schemas.alert import AlertEvaluationEntryOut, AlertEvaluationOut, AlertRuleOut
+from app.services import price_service
 from app.services.notification_dispatcher import NotificationDispatcher, NullNotificationDispatcher
 from app.services.portfolio_service import PortfolioNotConfiguredError, get_portfolio_allocation
 from app.services.watchlist_service import WatchlistEntryNotFoundError, list_evaluation_candidates
@@ -172,6 +173,14 @@ async def evaluate_alerts(
 
     candidates = await list_evaluation_candidates(session)
 
+    # Batched, native-currency prices for every candidate asset (Phase
+    # 11) -- price_target/dip_buy thresholds are configured in the
+    # asset's own currency, so no base-currency conversion applies here.
+    # This is a Price Service DB read, never a live provider call (see
+    # FINANCIAL_RULES.md, "Non-Blocking Valuation").
+    candidate_assets = [watchlist_entry.asset for watchlist_entry in candidates]
+    prices = await price_service.get_prices_for_assets(session, candidate_assets)
+
     results: list[AlertEvaluationEntryOut] = []
     for watchlist_entry in candidates:
         rule = watchlist_entry.alert_rule
@@ -180,7 +189,8 @@ async def evaluate_alerts(
 
         asset = watchlist_entry.asset
         bucket = bucket_by_id.get(str(asset.strategy_bucket_id)) if asset.strategy_bucket_id else None
-        current_price = asset.holding.current_price if asset.holding is not None else None
+        price_result = prices.get(asset.id)
+        current_price = price_result.price if price_result is not None and price_result.is_usable else None
 
         previously_triggered = rule.last_triggered_at is not None
         checks: list[AlertCheckResult] = []

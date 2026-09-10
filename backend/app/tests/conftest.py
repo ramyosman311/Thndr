@@ -1,6 +1,8 @@
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import psycopg2
@@ -24,6 +26,25 @@ def make_asset(symbol: str, **kwargs) -> Asset:
         asset_type=kwargs.pop("asset_type", AssetType.STOCK),
         currency=kwargs.pop("currency", "EGP"),
         **kwargs,
+    )
+
+
+async def make_current_price(session, asset, price: Decimal, *, currency: str | None = None) -> None:
+    """Seeds a fresh, current (not stale) price observation for `asset`
+    via the real Price Service write path (Phase 11) -- the equivalent
+    of what used to be `Holding(current_price=...)` before valuation
+    moved off that column (see FINANCIAL_RULES.md, "Single Source Of
+    Truth For Current Price"). Flushes but does not commit."""
+    from app.repositories import price_repository
+
+    await price_repository.insert_price_observation(
+        session,
+        asset_id=asset.id,
+        price=price,
+        currency=currency or asset.currency,
+        provider="yahoo",
+        recorded_at=datetime.now(timezone.utc),
+        is_manual=False,
     )
 
 

@@ -12,6 +12,8 @@ function makeSummary(overrides: Partial<PortfolioSummaryOut> = {}): PortfolioSum
     denominator_basis: "investable",
     denominator_value: "10000.00",
     emergency_excluded: true,
+    is_complete: true,
+    unpriced_asset_ids: [],
     holdings_pnl: [],
     total_unrealized_pnl: "500.00",
     total_unrealized_pnl_percent: "5.00",

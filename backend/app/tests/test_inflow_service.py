@@ -16,7 +16,7 @@ from app.models import (
 from app.seed.seed import run_seed
 from app.services.inflow_service import PortfolioNotConfiguredError, get_inflow_allocation
 from app.services.strategy_service import get_strategy_validation
-from app.tests.conftest import make_asset
+from app.tests.conftest import make_asset, make_current_price
 
 
 async def _setup_portfolio(session, *, emergency_excluded=True):
@@ -33,7 +33,8 @@ async def _setup_portfolio(session, *, emergency_excluded=True):
     session.add(emergency_bucket)
     await session.flush()
     emergency_asset.strategy_bucket_id = emergency_bucket.id
-    session.add(Holding(asset_id=emergency_asset.id, quantity=Decimal("1"), current_price=Decimal("100000")))
+    session.add(Holding(asset_id=emergency_asset.id, quantity=Decimal("1")))
+    await make_current_price(session, emergency_asset, Decimal("100000"))
 
     growth_bucket = StrategyBucket(portfolio_config_id=config.id, name="Growth")
     session.add(growth_bucket)
@@ -41,7 +42,8 @@ async def _setup_portfolio(session, *, emergency_excluded=True):
     growth_asset = make_asset("INGROWTH", strategy_bucket_id=growth_bucket.id)
     session.add(growth_asset)
     await session.flush()
-    session.add(Holding(asset_id=growth_asset.id, quantity=Decimal("40"), current_price=Decimal("100")))  # 4000
+    session.add(Holding(asset_id=growth_asset.id, quantity=Decimal("40")))  # 4000
+    await make_current_price(session, growth_asset, Decimal("100"))
     growth_target = AllocationTarget(
         portfolio_config_id=config.id, strategy_bucket_id=growth_bucket.id, target_percent=Decimal("55"), priority=1
     )
@@ -53,7 +55,8 @@ async def _setup_portfolio(session, *, emergency_excluded=True):
     defensive_asset = make_asset("INDEFENSE", strategy_bucket_id=defensive_bucket.id)
     session.add(defensive_asset)
     await session.flush()
-    session.add(Holding(asset_id=defensive_asset.id, quantity=Decimal("10"), current_price=Decimal("100")))  # 1000
+    session.add(Holding(asset_id=defensive_asset.id, quantity=Decimal("10")))  # 1000
+    await make_current_price(session, defensive_asset, Decimal("100"))
     defensive_target = AllocationTarget(
         portfolio_config_id=config.id, strategy_bucket_id=defensive_bucket.id, target_percent=Decimal("25"), priority=2
     )
@@ -117,7 +120,8 @@ async def test_seeded_85_percent_strategy_reported_and_not_invented(db_session):
     await run_seed(db_session)
 
     tmgh = (await db_session.execute(select(Asset).where(Asset.symbol == "TMGH"))).scalar_one()
-    db_session.add(Holding(asset_id=tmgh.id, quantity=Decimal("10"), current_price=Decimal("100")))  # value 1000
+    db_session.add(Holding(asset_id=tmgh.id, quantity=Decimal("10")))  # value 1000
+    await make_current_price(db_session, tmgh, Decimal("100"))
     await db_session.commit()
 
     result = await get_inflow_allocation(db_session, Decimal("1000"))

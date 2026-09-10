@@ -7,7 +7,6 @@ from app.domain.alert_engine import AlertCheckResult
 from app.models import (
     AllocationTarget,
     Asset,
-    AssetType,
     Holding,
     PortfolioConfig,
     PortfolioSnapshot,
@@ -21,7 +20,7 @@ from app.services.alert_service import (
     InvalidAlertRuleConfigurationError,
 )
 from app.services.watchlist_service import WatchlistEntryNotFoundError
-from app.tests.conftest import make_asset
+from app.tests.conftest import make_asset, make_current_price
 
 
 class RecordingNotifier:
@@ -59,7 +58,9 @@ async def _setup_watched_bucket(
     session.add(asset)
     await session.flush()
     quantity = (asset_value / current_price) if current_price != 0 else Decimal("0")
-    session.add(Holding(asset_id=asset.id, quantity=quantity, current_price=current_price))
+    session.add(Holding(asset_id=asset.id, quantity=quantity))
+    if current_price != 0:
+        await make_current_price(session, asset, current_price)
 
     if emergency:
         config.emergency_asset_id = asset.id
@@ -81,7 +82,8 @@ async def _setup_watched_bucket(
     other_asset = make_asset("OTHERASSET", strategy_bucket_id=other_bucket.id)
     session.add(other_asset)
     await session.flush()
-    session.add(Holding(asset_id=other_asset.id, quantity=other_value, current_price=Decimal("1")))
+    session.add(Holding(asset_id=other_asset.id, quantity=other_value))
+    await make_current_price(session, other_asset, Decimal("1"))
 
     await session.commit()
     return config, bucket, asset
@@ -347,8 +349,11 @@ async def test_dedup_clears_and_can_re_trigger_after_condition_becomes_true_agai
 
     await alert_service.evaluate_alerts(db_session)  # new trigger, latch set
 
-    holding = (await db_session.execute(select(Holding).where(Holding.asset_id == asset.id))).scalar_one()
-    holding.current_price = Decimal("100")
+    # A newer price observation is what "the price changed" means now
+    # (Phase 11) -- Price Service always reads the latest one, so this
+    # is the equivalent of the old direct `holding.current_price = ...`
+    # mutation.
+    await make_current_price(db_session, asset, Decimal("100"))
     await db_session.commit()
 
     cleared = await alert_service.evaluate_alerts(db_session)
@@ -356,7 +361,7 @@ async def test_dedup_clears_and_can_re_trigger_after_condition_becomes_true_agai
     assert cleared_price.condition_met is False
     assert cleared_price.should_clear is True
 
-    holding.current_price = Decimal("150")
+    await make_current_price(db_session, asset, Decimal("150"))
     await db_session.commit()
 
     retriggered = await alert_service.evaluate_alerts(db_session)
@@ -402,7 +407,8 @@ async def test_evaluate_works_with_no_portfolio_configured_for_non_allocation_ch
     asset = make_asset("NOPORTFOLIO")
     db_session.add(asset)
     await db_session.commit()
-    db_session.add(Holding(asset_id=asset.id, quantity=Decimal("1"), current_price=Decimal("150")))
+    db_session.add(Holding(asset_id=asset.id, quantity=Decimal("1")))
+    await make_current_price(db_session, asset, Decimal("150"))
     await db_session.commit()
 
     entry = await watchlist_service.add_to_watchlist(db_session, asset.id)

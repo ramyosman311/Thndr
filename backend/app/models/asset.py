@@ -10,6 +10,8 @@ from app.models.enums import AssetType
 from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
+    from app.models.asset_price import AssetPrice
+    from app.models.asset_price_config import AssetPriceConfig
     from app.models.holding import Holding
     from app.models.snapshot import PortfolioSnapshotItem
     from app.models.strategy_bucket import StrategyBucket
@@ -53,3 +55,11 @@ class Asset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     transactions: Mapped[list["Transaction"]] = relationship(back_populates="asset")
     watchlist_entry: Mapped["Watchlist | None"] = relationship(back_populates="asset", uselist=False)
     snapshot_items: Mapped[list["PortfolioSnapshotItem"]] = relationship(back_populates="asset")
+    # Price config/history cascade with the asset (Phase 11) — unlike the
+    # relationships above, these are pure pricing metadata/observations,
+    # not financial/audit records, so deleting an asset that's otherwise
+    # deletable removes its price config and history with it.
+    price_config: Mapped["AssetPriceConfig | None"] = relationship(
+        back_populates="asset", uselist=False, cascade="all, delete-orphan"
+    )
+    prices: Mapped[list["AssetPrice"]] = relationship(back_populates="asset", cascade="all, delete-orphan")

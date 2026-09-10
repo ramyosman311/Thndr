@@ -2,17 +2,23 @@
 
 ## Status
 
-Implemented as of **Phase 3**: all core tables below exist as SQLAlchemy
-2.x models (`backend/app/models/`) and a real Alembic migration
+Core portfolio schema implemented as of **Phase 3**: those tables exist
+as SQLAlchemy 2.x models (`backend/app/models/`) and a real Alembic
+migration
 (`backend/alembic/versions/ac3c275604cd_phase_3_core_portfolio_schema.py`),
-applied and verified against a real PostgreSQL database. Phases 4-10 built
-seed data and business/calculation logic against this schema **without
-requiring any further migration** — Phase 8 (Watchlist + Alerts)
-confirmed the `watchlist`/`alert_rules` tables were sufficient as-is (see
-"Known Schema Limitations (Phase 8)" below for the two gaps it disclosed
-rather than worked around), and Phase 10 (Transaction + Holdings Engine)
-confirmed `holdings`/`transactions` were already exactly what
-transaction-derived positions require.
+applied and verified against a real PostgreSQL database. Phases 4-10
+built seed data and business/calculation logic against this schema
+**without requiring any further migration** — Phase 8 (Watchlist +
+Alerts) confirmed the `watchlist`/`alert_rules` tables were sufficient
+as-is (see "Known Schema Limitations (Phase 8)" below for the two gaps
+it disclosed rather than worked around), and Phase 10 (Transaction +
+Holdings Engine) confirmed `holdings`/`transactions` were already
+exactly what transaction-derived positions require. **Phase 11** adds
+the first schema change since Phase 3: three new, purely additive
+tables (`asset_price_configs`, `asset_prices`, `fx_rates` — see their
+own sections below) via migration
+`backend/alembic/versions/7dbad9d06fb1_phase_11_price_infrastructure.py`.
+No existing table's columns, constraints, or data were touched.
 
 ## Engine
 
@@ -110,7 +116,7 @@ never a hardcoded grouping around specific ticker symbols.
 | asset_id      | UUID (FK → assets, **unique**, `ON DELETE RESTRICT`) | one holding row per asset |
 | quantity      | `NUMERIC(20,8)` | |
 | average_cost  | `NUMERIC(20,8)` | cost basis per unit |
-| current_price | `NUMERIC(20,8)` | last known price (from market data provider) |
+| current_price | `NUMERIC(20,8)` | **deprecated as of Phase 11 — see below** |
 | updated_at    | timestamp | |
 
 CHECK constraints: `quantity >= 0`, `average_cost >= 0`, `current_price >= 0`.
@@ -122,6 +128,17 @@ needed no change to support that; it was already exactly what a
 transaction-derived position requires. `current_price` remains untouched
 by transactions (a separate concept — see FINANCIAL_RULES.md, "Current
 Price Is Not Set By Transactions"); nothing in Phase 10 writes it.
+
+**Phase 11 update:** `current_price` is no longer read or written by
+ANY code path. Every current-price read now goes through
+`services/price_service.py`, backed by the new `asset_prices` table
+below — see "Single Source Of Truth For Current Price" in
+FINANCIAL_RULES.md for why this column was left in place (not dropped)
+rather than migrated: dropping a column is a one-way schema change, and
+Phase 11's approved migration plan was additive-only (three new
+tables). The column is reported here as dead/legacy; a future migration
+may drop it once nothing references it (nothing does, as of this
+phase).
 
 ### `transactions`
 
@@ -289,6 +306,76 @@ Snapshots are point-in-time value records, distinct from transactions —
 see "Snapshot ≠ Transaction" in [FINANCIAL_RULES.md](./FINANCIAL_RULES.md).
 Quantities are never inferred from snapshot values.
 
+### `asset_price_configs` (Phase 11)
+
+One optional row per asset, describing how (if at all) its price is
+obtained. No row at all means "no automated fetching, manual only" —
+this is a normal, expected state (see FINANCIAL_RULES.md, "Unconfigured
+Providers Are Not Errors"), not a data gap to fill in.
+
+| Field                      | Type      | Notes |
+|----------------------------|-----------|-------|
+| id                         | UUID (PK) | |
+| asset_id                   | UUID (FK → assets, **unique**, `ON DELETE CASCADE`) | one config row per asset |
+| primary_provider           | string, nullable | provider name, e.g. `"yahoo"` — resolved via `app/providers/registry.py`, never inferred from the asset's own symbol |
+| primary_provider_symbol    | string, nullable | the symbol AS THAT PROVIDER expects it — may differ from `assets.symbol` |
+| secondary_provider         | string, nullable | fallback provider, tried only if the primary fails |
+| secondary_provider_symbol  | string, nullable | |
+| automated_fetching_enabled | boolean, default `false` | the background refresh worker skips this asset entirely unless true |
+| manual_override_enabled    | boolean, default `true` | whether the manual price UI is offered for this asset |
+| stale_threshold_minutes    | integer, nullable | overrides the asset-type default in `domain/stale_policy.py` when set |
+| lock_manual                 | boolean, default `false` | when true, blocks ANY automated observation from superseding the current manual one, regardless of timestamp |
+
+`ON DELETE CASCADE` from `assets` (unlike `transactions`' `RESTRICT`):
+a price *configuration* has no independent meaning once its asset is
+gone, unlike a financial history record.
+
+### `asset_prices` (Phase 11)
+
+An append-only, immutable observation history — the single source of
+truth "current price" is read from (via `services/price_service.py`).
+A row here is never updated or deleted once inserted.
+
+| Field           | Type      | Notes |
+|-----------------|-----------|-------|
+| id              | UUID (PK) | |
+| asset_id        | UUID (FK → assets, `ON DELETE CASCADE`) | |
+| price           | `NUMERIC(20,8)` | |
+| currency        | string | the asset's own currency at observation time |
+| provider        | string | e.g. `"yahoo"`, or `"manual"` for a user-submitted price |
+| source          | string, nullable | free-form provenance detail (e.g. a raw response field) |
+| provider_symbol | string, nullable | the symbol the provider was queried with, for traceability |
+| recorded_at     | timestamp (timezone-aware) | when the PRICE is as-of, not when the row was inserted |
+| is_manual       | boolean | true for a user-submitted observation |
+| price_metadata  | JSONB, nullable | raw provider response fragment, for debugging — never parsed back out for business logic |
+| created_at      | timestamp | row insertion time (`CreatedAtMixin`) |
+
+CHECK `price >= 0`. Indexed on `(asset_id, recorded_at)` for the
+"latest observation per asset" query every request-time read performs.
+Named `price_metadata`, not `metadata` — SQLAlchemy reserves `metadata`
+on the declarative `Base`.
+
+### `fx_rates` (Phase 11)
+
+The currency-pair equivalent of `asset_prices` — same
+immutable-observation-history shape, generic for any currency pair (no
+hardcoded USD/EGP-only columns or logic).
+
+| Field           | Type      | Notes |
+|-----------------|-----------|-------|
+| id              | UUID (PK) | |
+| base_currency   | string | the currency being converted FROM |
+| quote_currency  | string | the currency being converted TO |
+| rate            | `NUMERIC(20,8)` | quote-currency units per 1 base-currency unit |
+| provider        | string | |
+| recorded_at     | timestamp (timezone-aware) | |
+| rate_metadata   | JSONB, nullable | |
+| created_at      | timestamp | |
+
+CHECK `rate > 0`. Indexed on `(base_currency, quote_currency,
+recorded_at)`. Not tied to any asset row — a rate is a property of a
+currency pair, not of one asset.
+
 ## A Circular Foreign Key, and How the Migration Handles It
 
 `assets.strategy_bucket_id → strategy_buckets`,
@@ -307,11 +394,14 @@ against a real database.
 ## Future Tables (not built yet, architecture must not preclude them)
 
 `portfolio_snapshots` / `portfolio_snapshot_items` were brought forward
-from this list and implemented in Phase 3 (see above). Still deferred:
+from this list and implemented in Phase 3 (see above). `market_quotes`
+was brought forward and implemented in Phase 11 as `asset_prices` +
+`asset_price_configs` + `fx_rates` (a normalized three-table design
+turned out to fit the actual requirements better than one wide
+`market_quotes` table — see the sections above). Still deferred:
 
 - `cash_flows`
 - `alert_events`
-- `market_quotes`
 - `scheduled_income`
 - `users`
 - `audit_logs`

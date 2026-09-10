@@ -17,7 +17,7 @@ from app.services.portfolio_service import (
     get_portfolio_allocation,
     get_portfolio_summary,
 )
-from app.tests.conftest import make_asset
+from app.tests.conftest import make_asset, make_current_price
 
 
 async def _setup_portfolio(session, *, emergency_excluded=True):
@@ -29,7 +29,8 @@ async def _setup_portfolio(session, *, emergency_excluded=True):
     session.add(emergency_asset)
     await session.flush()
     config.emergency_asset_id = emergency_asset.id
-    session.add(Holding(asset_id=emergency_asset.id, quantity=Decimal("1"), current_price=Decimal("100000")))
+    session.add(Holding(asset_id=emergency_asset.id, quantity=Decimal("1")))
+    await make_current_price(session, emergency_asset, Decimal("100000"))
 
     stock_bucket = StrategyBucket(portfolio_config_id=config.id, name="Stocks")
     session.add(stock_bucket)
@@ -38,7 +39,8 @@ async def _setup_portfolio(session, *, emergency_excluded=True):
     stock_asset = make_asset("STK1", strategy_bucket_id=stock_bucket.id)
     session.add(stock_asset)
     await session.flush()
-    session.add(Holding(asset_id=stock_asset.id, quantity=Decimal("100"), current_price=Decimal("100")))  # 10000
+    session.add(Holding(asset_id=stock_asset.id, quantity=Decimal("100")))  # 10000
+    await make_current_price(session, stock_asset, Decimal("100"))
 
     await session.commit()
     return config, stock_bucket, emergency_asset, stock_asset
@@ -68,7 +70,8 @@ async def test_dynamic_asset_is_automatically_included_without_code_change(db_se
     new_asset = make_asset("NEWASSET", strategy_bucket_id=stock_bucket.id)
     db_session.add(new_asset)
     await db_session.flush()
-    db_session.add(Holding(asset_id=new_asset.id, quantity=Decimal("10"), current_price=Decimal("50")))  # 500
+    db_session.add(Holding(asset_id=new_asset.id, quantity=Decimal("10")))  # 500
+    await make_current_price(db_session, new_asset, Decimal("50"))
     await db_session.commit()
 
     summary = await get_portfolio_summary(db_session)
@@ -85,7 +88,8 @@ async def test_dynamic_strategy_bucket_is_automatically_recognized_without_code_
     new_asset = make_asset("NEWCAT", strategy_bucket_id=new_bucket.id)
     db_session.add(new_asset)
     await db_session.flush()
-    db_session.add(Holding(asset_id=new_asset.id, quantity=Decimal("1"), current_price=Decimal("1000")))
+    db_session.add(Holding(asset_id=new_asset.id, quantity=Decimal("1")))
+    await make_current_price(db_session, new_asset, Decimal("1000"))
     await db_session.commit()
 
     allocation = await get_portfolio_allocation(db_session)
@@ -149,3 +153,45 @@ async def test_portfolio_engine_has_no_side_effects(db_session):
     after = await count_all()
 
     assert before == after
+
+
+# --- Phase 11: incomplete valuation is exposed, never fabricated as zero ----
+
+
+async def test_summary_reports_incomplete_valuation_for_a_held_but_unpriced_asset(db_session):
+    config = PortfolioConfig(name="Unpriced Test Portfolio", base_currency="EGP", emergency_excluded=False)
+    db_session.add(config)
+    await db_session.flush()
+
+    priced = make_asset("PRICEDONE")
+    db_session.add(priced)
+    await db_session.flush()
+    db_session.add(Holding(asset_id=priced.id, quantity=Decimal("10")))
+    await make_current_price(db_session, priced, Decimal("100"))
+
+    unpriced = make_asset("UNPRICEDONE")
+    db_session.add(unpriced)
+    await db_session.flush()
+    db_session.add(Holding(asset_id=unpriced.id, quantity=Decimal("5")))  # held, but no price observation at all
+
+    await db_session.commit()
+
+    summary = await get_portfolio_summary(db_session)
+
+    assert summary.is_complete is False
+    assert unpriced.id in summary.unpriced_asset_ids
+    # The priced asset's value (1000) is still reported -- the unpriced
+    # one is excluded from the total, never treated as worth 0.
+    assert summary.total_value == Decimal("1000.00")
+
+    unpriced_pnl = next(h for h in summary.holdings_pnl if h.symbol == "UNPRICEDONE")
+    assert unpriced_pnl.current_price is None
+    assert unpriced_pnl.market_value is None
+    assert unpriced_pnl.price_status == "PRICE_UNAVAILABLE"
+
+
+async def test_allocation_reports_complete_valuation_when_every_position_is_priced(db_session):
+    config, *_ = await _setup_portfolio(db_session, emergency_excluded=False)
+    allocation = await get_portfolio_allocation(db_session)
+    assert allocation.is_complete is True
+    assert allocation.unpriced_asset_ids == []

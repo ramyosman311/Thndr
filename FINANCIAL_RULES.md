@@ -3,9 +3,8 @@
 ## Status
 
 This document specifies the financial domain rules the backend `domain/`
-layer must implement (Phases 5–10). No calculation logic exists yet in
-Phase 1. This is the specification those phases are built and tested
-against.
+layer must implement (Phases 5–11). This is the specification those
+phases are built and tested against.
 
 ## Core Principle: Database Is the Source of Truth
 
@@ -396,21 +395,20 @@ proportionate safeguard for a single-user application; a busier
 multi-writer system would warrant a retry-on-conflict wrapper, which
 Phase 10 does not add (no evidence it's needed yet).
 
-**Current Price Is Not Set By Transactions.** `holding.current_price` is
-a separate concept from `transaction.price` (the actual executed price)
-— see "Snapshot ≠ Transaction" for the analogous principle applied to
-snapshots. A BUY/SELL updates only `quantity` and `average_cost`; it
-never writes `current_price`. **Disclosed consequence:** a holding
-acquired purely through Phase 10 transactions keeps `current_price` at
-its previous value (`0` for a brand-new holding) until some other
-mechanism sets it — no such mechanism exists yet (no live market-data
-provider, no manual "update price" endpoint). Until then, that holding's
-`market_value` is honestly `0` and its `unrealized_pnl` is honestly
-`-cost_basis` (a well-defined consequence of the stored data, not a
-fabrication) — verified directly end-to-end. Introducing a way to set
-`current_price` (a market-data provider, or a manual `PATCH
-/api/holdings/{id}`) is a natural next step but was not implemented in
-Phase 10 because nothing in this phase's required scope depended on it.
+**Current Price Is Not Set By Transactions.** The current price used for
+valuation is a separate concept from `transaction.price` (the actual
+executed price) — see "Snapshot ≠ Transaction" for the analogous
+principle applied to snapshots. A BUY/SELL updates only `quantity` and
+`average_cost`; it never writes a price anywhere. **As of Phase 11**,
+current price is obtained from `services/price_service.py` (see "Price
+Infrastructure (Phase 11)" below), not from `holdings.current_price`
+(now dead/unread — see DATABASE.md). A holding with no usable price
+reports `market_value: null`/`unrealized_pnl: null` (via
+`price_status: "PRICE_UNAVAILABLE"`) rather than the pre-Phase-11
+behavior of a fabricated `0`/`-cost_basis` — see "Never Fabricate A
+Price" below. A price can be obtained either automatically (background
+refresh from a configured provider) or manually
+(`POST /api/assets/{id}/price/manual`).
 
 **Storage precision boundary.** `holdings.average_cost` is `NUMERIC(20, 8)`
 (Phase 3). `new_average_cost`/`remaining_average_cost` are computed as
@@ -447,13 +445,184 @@ value observations**, not trade records.
   does not tell you how many shares were held or at what price — only the
   recorded value.
 
-## Market Data Integrity
+## Price Infrastructure (Phase 11)
 
-Market data flows only through the `MarketDataProvider` abstraction
-(`get_quote`, `get_quotes`, `get_gold_price`). Until a real provider is
-configured, `MockMarketDataProvider` is used and is **explicitly marked as
-mock** in code, logs, and (where surfaced) the UI. Mock data must never be
-presented to the user as real market data.
+Supersedes the earlier "Market Data Integrity" placeholder (a
+`MarketDataProvider`/`MockMarketDataProvider` design that was never
+actually built). What follows is the real, implemented architecture —
+see ARCHITECTURE.md, "Price Infrastructure" for the component diagram,
+and DATABASE.md for the `asset_price_configs`/`asset_prices`/`fx_rates`
+schema.
+
+**Non-Blocking Valuation (NON-NEGOTIABLE).** No request-time read —
+`GET /api/portfolio/summary`, `.../allocation`, `POST
+/api/alerts/evaluate`, `POST /api/transactions`'s response snapshot —
+may ever synchronously call a live `PriceProvider`. Each reads only the
+already-stored `asset_prices` history via `services/price_service.py`.
+Fetching *new* data from a provider happens exclusively in
+`services/price_orchestrator.py`, called only by the out-of-band
+background worker (`app/workers/price_refresh.py`). This guarantees:
+dashboard speed and success are independent of any provider's
+latency/outage; valuation for a given DB state is deterministic; and
+one asset's provider failure can never surface as a broken page.
+Verified directly: `app/tests/test_non_blocking_valuation.py` monkeypatches
+the provider registry to raise if ever called, then exercises every
+request-time read path end-to-end against a real seeded database. The
+ONE deliberate exception is `POST /api/assets/{id}/price/refresh` — an
+explicit, user-initiated, single-asset synchronous fetch, never called
+by any other code path.
+
+**Provider Configuration Is Data, Not Code.** Which provider (if any)
+prices an asset, and under what symbol, is a per-asset
+`asset_price_configs` row — never inferred from the asset's own
+`symbol`, `asset_type`, or market. A `PriceProvider` implementation
+receives exactly the `provider_symbol` string configured for it; it
+never guesses, transforms, or reverse-engineers a symbol.
+
+**Unconfigured Providers Are Not Errors.** An asset with no
+`asset_price_configs` row, or with `automated_fetching_enabled=false`,
+is a normal, expected, permanent state — not a bug or a gap to silently
+work around. EGX and generic fund-NAV providers have no dedicated
+adapter (no genuinely documented/accessible API was available to
+implement against without inventing endpoints or scraping) — such
+assets simply rely on manual pricing, which remains fully first-class
+(see below).
+
+**Manual Pricing Is Not A Provider.** Manual price entry is a push (a
+user submits a value right now); a `PriceProvider` is a pull
+(`get_price(symbol) -> quote`). Forcing manual entry into the
+`PriceProvider` Protocol would be a shape mismatch for no benefit, so it
+isn't: manual submissions are written directly by
+`services/price_service.record_manual_price`, identified in
+`asset_prices` by `provider="manual"`, `is_manual=true`. A manual price
+submission is always accepted as the new latest manual observation
+(there is nothing to "supersede" — the precedence rule below only ever
+gates an *automated* fetch against an existing manual price, never the
+other way around), and it never alters any transaction, holding
+quantity, or average cost.
+
+**Price Observations Are Immutable.** `asset_prices` and `fx_rates` are
+append-only history tables — a row is never updated or deleted once
+inserted. "Current price" is always "the latest row for this asset",
+computed at read time, never a separately maintained mutable field.
+
+**Single Source Of Truth For Current Price.** Every current-price
+consumer — Portfolio Summary, Portfolio Allocation, Smart Inflow
+(via `portfolio_shared.load_priced_positions`), Alert evaluation, the
+Transaction response snapshot — reads through
+`services/price_service.py`. `holdings.current_price` (the pre-Phase-11
+column) is no longer read or written anywhere in the codebase; it was
+left in place rather than dropped because Phase 11's approved migration
+was additive-only (see DATABASE.md). There is exactly one price
+calculation path; Dashboard and Allocation can never disagree on an
+asset's value because they are never computing it independently.
+
+**Never Fabricate A Price.** An asset with no usable price observation
+reports `PRICE_UNAVAILABLE` (`price: null`) — never a fabricated `0`,
+never the last transaction's execution price, never a guessed value. A
+zero-quantity position is the one exception that legitimately values at
+exactly `0` — there's nothing to price, so there's no ambiguity to
+report (see domain/portfolio_engine.py).
+
+**Incomplete Valuation Is Not Zero Valuation.** A held (`quantity > 0`)
+asset with `PRICE_UNAVAILABLE` is *excluded* from
+`total_value`/`emergency_value`/`investable_value`/bucket
+`actual_value` — never counted as worth `0`, which would silently
+understate the portfolio. `PortfolioSummaryOut`/`PortfolioAllocationOut`/
+`InflowAllocationOut` all expose `is_complete: false` plus (on the
+first two) `unpriced_asset_ids` so the gap is visible, not hidden.
+`BucketAllocationOut.has_unpriced_positions` does the same at the
+bucket level.
+
+**Stale Price Policy (NON-NEGOTIABLE): never one universal duration.**
+`domain/stale_policy.py` resolves a staleness threshold per asset,
+never a single hardcoded number for the whole system:
+`asset_price_configs.stale_threshold_minutes` (if set) wins; otherwise
+a per-`AssetType` default (`STOCK`/`ETF`: 60 min — intraday,
+exchange-traded; `FUND`/`GOLD`/`SAVINGS`/`CASH`/`OTHER`: 24h — daily
+NAV or daily reference pricing). An observation's age is computed with
+weekend hours (Saturday/Sunday) excluded before comparing against the
+threshold, so a Friday close checked on Saturday/Sunday/Monday morning
+is correctly NOT stale purely because calendar time elapsed while
+markets were closed — while an intraday price genuinely untouched since
+Friday IS still correctly flagged stale once meaningful Monday trading
+time has passed (the weekend adjustment keeps the reported *age*
+honest; it never hides genuine staleness). **Disclosed limitation:** no
+market-holiday trading calendar is implemented — a holiday adjacent to
+a weekend could still be misclassified as stale. `PriceResult.status`
+is `LAST_KNOWN_PRICE` (not `CURRENT_PRICE_AVAILABLE`) once stale; the
+underlying price is still returned and usable for valuation — it is
+simply never presented as live (see "Never Silently Present Stale As
+Live" below).
+
+**Never Silently Present Stale As Live.** A `LAST_KNOWN_PRICE` result
+always carries `is_stale: true`, `recorded_at`, and `age_seconds` so a
+caller (the frontend, in particular — see `PriceStateBadge`) can render
+it distinctly from a `CURRENT_PRICE_AVAILABLE` result. A stale price is
+still a usable price for valuation math (better than treating a held
+asset as unavailable); it is only ever the *presentation* that must
+distinguish it.
+
+**Manual-vs-Automated Precedence (NON-NEGOTIABLE).**
+`domain/manual_precedence.py`'s `may_automated_observation_supersede_manual`
+is the one function this rule is decided by: an automated observation
+may overwrite-as-latest a manual one only if its timestamp is *strictly
+greater* than the manual observation's `recorded_at` — an automated
+timestamp equal to or older than the manual one never supersedes it,
+regardless of when the automated fetch actually ran. Independently,
+`asset_price_configs.lock_manual`, when set, blocks ANY automated
+supersession regardless of timestamp — a permanent manual lock, not a
+one-time protection. This is enforced exclusively in
+`services/price_orchestrator.py`, server-side, before a fetched
+observation is ever stored — never left to client-side ordering or a
+race between refresh and manual entry.
+
+**Base Currency & FX Conversion (NON-NEGOTIABLE).** Every `Asset` has
+its own `currency`; every `PortfolioConfig` has a `base_currency`. A
+foreign-currency price is NEVER treated as if it were already in base
+currency (e.g. 200 USD × quantity is never treated as 200 EGP ×
+quantity). When `asset.currency != portfolio.base_currency`,
+`services/price_service.get_asset_price_in_base_currency` (and its
+batch form, used by portfolio valuation) looks up the latest `fx_rates`
+row for that exact currency pair; with none on record, the result is
+`CURRENCY_CONVERSION_UNAVAILABLE` (`price: null`) — never an assumed
+1:1 rate, never a hardcoded rate, never the transaction's own currency
+substituted in. A stale FX rate (same weekend-aware staleness algorithm
+as asset prices, using a 24h default — most currency pairs relevant
+here only meaningfully re-quote on business days) is still used for
+conversion but marks the combined result `LAST_KNOWN_PRICE` rather than
+`CURRENT_PRICE_AVAILABLE` — the same "still usable, never presented as
+live" rule asset prices follow. FX is modeled generically
+(`fx_rates.base_currency`/`quote_currency`, any pair) — there is no
+hardcoded USD/EGP-only code path anywhere in this layer.
+
+**Portfolio Valuation Formulas.** Same currency:
+`value = quantity × market_price`. Different currency:
+`value = quantity × asset_price × fx_rate`. A value is only ever
+calculated when every required input is a real, valid, current-or-stale
+observation — never when a price or FX rate is unavailable (that
+position is excluded from sums per "Incomplete Valuation Is Not Zero
+Valuation" above, not zeroed).
+
+**P&L stays formula-unchanged, just optionally undefined.**
+`domain/pnl_engine.py`'s `calculate_holding_pnl` already accepted
+`current_price: Decimal | None` before Phase 11 (a Phase-5-proofed
+signature) and returns `None` for
+`market_value`/`unrealized_pnl`/`unrealized_pnl_percent` when price is
+unavailable — Phase 11 needed no change here, only needed to actually
+supply `None` sometimes. Realized P/L remains untouched by any of this
+— it stays transaction-accounting-based (Phase 10), never affected by
+current market prices.
+
+**Allocation Shares Exactly One Valuation Path.** `domain/
+allocation_engine.py`'s `calculate_bucket_value` excludes (never
+zeroes) a position with no usable value, mirroring
+`calculate_portfolio_totals`; `has_bucket_unpriced_positions` surfaces
+which buckets are affected. Portfolio Summary and Portfolio Allocation
+are computed from the identical `AssetPosition` list (built once via
+`portfolio_shared.load_priced_positions`) — they can never disagree
+about one asset's value due to different pricing logic, because there
+is only one pricing logic.
 
 ## Summary of Non-Negotiable Distinctions
 
@@ -461,6 +630,10 @@ presented to the user as real market data.
 - **Maximum ≠ Allow New Buy**
 - **Emergency Cash ≠ Investment Cash**
 - **Snapshot ≠ Transaction**
+- **Current Price ≠ Transaction Price** (Phase 10/11)
+- **Stale ≠ Live** (Phase 11 — a usable last-known price is never presented as a live one)
+- **Unavailable ≠ Zero** (Phase 11 — an unpriced position is excluded from totals, never counted as worth nothing)
+- **Manual Override ≠ silently overwritable** (Phase 11 — an automated fetch only supersedes a manual price with a strictly newer timestamp, or never, if locked)
 
 These distinctions must be preserved end-to-end: in the database schema
 (DATABASE.md), the domain logic (this document), the API contract

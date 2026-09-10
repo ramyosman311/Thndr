@@ -55,6 +55,13 @@ export const INFLOW_STATUS: Record<string, StatusMeta> = {
   NO_CAPACITY: { label: "لا توجد قيمة استثمارية بعد", tone: "neutral" },
 };
 
+export const PRICE_STATUS: Record<string, StatusMeta> = {
+  CURRENT_PRICE_AVAILABLE: { label: "سعر مباشر", tone: "success" },
+  LAST_KNOWN_PRICE: { label: "آخر سعر معروف", tone: "warning" },
+  PRICE_UNAVAILABLE: { label: "السعر غير متاح", tone: "neutral" },
+  CURRENCY_CONVERSION_UNAVAILABLE: { label: "تعذّر تحويل العملة", tone: "danger" },
+};
+
 export const ALERT_TYPE_LABEL: Record<string, string> = {
   ALLOCATION_BREACH: "تجاوز نسبة التخصيص",
   PRICE_TARGET: "سعر مستهدف",
@@ -80,4 +87,7 @@ export function inflowStatusMeta(status: string): StatusMeta {
 }
 export function alertTypeLabel(alertType: string): string {
   return ALERT_TYPE_LABEL[alertType] ?? alertType;
+}
+export function priceStatusMeta(status: string): StatusMeta {
+  return PRICE_STATUS[status] ?? fallback(status);
 }

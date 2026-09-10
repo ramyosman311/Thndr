@@ -8,6 +8,8 @@ import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { TotalValueCard, ValueSplitCard } from "@/components/dashboard";
 import { TransactionForm } from "@/components/portfolio/transaction-form";
 import { TransactionHistory } from "@/components/portfolio/transaction-history";
+import { ManualPriceEditor, PriceStateBadge } from "@/components/portfolio/price-state";
+import { AlertTriangleIcon } from "@/components/icons";
 import { formatCurrency, formatNumber, formatPercent, isNegative, isZero } from "@/lib/format";
 import type { HoldingPnLOut } from "@/types/api";
 
@@ -34,6 +36,16 @@ export default function PortfolioPage() {
             <TotalValueCard summary={summary} />
             <ValueSplitCard summary={summary} />
 
+            {!summary.is_complete ? (
+              <div className="flex items-start gap-2 rounded-2xl border border-warning/30 bg-warning-muted p-3 text-xs text-warning">
+                <AlertTriangleIcon width={16} height={16} className="mt-0.5 shrink-0" />
+                <p>
+                  القيم أعلاه غير مكتملة: توجد {summary.unpriced_asset_ids.length} أصول مملوكة بدون سعر متاح حاليًا،
+                  ولم تُحتسب قيمتها ضمن الإجمالي (لم تُعتبر صفرًا).
+                </p>
+              </div>
+            ) : null}
+
             <Card>
               <CardHeader title="المراكز الحالية" subtitle={`${summary.holdings_pnl.length} مركز نشط`} />
               <CardBody>
@@ -45,7 +57,12 @@ export default function PortfolioPage() {
                 ) : (
                   <ul className="flex flex-col divide-y divide-border">
                     {summary.holdings_pnl.map((holding) => (
-                      <HoldingRow key={holding.asset_id} holding={holding} currency={summary.base_currency} />
+                      <HoldingRow
+                        key={holding.asset_id}
+                        holding={holding}
+                        currency={summary.base_currency}
+                        onPriceChanged={summaryQuery.refetch}
+                      />
                     ))}
                   </ul>
                 )}
@@ -72,10 +89,19 @@ export default function PortfolioPage() {
   );
 }
 
-function HoldingRow({ holding, currency }: { holding: HoldingPnLOut; currency: string }) {
+function HoldingRow({
+  holding,
+  currency,
+  onPriceChanged,
+}: {
+  holding: HoldingPnLOut;
+  currency: string;
+  onPriceChanged: () => void;
+}) {
   const negative = isNegative(holding.unrealized_pnl);
   const zero = isZero(holding.unrealized_pnl);
-  const tone = zero ? "text-muted-foreground" : negative ? "text-danger" : "text-success";
+  const tone = holding.unrealized_pnl === null ? "text-muted-foreground" : zero ? "text-muted-foreground" : negative ? "text-danger" : "text-success";
+  const priceUnavailable = holding.current_price === null;
 
   return (
     <li className="flex flex-col gap-2 py-3 first:pt-0 last:pb-0">
@@ -102,10 +128,22 @@ function HoldingRow({ holding, currency }: { holding: HoldingPnLOut; currency: s
           <span className="tabular-nums text-foreground">{formatCurrency(holding.cost_basis, currency)}</span>
         </span>
       </div>
-      <p className={`tabular-nums text-xs font-semibold ${tone}`}>
-        {formatCurrency(holding.unrealized_pnl, currency)}
-        {holding.unrealized_pnl_percent !== null ? ` (${formatPercent(holding.unrealized_pnl_percent)})` : " (النسبة غير محسوبة)"}
-      </p>
+
+      <div className="flex items-center justify-between gap-2">
+        <p className={`tabular-nums text-xs font-semibold ${tone}`}>
+          {holding.unrealized_pnl !== null
+            ? `${formatCurrency(holding.unrealized_pnl, currency)}${
+                holding.unrealized_pnl_percent !== null ? ` (${formatPercent(holding.unrealized_pnl_percent)})` : " (النسبة غير محسوبة)"
+              }`
+            : priceUnavailable
+              ? "الربح/الخسارة غير متاحة — السعر الحالي غير متوفر"
+              : "غير متاح"}
+        </p>
+        <div className="flex items-center gap-1.5">
+          <PriceStateBadge status={holding.price_status} isStale={holding.price_is_stale} recordedAt={holding.price_recorded_at} />
+          <ManualPriceEditor assetId={holding.asset_id} assetCurrency={holding.asset_currency} onSaved={onPriceChanged} />
+        </div>
+      </div>
     </li>
   );
 }

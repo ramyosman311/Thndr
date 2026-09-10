@@ -140,3 +140,12 @@ export function CashIcon(props: IconProps) {
     </svg>
   );
 }
+
+export function PencilIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+      <path d="M14.5 5.5 18 9" />
+    </svg>
+  );
+}

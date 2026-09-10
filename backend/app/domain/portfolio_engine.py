@@ -5,12 +5,16 @@ plain function/dataclass over Decimal values, independently testable and
 reusable by services and future workers alike (see ARCHITECTURE.md,
 "Backend Layering").
 
-`Holding.quantity` and `Holding.current_price` are NOT NULL database
-columns (default 0), so an asset genuinely not held is a known zero
-position here, never an "unknown" one. A caller that truly cannot supply
-a current price for a held asset should not call into this module with a
-fabricated price — that concern belongs to callers/repositories, not this
-module.
+`current_price` is `Decimal | None` (Phase 11): a genuinely held asset
+(`quantity > 0`) whose price cannot currently be determined (see
+services/price_service.py) is represented as `None`, never as a
+fabricated zero or a stale value presented as current — see
+FINANCIAL_RULES.md, "Never Fabricate A Price". A zero-quantity position
+always values at exactly 0 regardless of price availability -- there is
+nothing to price, so its valuation is never "incomplete". This module
+never fetches or converts a price itself; callers (services/
+portfolio_shared.py) supply an already-resolved, already-base-currency
+`current_price` per position.
 """
 
 from dataclasses import dataclass
@@ -27,10 +31,14 @@ class AssetPosition:
     is_emergency: bool
     strategy_bucket_id: UUID | None
     quantity: Decimal
-    current_price: Decimal
+    current_price: Decimal | None
 
     @property
-    def value(self) -> Decimal:
+    def value(self) -> Decimal | None:
+        if self.quantity == 0:
+            return Decimal("0")
+        if self.current_price is None:
+            return None
         return self.quantity * self.current_price
 
 
@@ -42,6 +50,16 @@ class PortfolioTotals:
     denominator_value: Decimal
     denominator_basis: str  # "investable" | "total"
     denominator_is_zero: bool
+    # Asset IDs held in a non-zero quantity but excluded from every sum
+    # above because no usable price was available -- the valuation is
+    # INCOMPLETE, never silently treated as if those positions were
+    # worth zero (see FINANCIAL_RULES.md, "Incomplete Valuation Is Not
+    # Zero Valuation").
+    unpriced_asset_ids: frozenset[UUID] = frozenset()
+
+    @property
+    def is_complete(self) -> bool:
+        return not self.unpriced_asset_ids
 
 
 def calculate_portfolio_totals(
@@ -53,15 +71,25 @@ def calculate_portfolio_totals(
     only which value is used as the allocation-percentage denominator:
     the investable value when excluded, the total value otherwise (see
     FINANCIAL_RULES.md, "Emergency Cash").
+
+    A position whose value is unavailable (see `AssetPosition.value`) is
+    excluded from every sum -- never counted as 0 -- and its asset_id is
+    recorded in `unpriced_asset_ids` so callers can expose an incomplete
+    valuation rather than a silently understated one.
     """
     emergency_value = Decimal("0")
     investable_value = Decimal("0")
+    unpriced_asset_ids: set[UUID] = set()
 
     for position in positions:
+        value = position.value
+        if value is None:
+            unpriced_asset_ids.add(position.asset_id)
+            continue
         if position.is_emergency:
-            emergency_value += position.value
+            emergency_value += value
         else:
-            investable_value += position.value
+            investable_value += value
 
     total_value = emergency_value + investable_value
     if emergency_excluded:
@@ -78,4 +106,5 @@ def calculate_portfolio_totals(
         denominator_value=denominator_value,
         denominator_basis=denominator_basis,
         denominator_is_zero=denominator_value == 0,
+        unpriced_asset_ids=frozenset(unpriced_asset_ids),
     )

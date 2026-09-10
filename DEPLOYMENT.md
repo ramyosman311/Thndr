@@ -5,7 +5,7 @@
 This document specifies the intended deployment topology. No Dockerfiles,
 docker-compose configuration, or hosted deployment exist yet — these are
 introduced incrementally starting in **Phase 2** (backend Docker image) and
-finalized in **Phase 13** (production deployment prep). This is the target
+finalized in **Phase 15** (production deployment prep). This is the target
 this project builds toward.
 
 ## Target Topology
@@ -15,7 +15,16 @@ this project builds toward.
 | Backend | Docker (docker-compose), FastAPI + Uvicorn | Container on Render/Railway (or equivalent) |
 | Database | Dockerized PostgreSQL | Supabase-hosted PostgreSQL |
 | Frontend | `next dev` | Deployed as a Next.js app (e.g. Vercel) or containerized alongside the backend |
-| Workers (alerts, Telegram) | Runs alongside backend in dev | Scheduled/long-running process in production |
+| Workers (alerts, Telegram, price refresh) | Runs alongside backend in dev | Scheduled/long-running process in production |
+
+**Price refresh worker (Phase 11):** `python -m app.workers.price_refresh`
+is a standalone, idempotent, out-of-band process — invoke it on a
+schedule (cron, the platform's scheduled-job feature, or a
+long-running loop wrapped by the process manager) matched to how often
+automated-fetching-enabled assets need refreshing. It is never started
+by, or run inside, the FastAPI/Uvicorn process — see ARCHITECTURE.md,
+"Price Infrastructure", and FINANCIAL_RULES.md, "Non-Blocking
+Valuation" for why that separation is structural, not incidental.
 
 ## Docker (Phase 2+)
 
@@ -79,19 +88,22 @@ monitoring, etc.).
 ## PWA Hosting Considerations
 
 The frontend is served over HTTPS in production (required for service
-worker registration and installability). Static assets (manifest, icons,
-service worker) are added in Phase 11 and must be cache-controlled
-correctly so app updates propagate rather than being stuck behind a stale
-cached service worker.
+worker registration and installability, once a service worker exists).
+Manifest/icon metadata exist since Phase 9; the installable-with-offline
+service worker itself remains a future phase (not Phase 11, which was
+price infrastructure — see ARCHITECTURE.md, "PWA and Capacitor
+Readiness"). When it is added, its static assets must be
+cache-controlled correctly so app updates propagate rather than being
+stuck behind a stale cached service worker.
 
-## Capacitor (Phase 12)
+## Capacitor (Phase 14)
 
 Capacitor iOS/Android wrapping is prepared but not required to deploy or
 run the web/PWA version. Native builds (Xcode/Android Studio) are not
 assumed to be available in this environment and are out of scope for
 automated deployment here.
 
-## Deployment Checklist (to be completed in Phase 13)
+## Deployment Checklist (to be completed in Phase 15)
 
 - [ ] Backend Docker image builds and runs migrations against Supabase
 - [ ] Production environment variables set (no defaults/examples in use)

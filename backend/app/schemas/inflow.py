@@ -46,4 +46,9 @@ class InflowAllocationOut(BaseModel):
     unallocated_cash: DecimalStr
     strategy_status: str
     strategy_is_valid: bool
+    # Phase 11: False when at least one held position's value could not
+    # be determined -- the investable/risk denominator this allocation
+    # is based on excludes that position's value rather than treating
+    # it as 0.
+    is_complete: bool
     recommendations: list[InflowRecommendationOut]

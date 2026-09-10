@@ -31,6 +31,7 @@ from app.repositories.portfolio_repository import (
     get_portfolio_config,
 )
 from app.schemas.inflow import InflowAllocationOut, InflowRecommendationOut
+from app.services import price_service
 from app.services.portfolio_shared import build_positions, find_emergency_bucket_id
 
 _PRESENTATION_QUANT = Decimal("0.01")
@@ -78,7 +79,8 @@ async def get_inflow_allocation(session: AsyncSession, amount: Decimal) -> Inflo
         raise PortfolioNotConfiguredError("No portfolio configuration exists yet.")
 
     assets = await get_active_assets(session)
-    positions = build_positions(assets, config.emergency_asset_id)
+    prices = await price_service.get_prices_for_assets_in_base_currency(session, assets, config.base_currency)
+    positions = build_positions(assets, config.emergency_asset_id, prices)
     totals = calculate_portfolio_totals(positions, emergency_excluded=config.emergency_excluded)
 
     buckets = await get_active_strategy_buckets(session, config.id)
@@ -173,5 +175,6 @@ async def get_inflow_allocation(session: AsyncSession, amount: Decimal) -> Inflo
         unallocated_cash=unallocated_rounded,
         strategy_status=strategy_result.status.value,
         strategy_is_valid=strategy_result.is_valid,
+        is_complete=totals.is_complete,
         recommendations=recommendation_outs,
     )

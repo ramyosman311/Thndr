@@ -36,6 +36,8 @@ function baseSummary(holdingsPnl: unknown[] = []) {
     denominator_basis: "investable",
     denominator_value: "0.00",
     emergency_excluded: true,
+    is_complete: true,
+    unpriced_asset_ids: [],
     holdings_pnl: holdingsPnl,
     total_unrealized_pnl: "0.00",
     total_unrealized_pnl_percent: null,
@@ -138,8 +140,10 @@ describe("PortfolioPage transaction form", () => {
     mocks.portfolioSummary.mockResolvedValue(
       baseSummary([
         {
-          asset_id: "a1", symbol: "TMGH", quantity: "5", average_cost: "100", current_price: "100",
-          market_value: "500.00", cost_basis: "500.00", unrealized_pnl: "0.00", unrealized_pnl_percent: "0.00",
+          asset_id: "a1", symbol: "TMGH", quantity: "5", average_cost: "100", asset_currency: "EGP",
+          current_price: "100", price_status: "CURRENT_PRICE_AVAILABLE", price_recorded_at: "2026-01-01T00:00:00Z",
+          price_is_stale: false, market_value: "500.00", cost_basis: "500.00", unrealized_pnl: "0.00",
+          unrealized_pnl_percent: "0.00",
         },
       ])
     );
@@ -223,5 +227,54 @@ describe("PortfolioPage holdings edge cases", () => {
     await waitFor(() => {
       expect(screen.getByText("لا توجد بيانات بعد")).toBeInTheDocument();
     });
+  });
+});
+
+describe("PortfolioPage price states (Phase 11)", () => {
+  it("shows an incomplete-valuation notice when a held asset has no usable price", async () => {
+    mocks.portfolioSummary.mockResolvedValue({
+      ...baseSummary([
+        {
+          asset_id: "a1", symbol: "UNPRICED", quantity: "5", average_cost: "100", asset_currency: "EGP",
+          current_price: null, price_status: "PRICE_UNAVAILABLE", price_recorded_at: null, price_is_stale: false,
+          market_value: null, cost_basis: "500.00", unrealized_pnl: null, unrealized_pnl_percent: null,
+        },
+      ]),
+      is_complete: false,
+      unpriced_asset_ids: ["a1"],
+    });
+    mocks.listAssets.mockResolvedValue([]);
+    mocks.listTransactions.mockResolvedValue([]);
+
+    render(<PortfolioPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/القيم أعلاه غير مكتملة/)).toBeInTheDocument();
+    });
+    // Never a fabricated 0 for the unpriced holding's price or market value.
+    expect(screen.getByText("السعر غير متاح")).toBeInTheDocument();
+    expect(screen.getByText(/الربح\/الخسارة غير متاحة/)).toBeInTheDocument();
+  });
+
+  it("shows no incomplete-valuation notice when every position is priced", async () => {
+    mocks.portfolioSummary.mockResolvedValue(
+      baseSummary([
+        {
+          asset_id: "a1", symbol: "PRICED", quantity: "5", average_cost: "100", asset_currency: "EGP",
+          current_price: "100", price_status: "CURRENT_PRICE_AVAILABLE", price_recorded_at: "2026-01-01T00:00:00Z",
+          price_is_stale: false, market_value: "500.00", cost_basis: "500.00", unrealized_pnl: "0.00",
+          unrealized_pnl_percent: "0.00",
+        },
+      ])
+    );
+    mocks.listAssets.mockResolvedValue([]);
+    mocks.listTransactions.mockResolvedValue([]);
+
+    render(<PortfolioPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("PRICED")).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/القيم أعلاه غير مكتملة/)).not.toBeInTheDocument();
   });
 });

@@ -74,13 +74,25 @@ class BucketAllocation:
     maximum_status: MaximumStatus
     buy_allowed: bool
     excluded_from_risk_allocation: bool
+    has_unpriced_positions: bool
 
 
 def calculate_bucket_value(positions: list[AssetPosition], strategy_bucket_id: UUID) -> Decimal:
+    """Sums only positions with a usable value. A position in this
+    bucket whose value is unavailable (Phase 11) is excluded from the
+    sum -- never counted as 0 -- see `has_bucket_unpriced_positions`."""
     return sum(
-        (p.value for p in positions if p.strategy_bucket_id == strategy_bucket_id),
+        (p.value for p in positions if p.strategy_bucket_id == strategy_bucket_id and p.value is not None),
         Decimal("0"),
     )
+
+
+def has_bucket_unpriced_positions(positions: list[AssetPosition], strategy_bucket_id: UUID) -> bool:
+    """Whether this bucket's value (above) is missing a contribution
+    from at least one held-but-unpriced position -- surfaced so a
+    caller never mistakes an incomplete bucket total for a fully priced
+    one."""
+    return any(p.strategy_bucket_id == strategy_bucket_id and p.value is None for p in positions)
 
 
 def calculate_actual_percent(actual_value: Decimal, denominator_value: Decimal) -> Decimal:
@@ -149,6 +161,7 @@ def evaluate_bucket_allocation(
     buy_allowed = (allow_new_buy is not False) and not maximum_breached
 
     return BucketAllocation(
+        has_unpriced_positions=has_bucket_unpriced_positions(positions, strategy_bucket_id),
         strategy_bucket_id=strategy_bucket_id,
         bucket_name=bucket_name,
         actual_value=actual_value,

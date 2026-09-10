@@ -4,9 +4,10 @@
 
 This document describes the architecture of THNDR Smart Portfolio. The
 backend (FastAPI, domain/service/repository layering) is implemented
-through Phase 8; the frontend (Next.js) is implemented as of Phase 9 — see
-"Frontend Layering" below for what exists today. This document remains the
-contract later phases (PWA, Capacitor, deployment) build against.
+through Phase 11; the frontend (Next.js) is implemented as of Phase 9,
+extended for price states in Phase 11 — see "Frontend Layering" below
+for what exists today. This document remains the contract later phases
+(Telegram, PWA, Capacitor, deployment) build against.
 
 ## High-Level Overview
 
@@ -37,7 +38,14 @@ The backend follows strict separation of concerns, from outer to inner layers:
    transaction and update the holding"). Also holds `portfolio_shared.py`
    (Phase 7): the emergency-bucket lookup and position-building helpers
    used by the Portfolio, Strategy, and Smart Inflow services all live
-   here once, instead of being duplicated across service modules.
+   here once, instead of being duplicated across service modules. Phase
+   11 adds `price_service.py` (the ONLY price read path for every
+   request-time consumer — pure DB reads, never a provider call; also
+   owns manual price submission) and `price_orchestrator.py` (the ONLY
+   caller of a live `PriceProvider`, used exclusively by the background
+   refresh worker). `portfolio_shared.py` gained
+   `load_priced_positions`, so Portfolio/Strategy/Smart Inflow all price
+   their positions through the identical Price-Service-backed call.
 4. **`domain/`** — Pure financial/business logic: portfolio valuation, cost
    basis, allocation, rebalancing, smart inflow allocation. **No I/O.** No
    database session, no HTTP, no framework imports. This layer is
@@ -67,20 +75,45 @@ The backend follows strict separation of concerns, from outer to inner layers:
    immediate realized P/L. This is the only place `holdings.quantity`/
    `average_cost` are ever computed; once written, the existing Phase 5
    Portfolio/P/L/Allocation Engines read the result unchanged — Phase 10
-   introduces no second portfolio calculation path.
+   introduces no second portfolio calculation path. Phase 11 adds four
+   pure modules for the price infrastructure: `price_types.py` (the
+   `PriceResult`/`PriceStatus` vocabulary every price read returns),
+   `stale_policy.py` (asset-type-aware, weekend-hours-adjusted staleness
+   classification — never one universal duration), `manual_precedence.py`
+   (the single function deciding whether an automated observation may
+   supersede a manual one), and `fx.py` (the one-line currency
+   conversion multiplication, defined once rather than inlined per
+   caller). None of these touch a database session or call a provider.
 5. **`repositories/`** — Data access layer. All SQLAlchemy queries live
    here. Services depend on repository interfaces, not raw sessions,
-   keeping persistence swappable and mockable in tests.
+   keeping persistence swappable and mockable in tests. Phase 11 adds
+   `price_repository.py`: every query against `asset_price_configs`,
+   `asset_prices`, and `fx_rates`.
 6. **`models/`** — SQLAlchemy ORM models (the database schema in code).
-7. **`workers/`** — Background/scheduled jobs: alert evaluation (watchdog),
-   Telegram delivery, future snapshot generation. Not implemented yet —
-   Phase 8 evaluates alerts synchronously via
-   `POST /api/alerts/evaluate` and defines only the delivery interface
-   (`services/notification_dispatcher.py`'s `NotificationDispatcher`
-   Protocol, with a no-op `NullNotificationDispatcher` default) a future
-   scheduled worker or Telegram integration would implement, without
-   coupling alert evaluation to either.
-8. **`core/`** — Cross-cutting concerns: configuration (`config.py`),
+7. **`providers/`** (Phase 11) — Live market-data adapters, used
+   exclusively by `services/price_orchestrator.py`. `base.py` defines
+   the `PriceProvider` Protocol (`get_price(provider_symbol) ->
+   ProviderQuote`, or a typed `ProviderError` subclass) and the
+   provider-agnostic failure taxonomy (timeout, HTTP error, malformed
+   response, missing price, invalid timestamp); `yahoo_provider.py`
+   implements it against Yahoo Finance's chart API; `registry.py` maps a
+   provider-name string (as configured per-asset in
+   `asset_price_configs`) to a provider instance. Manual pricing is
+   deliberately NOT a `PriceProvider` — it is a push (a user submits a
+   value), not a pull, so it is handled directly by
+   `services/price_service.record_manual_price`. See "Price
+   Infrastructure" below.
+8. **`workers/`** — Background/scheduled jobs, run out-of-band from the
+   FastAPI process (see DEPLOYMENT.md, "Workers"). Alert evaluation
+   still runs synchronously via `POST /api/alerts/evaluate`
+   (Telegram delivery remains a future phase); Phase 11 adds
+   `price_refresh.py` — `python -m app.workers.price_refresh` — the only
+   entrypoint allowed to call `services/price_orchestrator.py`, which is
+   in turn the only code allowed to call a live `PriceProvider`. This
+   keeps the non-blocking valuation guarantee (see "Price
+   Infrastructure" below) structural rather than a convention someone
+   could accidentally violate from inside a request handler.
+9. **`core/`** — Cross-cutting concerns: configuration (`config.py`),
    database engine/session setup (`database.py`), and security utilities
    (`security.py`).
 
@@ -111,9 +144,15 @@ font, full RTL, class-based dark mode via `next-themes`):
   status pill, metric card, query-boundary loading/error/empty states)
   plus per-screen component groups (`dashboard.tsx`, `allocation.tsx`,
   `watchlist/`, `portfolio/` — Phase 10's `transaction-form.tsx` and
-  `transaction-history.tsx`) and the icon set (`icons.tsx`, hand-rolled to
-  avoid an icon-library dependency) and navigation (`nav.tsx`: `BottomNav`
-  for mobile, `TopNav` for desktop, same `NAV_ITEMS`).
+  `transaction-history.tsx`, and Phase 11's `price-state.tsx`:
+  `PriceStateBadge` — the current/last-known/unavailable/currency-
+  unavailable visual states every price display uses — and
+  `ManualPriceEditor`, the pencil-to-inline-form manual price entry
+  affordance, which only ever calls `POST /api/assets/{id}/price/manual`
+  and never touches a transaction) and the icon set (`icons.tsx`,
+  hand-rolled to avoid an icon-library dependency) and navigation
+  (`nav.tsx`: `BottomNav` for mobile, `TopNav` for desktop, same
+  `NAV_ITEMS`).
 - `hooks/` — `use-api-query.ts`: a minimal fetch-on-mount/refetch hook
   used by every screen instead of a state-management library. Hooks call
   the backend API; they do not recompute financial figures the backend
@@ -166,23 +205,83 @@ This is a deliberate, documented boundary, not an oversight:
 
 ## PWA and Capacitor Readiness
 
-- The frontend is built as a standard installable PWA (manifest, service
-  worker, icons) — added in Phase 11.
+- Manifest/icon metadata exists since Phase 9 (`manifest.ts`, `icon.tsx`).
+  An installable-with-offline-shell PWA (service worker) is a distinct,
+  not-yet-implemented future phase — Phase 11 was the price
+  infrastructure described below, not PWA work; nothing here should be
+  read as claiming a service worker exists yet.
 - No Capacitor-specific APIs are used in core application code. Capacitor
-  wrapping (Phase 12) adds a thin native shell around the same web app; it
-  is not required to run or install the PWA.
-- Local storage/cache is used only for offline shell behavior and must
-  never be treated as a source of truth — PostgreSQL remains authoritative,
-  and stale cached data must be visibly indicated as such, not presented as
-  live.
+  wrapping adds a thin native shell around the same web app; it is not
+  required to run or install a future PWA.
+- Local storage/cache, when a service worker is eventually added, must be
+  used only for offline shell behavior and never treated as a source of
+  truth — PostgreSQL remains authoritative, and stale cached data must be
+  visibly indicated as such, not presented as live. (This principle
+  already governs price data today — see "Price Infrastructure" below,
+  "Never Silently Present Stale As Live".)
 
-## Market Data Abstraction
+## Price Infrastructure (Phase 11)
 
-All prices flow through a `MarketDataProvider` interface
-(`get_quote`, `get_quotes`, `get_gold_price`). Until a real provider is
-configured, a `MockMarketDataProvider` is used and is explicitly labeled as
-mock throughout the system (logs, and — where surfaced — the API/UI). Mock
-data is never presented to the user as real market data.
+Every asset price — for any current or future asset, not just the ones
+seeded today — flows through one generic, provider-driven,
+non-blocking pipeline. This section is the architectural summary; the
+authoritative rules live in FINANCIAL_RULES.md (stale-price policy,
+manual-vs-automated precedence, FX conversion, non-blocking valuation)
+and DATABASE.md (`asset_price_configs`, `asset_prices`, `fx_rates`).
+
+```
+Background (out-of-band, app/workers/price_refresh.py):
+  AssetPriceConfig ──▶ Price Orchestrator ──▶ PriceProvider (Yahoo, ...)
+                              │                        │
+                              │  (failure: try secondary, then give up)
+                              ▼
+                        asset_prices  (immutable observation history)
+                              ▲
+Request-time (every API read, always synchronous, never blocked):     │
+  Portfolio / Allocation / P&L / Dashboard / Alerts ──▶ Price Service ─┘
+                                                       (DB read only,
+                                                        classifies
+                                                        staleness,
+                                                        never calls a
+                                                        provider)
+```
+
+- **`PriceProvider` abstraction** (`app/providers/base.py`): a Protocol
+  (`get_price(provider_symbol) -> ProviderQuote`, or a typed
+  `ProviderError` subclass on failure). The core system never knows or
+  cares how a provider fetches data — adding a new provider means
+  implementing this Protocol and registering it in
+  `app/providers/registry.py`; nothing else changes.
+- **Price Orchestrator** (`services/price_orchestrator.py`): the ONLY
+  code that ever calls a live provider. Generic primary → secondary →
+  (nothing stored) fallback chain per asset; one asset's provider
+  failure never stops the rest of the batch. Enforces manual-vs-
+  automated precedence (domain/manual_precedence.py) before ever
+  storing a fetched observation. Called exclusively by
+  `app/workers/price_refresh.py`, run out-of-band by an external
+  scheduler/process manager — never as an in-process loop inside the
+  FastAPI server (see DEPLOYMENT.md, "Workers").
+- **Price Service** (`services/price_service.py`): the ONLY price read
+  path for every request-time consumer. Reads the latest `asset_prices`
+  row (or the latest per asset, batched, for a whole portfolio),
+  classifies it via `domain/stale_policy.py`, and converts into the
+  portfolio's base currency via `domain/fx.py` + `fx_rates` when
+  needed. **Never calls a provider** — this is what makes a
+  `GET /api/portfolio/summary` request's latency and success
+  independent of any provider's latency or an outage. Also owns manual
+  price submission (`record_manual_price`), since that's a direct user
+  write, not a provider fetch.
+- **Price storage** (`asset_prices`): an append-only, immutable
+  observation history — never updated or deleted. "Current price" is
+  never stored redundantly anywhere else; `holdings.current_price`
+  (pre-Phase-11 column) is no longer read or written by any code path —
+  see FINANCIAL_RULES.md, "Single Source Of Truth For Current Price".
+- **FX** (`fx_rates`, `domain/fx.py`): a separate, generic
+  currency-pair observation domain, using the exact same
+  provider/storage/staleness shape as asset prices, not a special-cased
+  USD/EGP path. A valuation across a currency mismatch with no FX rate
+  on record reports `CURRENCY_CONVERSION_UNAVAILABLE`, never a
+  fabricated or assumed 1:1 rate.
 
 ## Recommendation, Not Execution
 

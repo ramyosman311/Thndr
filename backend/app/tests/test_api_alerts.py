@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from app.core.database import get_db_session
 from app.main import app
 from app.models import Holding, Transaction
-from app.tests.conftest import make_asset
+from app.tests.conftest import make_asset, make_current_price
 
 
 @pytest_asyncio.fixture
@@ -27,7 +27,8 @@ async def _watched_asset_with_rule(client, db_session, symbol, **rule_fields):
     asset = make_asset(symbol)
     db_session.add(asset)
     await db_session.commit()
-    db_session.add(Holding(asset_id=asset.id, quantity=Decimal("1"), current_price=Decimal("150")))
+    db_session.add(Holding(asset_id=asset.id, quantity=Decimal("1")))
+    await make_current_price(db_session, asset, Decimal("150"))
     await db_session.commit()
 
     add_response = await client.post("/api/watchlist", json={"asset_id": str(asset.id)})

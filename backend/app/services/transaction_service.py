@@ -27,6 +27,7 @@ from app.repositories.transaction_repository import (
     list_transactions as repo_list_transactions,
 )
 from app.schemas.transaction import HoldingSnapshotOut, TransactionOut, TransactionResultOut
+from app.services import price_service
 
 _PRESENTATION_QUANT = Decimal("0.01")
 
@@ -128,12 +129,22 @@ async def create_transaction(
     await session.refresh(transaction)
     await session.refresh(holding)
 
+    # Native-currency price for the response snapshot only (Phase 11) --
+    # this never influences the BUY/SELL math above, which is already
+    # complete by the time this is read (see FINANCIAL_RULES.md, "Manual
+    # Price Never Touches Transaction History", the same principle
+    # extended to every price read here: it's for display, not part of
+    # the transaction's own accounting).
+    price_result = await price_service.get_asset_price(session, asset)
+    current_price = price_result.price if price_result.is_usable else None
+
     return TransactionResultOut(
         transaction=_transaction_out(transaction, asset.symbol),
         holding=HoldingSnapshotOut(
             quantity=holding.quantity,
             average_cost=holding.average_cost,
-            current_price=holding.current_price,
+            current_price=current_price,
+            price_status=price_result.status.value,
         ),
         realized_pnl=_round(realized_pnl) if realized_pnl is not None else None,
     )

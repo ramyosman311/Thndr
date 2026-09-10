@@ -65,7 +65,11 @@ class TransactionOut(BaseModel):
 class HoldingSnapshotOut(BaseModel):
     quantity: DecimalStr
     average_cost: DecimalStr
-    current_price: DecimalStr
+    # Phase 11: null when the Price Service has no usable price for this
+    # asset -- never a fabricated 0 (see FINANCIAL_RULES.md, "Never
+    # Fabricate A Price").
+    current_price: DecimalStr | None
+    price_status: str
 
 
 class TransactionResultOut(BaseModel):

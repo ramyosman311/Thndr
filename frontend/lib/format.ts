@@ -71,3 +71,26 @@ export function formatDateTime(iso: string | null | undefined): string {
     return iso;
   }
 }
+
+const RELATIVE_TIME_FORMATTER = new Intl.RelativeTimeFormat("ar-EG-u-nu-latn", { numeric: "auto" });
+
+/** Formats a timestamp as "X ago" for the price-state UI (Phase 11) —
+ * e.g. "قبل 5 دقائق". Never used to decide freshness itself: the
+ * backend's `is_stale` flag is the only source of truth for that (see
+ * FINANCIAL_RULES.md, "Stale Price Policy") — this only renders the
+ * age the backend already computed. */
+export function formatRelativeTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "—";
+  const diffSeconds = Math.round((then - Date.now()) / 1000);
+  const absSeconds = Math.abs(diffSeconds);
+
+  if (absSeconds < 60) return RELATIVE_TIME_FORMATTER.format(diffSeconds, "second");
+  const diffMinutes = Math.round(diffSeconds / 60);
+  if (absSeconds < 3600) return RELATIVE_TIME_FORMATTER.format(diffMinutes, "minute");
+  const diffHours = Math.round(diffSeconds / 3600);
+  if (absSeconds < 86400) return RELATIVE_TIME_FORMATTER.format(diffHours, "hour");
+  const diffDays = Math.round(diffSeconds / 86400);
+  return RELATIVE_TIME_FORMATTER.format(diffDays, "day");
+}

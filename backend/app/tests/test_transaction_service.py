@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from app.models import Asset, Holding, PortfolioConfig, StrategyBucket, Transaction
 from app.services import portfolio_service, transaction_service
 from app.services.transaction_service import AssetNotFoundError, OversellError
-from app.tests.conftest import make_asset
+from app.tests.conftest import make_asset, make_current_price
 
 _NUMERIC_20_8 = Decimal("0.00000001")
 
@@ -231,10 +231,13 @@ async def test_list_transactions_orders_most_recent_first(db_session):
 
 
 async def test_transaction_never_touches_current_price(db_session):
-    """holding.current_price is a separate concept from transaction.price
-    (see FINANCIAL_RULES.md) — a BUY/SELL must never overwrite it."""
+    """The Price Service's current price is a separate concept from
+    transaction.price (see FINANCIAL_RULES.md) — a BUY/SELL must never
+    write a price observation, however different its own trade price
+    is."""
     asset = await _make_active_asset(db_session, "TXNPRICESEP")
-    db_session.add(Holding(asset_id=asset.id, quantity=Decimal("0"), average_cost=Decimal("0"), current_price=Decimal("77")))
+    db_session.add(Holding(asset_id=asset.id, quantity=Decimal("0"), average_cost=Decimal("0")))
+    await make_current_price(db_session, asset, Decimal("77"))
     await db_session.commit()
 
     result = await transaction_service.create_transaction(
