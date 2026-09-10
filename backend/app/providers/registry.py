@@ -31,3 +31,17 @@ def get_provider(provider_name: str | None) -> PriceProvider | None:
     if provider_name is None:
         return None
     return _PROVIDERS.get(provider_name)
+
+
+def is_registered_provider_name(provider_name: str) -> bool:
+    """Used by Phase 12 asset-price-config administration to validate a
+    submitted provider name against the actual registry -- never assume
+    a string is a valid provider merely because it was entered (see
+    FINANCIAL_RULES.md, "Provider Configuration Is Data, Not Code")."""
+    return provider_name in _PROVIDERS
+
+
+def registered_provider_names() -> list[str]:
+    """The full set of currently implemented provider names, for the
+    admin UI to offer as choices rather than a free-text field."""
+    return sorted(_PROVIDERS)

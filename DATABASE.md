@@ -447,6 +447,44 @@ and never as part of a migration:
   seeded configuration rows — never through an `if symbol == "..."` check
   anywhere in application code.
 
+## Phase 12: Domain Readiness Audit — No Migration Required
+
+Phase 12 (Portfolio & Asset Administration) performed a full audit of
+this schema for accidental single-portfolio/single-user assumptions
+before writing any admin code, per the project's migration rule
+("inspect first, report before applying"). Conclusion: **the existing
+schema was already sufficient for the administration layer the phase
+required. No Alembic migration was created or applied in Phase 12** —
+`alembic current` is unchanged at `7dbad9d06fb1` (the Phase 11 head)
+before and after this phase.
+
+Audit findings (full detail in [DECISIONS.md](./DECISIONS.md)):
+
+- `strategy_buckets` and `allocation_targets` were already correctly
+  scoped to `portfolio_config_id`, with the right `UniqueConstraint`s
+  and CHECK constraints — no change needed.
+- `portfolio_configs` has no DB-level singleton constraint (the table
+  structurally already supports multiple rows); the single-portfolio
+  behavior lives entirely in one repository function
+  (`get_portfolio_config`'s `LIMIT 1`), already self-documented as a
+  deliberate current-scope simplification, not a schema limitation.
+- `holdings` and `transactions` have **no `portfolio_config_id` column
+  at all** — both are scoped only by `asset_id`, with a UNIQUE
+  constraint on `asset_id` for `holdings` (one holding per asset,
+  globally). This is the deepest real single-portfolio assumption in
+  the schema. Fixing it would mean adding a `portfolio_config_id`
+  column to both tables, changing their unique constraints, and
+  backfilling existing rows — a genuine breaking migration. Per the
+  explicit Phase 12 instruction ("if full multi-portfolio support
+  requires a broad migration, DO NOT perform it in Phase 12"), this was
+  **not** touched. It is documented as a Phase 15+ requirement.
+- `watchlist` is likewise scoped only by `asset_id` (globally unique),
+  consistent with the same pattern — left as-is, documented rather than
+  arbitrarily changed, since the task explicitly asked for a decision to
+  be recorded rather than a redesign.
+
+No table gained or lost a column, index, or constraint in Phase 12.
+
 ## Known Warning: Circular-Dependency Sort
 
 Running `alembic check` or `alembic revision --autogenerate` prints:

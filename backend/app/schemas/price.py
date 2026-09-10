@@ -57,3 +57,44 @@ class ManualPriceCreateRequest(BaseModel):
         if value <= 0:
             raise ValueError("price must be greater than 0")
         return value
+
+
+class AssetPriceConfigOut(BaseModel):
+    """Phase 12 administration view of `asset_price_configs`. `configured`
+    is False (with every other field null/default) when the asset has no
+    config row yet -- a normal, expected state (see FINANCIAL_RULES.md,
+    "Unconfigured Providers Are Not Errors"), not an error condition."""
+
+    asset_id: UUID
+    configured: bool
+    primary_provider: str | None
+    primary_provider_symbol: str | None
+    secondary_provider: str | None
+    secondary_provider_symbol: str | None
+    automated_fetching_enabled: bool
+    manual_override_enabled: bool
+    stale_threshold_minutes: int | None
+    lock_manual: bool
+
+
+class AssetPriceConfigUpsertRequest(BaseModel):
+    """A full replacement of the asset's price configuration (PUT
+    semantics) -- validated against the real provider registry, never
+    against a hardcoded or asset-specific list (see FINANCIAL_RULES.md,
+    "Provider Configuration Is Data, Not Code")."""
+
+    primary_provider: str | None = None
+    primary_provider_symbol: str | None = None
+    secondary_provider: str | None = None
+    secondary_provider_symbol: str | None = None
+    automated_fetching_enabled: bool = False
+    manual_override_enabled: bool = True
+    stale_threshold_minutes: int | None = None
+    lock_manual: bool = False
+
+    @field_validator("stale_threshold_minutes")
+    @classmethod
+    def stale_threshold_must_be_positive(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("stale_threshold_minutes must be a positive number of minutes, or null")
+        return value

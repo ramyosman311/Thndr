@@ -94,6 +94,32 @@ export interface PortfolioAllocationOut {
   buckets: BucketAllocationOut[];
 }
 
+// --- Portfolio Configuration administration (Phase 12) -------------------
+
+export interface PortfolioConfigOut {
+  id: string;
+  name: string;
+  base_currency: string;
+  emergency_asset_id: string | null;
+  emergency_excluded: boolean;
+  telegram_enabled: boolean;
+}
+
+export interface PortfolioConfigCreateRequest {
+  name: string;
+  base_currency: string;
+  emergency_asset_id?: string | null;
+  emergency_excluded?: boolean;
+}
+
+export interface PortfolioConfigUpdateRequest {
+  name?: string;
+  base_currency?: string;
+  emergency_asset_id?: string;
+  clear_emergency_asset?: boolean;
+  emergency_excluded?: boolean;
+}
+
 // --- Strategy Validation (Phase 6) -------------------------------------
 
 export type StrategyValidationStatus =
@@ -131,6 +157,59 @@ export interface StrategyValidationOut {
   excluded_emergency_rows: AllocationRuleOut[];
   field_errors: RuleFieldErrorOut[];
   priority_order: AllocationRuleOut[];
+}
+
+// --- Strategy Bucket + Allocation Target administration (Phase 12) ------
+
+export interface StrategyBucketOut {
+  id: string;
+  portfolio_config_id: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+}
+
+export interface StrategyBucketCreateRequest {
+  name: string;
+  description?: string | null;
+}
+
+export interface StrategyBucketUpdateRequest {
+  name?: string;
+  description?: string | null;
+}
+
+export interface AllocationTargetOut {
+  id: string;
+  portfolio_config_id: string;
+  strategy_bucket_id: string;
+  target_percent: DecimalStr | null;
+  minimum_percent: DecimalStr | null;
+  maximum_percent: DecimalStr | null;
+  allow_new_buy: boolean;
+  priority: number;
+  is_active: boolean;
+}
+
+export interface AllocationTargetCreateRequest {
+  strategy_bucket_id: string;
+  target_percent?: DecimalStr | null;
+  minimum_percent?: DecimalStr | null;
+  maximum_percent?: DecimalStr | null;
+  allow_new_buy?: boolean;
+  priority?: number;
+}
+
+export interface AllocationTargetUpdateRequest {
+  target_percent?: DecimalStr;
+  clear_target_percent?: boolean;
+  minimum_percent?: DecimalStr;
+  clear_minimum_percent?: boolean;
+  maximum_percent?: DecimalStr;
+  clear_maximum_percent?: boolean;
+  allow_new_buy?: boolean;
+  priority?: number;
+  is_active?: boolean;
 }
 
 // --- Smart Inflow Allocator (Phase 7) -----------------------------------
@@ -295,15 +374,39 @@ export interface TransactionResultOut {
   realized_pnl: DecimalStr | null;
 }
 
-// --- Assets (Phase 9 read-only listing) ----------------------------------
+// --- Assets (Phase 9 read-only listing; Phase 12 administration) --------
+
+/** Matches backend AssetType enum. Domain data, not a UI-invented list —
+ * mirrors app/models/enums.py exactly. */
+export type AssetType = "STOCK" | "FUND" | "GOLD" | "CASH" | "SAVINGS" | "ETF" | "OTHER";
 
 export interface AssetOut {
   id: string;
   symbol: string;
   name: string;
   asset_type: string;
+  market: string | null;
   currency: string;
+  strategy_bucket_id: string | null;
   is_active: boolean;
+}
+
+export interface AssetCreateRequest {
+  symbol: string;
+  name: string;
+  asset_type: AssetType;
+  market?: string | null;
+  currency: string;
+  strategy_bucket_id?: string | null;
+}
+
+export interface AssetUpdateRequest {
+  name?: string;
+  asset_type?: AssetType;
+  market?: string | null;
+  currency?: string;
+  strategy_bucket_id?: string;
+  clear_strategy_bucket?: boolean;
 }
 
 // --- Prices (Phase 11) ----------------------------------------------------
@@ -335,6 +438,32 @@ export interface PriceObservationOut {
 export interface ManualPriceCreateRequest {
   price: DecimalStr;
   currency: string;
+}
+
+// --- Asset Price Configuration administration (Phase 12) -----------------
+
+export interface AssetPriceConfigOut {
+  asset_id: string;
+  configured: boolean;
+  primary_provider: string | null;
+  primary_provider_symbol: string | null;
+  secondary_provider: string | null;
+  secondary_provider_symbol: string | null;
+  automated_fetching_enabled: boolean;
+  manual_override_enabled: boolean;
+  stale_threshold_minutes: number | null;
+  lock_manual: boolean;
+}
+
+export interface AssetPriceConfigUpsertRequest {
+  primary_provider?: string | null;
+  primary_provider_symbol?: string | null;
+  secondary_provider?: string | null;
+  secondary_provider_symbol?: string | null;
+  automated_fetching_enabled?: boolean;
+  manual_override_enabled?: boolean;
+  stale_threshold_minutes?: number | null;
+  lock_manual?: boolean;
 }
 
 // --- Health --------------------------------------------------------------

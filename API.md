@@ -561,6 +561,97 @@ rounding and ordering rules (priority ascending, then bucket name;
 `requested_cash == allocated_cash + unallocated_cash` exactly, even after
 presentation rounding).
 
+## Administration (Phase 12)
+
+Safe CRUD/activate-deactivate endpoints over configuration that
+previously required a direct DB write. Every route here is
+config-only: none computes a valuation, calls a `PriceProvider`, or
+duplicates a rule owned by `strategy_service.py`/`price_service.py`.
+Backend validation is authoritative in all cases — the frontend never
+independently re-implements these checks.
+
+### Assets
+
+```
+GET    /api/assets?include_inactive=false
+POST   /api/assets
+GET    /api/assets/{asset_id}
+PATCH  /api/assets/{asset_id}
+POST   /api/assets/{asset_id}/activate
+POST   /api/assets/{asset_id}/deactivate
+DELETE /api/assets/{asset_id}
+```
+
+`POST`/`PATCH` reject an unregistered `asset_type`, a blank `name`, an
+invalid currency code, and a `strategy_bucket_id` that doesn't exist
+(422/404). `PATCH` additionally rejects a `currency` change on an asset
+that already has any transaction or price-observation history (409) —
+changing an asset's currency after real financial history exists would
+silently reinterpret that history. `DELETE` performs a **hard** delete
+only when the asset has no holdings, transactions, watchlist entry,
+snapshot items, or price observations; otherwise it returns 409 and the
+caller is expected to deactivate instead (see FINANCIAL_RULES.md, "Asset
+Deletion Policy").
+
+### Asset Price Configuration
+
+```
+GET /api/assets/{asset_id}/price-config
+PUT /api/assets/{asset_id}/price-config
+```
+
+`GET` always returns 200 (never 404) with `configured: false` and null
+fields when no config row exists yet, so the frontend can render a form
+immediately. `PUT` validates `primary_provider`/`secondary_provider`
+against the actual registered provider registry (`providers/registry.py`)
+— an unregistered provider name is rejected with 400, never silently
+accepted. `automated_fetching_enabled=true` requires a `primary_provider`
+to already be set. `stale_threshold_minutes` must be a positive integer
+(422 otherwise). This endpoint only ever writes to `asset_price_configs`
+— never to `asset_prices` — and never calls a provider.
+
+### Portfolio Configuration
+
+```
+GET   /api/portfolio/config
+POST  /api/portfolio/config
+PATCH /api/portfolio/config
+```
+
+`POST` creates the (currently singleton) portfolio configuration; 409 if
+one already exists. `PATCH` rejects an invalid currency code (422) and
+an `emergency_asset_id` that doesn't reference a real asset (400). A
+`base_currency` change is rejected with 409 the moment **any** transaction
+exists anywhere in the system — see FINANCIAL_RULES.md, "Base Currency
+Change Policy" — while every other field (name, emergency asset,
+emergency exclusion) remains freely editable regardless.
+
+### Strategy Buckets and Allocation Targets
+
+```
+GET   /api/strategy/buckets?include_inactive=false
+POST  /api/strategy/buckets
+PATCH /api/strategy/buckets/{bucket_id}
+POST  /api/strategy/buckets/{bucket_id}/activate
+POST  /api/strategy/buckets/{bucket_id}/deactivate
+
+GET   /api/strategy/targets?include_inactive=false
+POST  /api/strategy/targets
+PATCH /api/strategy/targets/{target_id}
+```
+
+A duplicate bucket name, or a second allocation target for a bucket
+that already has one, returns 409. Percent fields are validated to the
+same 0–100 range and `minimum ≤ maximum` relationship already enforced
+by the DB's own CHECK constraints (422 on violation) — this is a
+deliberate, narrow validation surface: **these endpoints never check
+whether the portfolio's allocation totals 100%.** That aggregate
+question remains exclusively `GET /api/portfolio/strategy/validation`'s
+job (see "Strategy Engine" above); saving an incomplete or currently-
+invalid-in-aggregate configuration always succeeds here and is reported,
+never blocked or silently auto-corrected — see FINANCIAL_RULES.md,
+"Strategy Validation Ownership".
+
 ## Not Yet Specified
 
 Endpoints for future tables (`cash_flows`, `alert_events`,

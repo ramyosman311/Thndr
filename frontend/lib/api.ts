@@ -9,14 +9,27 @@ import type {
   AlertRuleCreateRequest,
   AlertRuleOut,
   AlertRuleUpdateRequest,
+  AllocationTargetCreateRequest,
+  AllocationTargetOut,
+  AllocationTargetUpdateRequest,
+  AssetCreateRequest,
   AssetOut,
+  AssetPriceConfigOut,
+  AssetPriceConfigUpsertRequest,
+  AssetUpdateRequest,
   HealthOut,
   InflowAllocationOut,
   ManualPriceCreateRequest,
   PortfolioAllocationOut,
+  PortfolioConfigCreateRequest,
+  PortfolioConfigOut,
+  PortfolioConfigUpdateRequest,
   PortfolioSummaryOut,
   PriceObservationOut,
   PriceOut,
+  StrategyBucketCreateRequest,
+  StrategyBucketOut,
+  StrategyBucketUpdateRequest,
   StrategyValidationOut,
   TransactionCreateRequest,
   TransactionOut,
@@ -96,11 +109,50 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<HealthOut>("/health"),
 
-  listAssets: () => request<AssetOut[]>("/assets"),
+  listAssets: (includeInactive = false) =>
+    request<AssetOut[]>(`/assets${includeInactive ? "?include_inactive=true" : ""}`),
+  getAsset: (assetId: string) => request<AssetOut>(`/assets/${assetId}`),
+  createAsset: (payload: AssetCreateRequest) =>
+    request<AssetOut>("/assets", { method: "POST", body: JSON.stringify(payload) }),
+  updateAsset: (assetId: string, payload: AssetUpdateRequest) =>
+    request<AssetOut>(`/assets/${assetId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  activateAsset: (assetId: string) => request<AssetOut>(`/assets/${assetId}/activate`, { method: "POST" }),
+  deactivateAsset: (assetId: string) => request<AssetOut>(`/assets/${assetId}/deactivate`, { method: "POST" }),
+  deleteAsset: (assetId: string) => request<void>(`/assets/${assetId}`, { method: "DELETE" }),
 
   portfolioSummary: () => request<PortfolioSummaryOut>("/portfolio/summary"),
   portfolioAllocation: () => request<PortfolioAllocationOut>("/portfolio/allocation"),
   strategyValidation: () => request<StrategyValidationOut>("/portfolio/strategy/validation"),
+
+  getPortfolioConfig: () => request<PortfolioConfigOut>("/portfolio/config"),
+  createPortfolioConfig: (payload: PortfolioConfigCreateRequest) =>
+    request<PortfolioConfigOut>("/portfolio/config", { method: "POST", body: JSON.stringify(payload) }),
+  updatePortfolioConfig: (payload: PortfolioConfigUpdateRequest) =>
+    request<PortfolioConfigOut>("/portfolio/config", { method: "PATCH", body: JSON.stringify(payload) }),
+
+  listStrategyBuckets: (includeInactive = false) =>
+    request<StrategyBucketOut[]>(`/strategy/buckets${includeInactive ? "?include_inactive=true" : ""}`),
+  createStrategyBucket: (payload: StrategyBucketCreateRequest) =>
+    request<StrategyBucketOut>("/strategy/buckets", { method: "POST", body: JSON.stringify(payload) }),
+  updateStrategyBucket: (bucketId: string, payload: StrategyBucketUpdateRequest) =>
+    request<StrategyBucketOut>(`/strategy/buckets/${bucketId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  activateStrategyBucket: (bucketId: string) =>
+    request<StrategyBucketOut>(`/strategy/buckets/${bucketId}/activate`, { method: "POST" }),
+  deactivateStrategyBucket: (bucketId: string) =>
+    request<StrategyBucketOut>(`/strategy/buckets/${bucketId}/deactivate`, { method: "POST" }),
+
+  listAllocationTargets: (includeInactive = false) =>
+    request<AllocationTargetOut[]>(`/strategy/targets${includeInactive ? "?include_inactive=true" : ""}`),
+  createAllocationTarget: (payload: AllocationTargetCreateRequest) =>
+    request<AllocationTargetOut>("/strategy/targets", { method: "POST", body: JSON.stringify(payload) }),
+  updateAllocationTarget: (targetId: string, payload: AllocationTargetUpdateRequest) =>
+    request<AllocationTargetOut>(`/strategy/targets/${targetId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
 
   allocateCashFlow: (amount: string) =>
     request<InflowAllocationOut>("/cash-flow/allocate", {
@@ -134,4 +186,11 @@ export const api = {
     request<PriceOut>(`/assets/${assetId}/price/manual`, { method: "POST", body: JSON.stringify(payload) }),
   refreshAssetPrice: (assetId: string) =>
     request<PriceOut>(`/assets/${assetId}/price/refresh`, { method: "POST" }),
+
+  getAssetPriceConfig: (assetId: string) => request<AssetPriceConfigOut>(`/assets/${assetId}/price-config`),
+  putAssetPriceConfig: (assetId: string, payload: AssetPriceConfigUpsertRequest) =>
+    request<AssetPriceConfigOut>(`/assets/${assetId}/price-config`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
 };

@@ -298,9 +298,42 @@ entry of a real-world event, never automated trading — the system still
 never decides to buy or sell anything, and no recommendation engine's
 output is ever wired to it automatically.
 
+## Domain Readiness & Administration (Phase 12)
+
+Phase 12 added no new tables and no new domain engines. It did two
+things: (1) a full read-only audit of the existing schema/services/routes
+for accidental single-portfolio or single-user assumptions, and (2) a
+safe administration layer (CRUD + activate/deactivate, never destructive
+where history exists) over Asset, Asset Price Config, Portfolio Config,
+Strategy Bucket, and Allocation Target — so these can be managed through
+the app instead of direct DB writes. The full audit findings, including
+exactly which single-portfolio assumptions were found, fixed, and
+deliberately deferred, are recorded in
+[DECISIONS.md](./DECISIONS.md) rather than duplicated here.
+
+Ownership boundaries introduced by the new admin services mirror the
+read/write split already established for prices in Phase 11:
+
+- `price_config_service.py` (config CRUD only) vs. `price_service.py`
+  (Phase 11, request-time reads) vs. `price_orchestrator.py` (Phase 11,
+  background fetch) — three services, three jobs, none overlapping.
+- `portfolio_config_service.py` (config CRUD only) vs. `portfolio_
+  service.py` (Phase 5, read-only valuation, unchanged).
+- `strategy_admin_service.py` (bucket/target CRUD, per-row validation
+  only) vs. `strategy_service.py` (Phase 6, read-only, owns the
+  aggregate "does this add up to 100%" validation exclusively). Saving
+  an incomplete or partial strategy configuration is allowed by design —
+  see FINANCIAL_RULES.md, "Strategy Validation Ownership".
+
+None of the three new admin services ever calls a `PriceProvider`, ever
+computes a valuation, or ever re-implements a rule the domain layer
+already owns; they only validate their own row-level invariants (the
+same ones already enforced by CHECK/UNIQUE constraints) and persist.
+
 ## Related Documents
 
 - [DATABASE.md](./DATABASE.md) — schema design
 - [API.md](./API.md) — REST surface
 - [FINANCIAL_RULES.md](./FINANCIAL_RULES.md) — domain rules and assumptions
 - [DEPLOYMENT.md](./DEPLOYMENT.md) — deployment topology
+- [DECISIONS.md](./DECISIONS.md) — architectural decision log (domain readiness audit, Phase 12)

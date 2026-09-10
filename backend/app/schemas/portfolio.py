@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, PlainSerializer
+from pydantic import BaseModel, PlainSerializer, field_validator
 
 DecimalStr = Annotated[Decimal, PlainSerializer(lambda v: str(v), return_type=str)]
 
@@ -98,3 +98,76 @@ class PortfolioAllocationOut(BaseModel):
     is_complete: bool
     unpriced_asset_ids: list[UUID]
     buckets: list[BucketAllocationOut]
+
+
+# --- Portfolio configuration administration (Phase 12) -----------------
+
+
+class PortfolioConfigOut(BaseModel):
+    id: UUID
+    name: str
+    base_currency: str
+    emergency_asset_id: UUID | None
+    emergency_excluded: bool
+    telegram_enabled: bool
+
+
+def _validate_currency_code(value: str) -> str:
+    value = value.strip().upper()
+    if not (2 <= len(value) <= 8) or not value.isalpha():
+        raise ValueError("base_currency must be a 2-8 letter code, e.g. EGP, USD")
+    return value
+
+
+class PortfolioConfigCreateRequest(BaseModel):
+    name: str
+    base_currency: str
+    emergency_asset_id: UUID | None = None
+    emergency_excluded: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def name_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("name must not be blank")
+        return value
+
+    @field_validator("base_currency")
+    @classmethod
+    def base_currency_must_be_a_plausible_code(cls, value: str) -> str:
+        return _validate_currency_code(value)
+
+
+class PortfolioConfigUpdateRequest(BaseModel):
+    """All fields optional -- only the ones provided are changed.
+    `base_currency` is accepted here but the service layer rejects the
+    change outright once any transaction exists (see FINANCIAL_RULES.md,
+    "Base Currency Change Policy"). `clear_emergency_asset` explicitly
+    unsets `emergency_asset_id` (a plain `None` in JSON is
+    indistinguishable from "field omitted" for an Optional field, so a
+    dedicated flag is used instead — same pattern as
+    AssetUpdateRequest.clear_strategy_bucket)."""
+
+    name: str | None = None
+    base_currency: str | None = None
+    emergency_asset_id: UUID | None = None
+    clear_emergency_asset: bool = False
+    emergency_excluded: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def name_must_not_be_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        value = value.strip()
+        if not value:
+            raise ValueError("name must not be blank")
+        return value
+
+    @field_validator("base_currency")
+    @classmethod
+    def base_currency_must_be_a_plausible_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return _validate_currency_code(value)

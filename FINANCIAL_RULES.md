@@ -624,6 +624,68 @@ are computed from the identical `AssetPosition` list (built once via
 about one asset's value due to different pricing logic, because there
 is only one pricing logic.
 
+## Administration Rules (Phase 12)
+
+**Asset Deletion Policy.** An asset may be hard-deleted only when it has
+*no* holding, transaction, watchlist entry, portfolio-snapshot item, or
+price observation on record. If any exists, `DELETE /api/assets/{id}`
+returns 409 and the caller must deactivate (`is_active=false`) instead —
+deactivation preserves all historical rows and simply removes the asset
+from active-selection lists (allocation targets, new transactions).
+Deliberately stricter than the schema's own `ON DELETE CASCADE` on
+`asset_prices`: even though the database *would* cascade-delete price
+history, the application layer treats existing price observations as
+historical data worth protecting anyway, and blocks the delete.
+
+**Base Currency Change Policy.** `portfolio_configs.base_currency`
+materially changes how every past and future value is interpreted
+(valuation, allocation percentages, realized/unrealized P&L). Once even
+one transaction exists anywhere in the system, `PATCH /api/portfolio/
+config` rejects any `base_currency` change with 409 rather than
+performing it — there is no currently-implemented mechanism to safely
+reinterpret historical transaction amounts against a new base currency,
+so the honest behavior is to refuse, not to silently reinterpret. Before
+any transaction exists, the base currency may be changed freely (nothing
+historical yet depends on it).
+
+**Currency Change on an Existing Asset.** The same reasoning applies at
+the asset level: `PATCH /api/assets/{id}` rejects a `currency` change
+once that asset has any transaction or price-observation history (409).
+An asset's currency is treated as fixed the moment real financial history
+references it.
+
+**Provider Validation Is Registry-Driven, Never Assumed.** `PUT /api/
+assets/{id}/price-config` never accepts a `primary_provider`/
+`secondary_provider` string merely because it looks plausible — it is
+checked against `providers/registry.py`'s actual registered provider
+set. There is no asset-specific hardcoded provider mapping anywhere in
+the admin layer; a provider must be registered code, not a config-time
+invention.
+
+**Strategy Validation Ownership.** Bucket/target administration
+(`strategy_admin_service.py`) validates only per-row invariants — percent
+ranges, `minimum ≤ maximum`, duplicate bucket names, at most one target
+per bucket — the same set the database's own CHECK/UNIQUE constraints
+already enforce. It never calls, and never blocks a save on, the
+aggregate "does the whole portfolio's target allocation sum to 100%"
+question; that remains exclusively `strategy_service.py`'s read-only
+`GET /api/portfolio/strategy/validation` responsibility (Phase 6,
+unchanged). Saving a single 10% target when nothing else is configured
+succeeds; the system then correctly reports
+`INCOMPLETE_TARGET_ALLOCATION` on the next validation read. The admin
+layer never auto-invents a target percentage to make a configuration
+"add up."
+
+**Administrative Changes Never Rewrite Financial History.** Every admin
+write (asset update, price-config upsert, portfolio-config update,
+bucket/target update) touches only its own configuration table. None of
+them updates a `transactions` row, a `holdings` row, an existing
+`asset_prices` row, or a `portfolio_snapshot_items` row. This is verified
+directly, not just asserted: `test_admin_financial_integrity.py` performs
+a real admin write and then re-queries the exact historical row by ID,
+asserting every financial field (price, quantity, fees, timestamp,
+average cost, realized P&L inputs) is byte-for-byte unchanged.
+
 ## Summary of Non-Negotiable Distinctions
 
 - **Target ≠ Maximum**
@@ -634,6 +696,8 @@ is only one pricing logic.
 - **Stale ≠ Live** (Phase 11 — a usable last-known price is never presented as a live one)
 - **Unavailable ≠ Zero** (Phase 11 — an unpriced position is excluded from totals, never counted as worth nothing)
 - **Manual Override ≠ silently overwritable** (Phase 11 — an automated fetch only supersedes a manual price with a strictly newer timestamp, or never, if locked)
+- **Asset ≠ Holding ≠ Transaction ≠ Price Observation** (Phase 12 — an asset is an instrument; a holding and a transaction are portfolio-scoped facts about it; a price observation is neither — administration never collapses these into one editable record)
+- **Configuration Change ≠ Historical Rewrite** (Phase 12 — an admin write changes future behavior only; it never alters a transaction's price/quantity/timestamp, a holding's quantity/average cost, a past price observation, or a snapshot value)
 
 These distinctions must be preserved end-to-end: in the database schema
 (DATABASE.md), the domain logic (this document), the API contract

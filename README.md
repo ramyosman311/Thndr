@@ -4,28 +4,28 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 11 — Generic Hybrid Price Infrastructure.
-> Every asset price now flows through one provider-driven, non-blocking
-> pipeline: a `PriceProvider` abstraction (Yahoo Finance implemented;
-> EGX/fund-NAV left unconfigured rather than fabricated), a Price
-> Orchestrator that runs only in the out-of-band background refresh
-> worker (`python -m app.workers.price_refresh`), and a Price Service
-> that every request-time read (Portfolio, Allocation, P/L, Dashboard,
-> Alerts, the transaction response) uses instead — it only ever reads
-> the immutable `asset_prices` history table, **never** calls a live
-> provider, so a provider outage or timeout can never slow down or break
-> a page. Asset-type-aware stale thresholds (never one universal
-> duration), a manual-vs-automated precedence rule (manual wins until a
-> strictly newer automated observation arrives, or is locked), and a
-> generic FX layer (`fx_rates`, provider-driven, no hardcoded currency
-> pairs) round out the pipeline. `holdings.current_price` is no longer
-> read or written anywhere — the Price Service is the single source of
-> truth. A holding with no usable price is excluded from portfolio
-> totals rather than counted as zero, and the API/UI both expose this as
-> an explicit "incomplete valuation" rather than hiding it. See
-> FINANCIAL_RULES.md ("Non-Blocking Valuation", "Stale Price Policy",
-> "Manual-vs-Automated Precedence", "Base Currency & FX Conversion") for
-> the full methodology. No broker integration, automatic trading,
+> **Status:** Phase 12 — Portfolio & Asset Administration + Domain
+> Readiness. A full audit of the existing schema/services for accidental
+> single-portfolio or single-user assumptions was performed first (see
+> [DECISIONS.md](./DECISIONS.md) for the complete findings — what was
+> already correct, what single-portfolio assumptions remain and why they
+> were deliberately deferred rather than fixed here). On top of that
+> audit, a safe administration layer now exists over Assets, Asset Price
+> Configuration, Portfolio Configuration, and Strategy Buckets/Allocation
+> Targets — reachable at `/settings` — so configuration no longer
+> requires a direct database write. Financially sensitive changes
+> (an asset's currency, the portfolio's base currency) are rejected by
+> the backend once real transaction/price history would make them unsafe,
+> rather than silently applied. No new database migration was required.
+> Phase 11's price infrastructure is unchanged: every asset price still
+> flows through one provider-driven, non-blocking pipeline — a
+> `PriceProvider` abstraction (Yahoo Finance implemented; EGX/fund-NAV
+> left unconfigured rather than fabricated), a Price Orchestrator that
+> runs only in the out-of-band background refresh worker
+> (`python -m app.workers.price_refresh`), and a Price Service that every
+> request-time read uses instead, only ever reading the immutable
+> `asset_prices` history table. See FINANCIAL_RULES.md and DECISIONS.md
+> for full methodology. No broker integration, automatic trading,
 > Telegram delivery, authentication, or full multi-user/multi-portfolio
 > system exist yet. See [Phase Plan](#phase-plan) below.
 
@@ -66,6 +66,7 @@ thndr-smart-portfolio/
 ├── API.md
 ├── FINANCIAL_RULES.md
 ├── DEPLOYMENT.md
+├── DECISIONS.md                (added in Phase 12)
 ├── .gitignore
 ├── .env.example
 ├── docker-compose.yml          (added in a later phase)
@@ -129,6 +130,7 @@ thndr-smart-portfolio/
 - [API.md](./API.md) — REST API surface and conventions
 - [FINANCIAL_RULES.md](./FINANCIAL_RULES.md) — financial assumptions and domain rules
 - [DEPLOYMENT.md](./DEPLOYMENT.md) — Docker, Supabase, and cloud deployment notes
+- [DECISIONS.md](./DECISIONS.md) — architectural decision log (domain readiness audit, single-portfolio assumptions, deferred multi-portfolio work)
 
 ## Phase Plan
 
@@ -145,11 +147,13 @@ before the next begins.
 8. Watchlist + Alerts — done
 9. Next.js Frontend (Portfolio Dashboard, mobile-first, RTL, dark mode) — done
 10. Transaction & Holdings Engine (BUY/SELL, average-cost accounting) — done
-11. Generic Hybrid Price Infrastructure (provider-driven prices, FX, non-blocking valuation) — done *(current; reordered ahead of Telegram per approval)*
-12. Telegram Notifications
-13. PWA (installable, offline-capable)
-14. Capacitor wrappers
-15. Production deployment prep
+11. Generic Hybrid Price Infrastructure (provider-driven prices, FX, non-blocking valuation) — done
+12. Portfolio & Asset Administration + Domain Readiness (Settings UI for Assets/Pricing/Portfolio/Strategy, single-portfolio assumption audit) — done *(current)*
+13. Telegram Notifications
+14. PWA (installable, offline-capable)
+15. Capacitor wrappers
+16. Production deployment prep
+17. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
 
 ## Local Development
 

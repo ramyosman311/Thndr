@@ -18,8 +18,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
 from app.repositories import price_repository
-from app.schemas.price import ManualPriceCreateRequest, PriceObservationOut, PriceOut
-from app.services import price_orchestrator, price_service
+from app.schemas.price import (
+    AssetPriceConfigOut,
+    AssetPriceConfigUpsertRequest,
+    ManualPriceCreateRequest,
+    PriceObservationOut,
+    PriceOut,
+)
+from app.services import price_config_service, price_orchestrator, price_service
+from app.services.price_config_service import (
+    AssetNotFoundError as PriceConfigAssetNotFoundError,
+    InvalidPriceConfigError,
+    InvalidProviderError,
+)
 from app.services.price_service import InvalidManualPriceError
 
 router = APIRouter(prefix="/assets", tags=["prices"])
@@ -116,3 +127,33 @@ async def refresh_asset_price(asset_id: UUID, session: AsyncSession = Depends(ge
     await session.commit()
     result = await price_service.get_asset_price(session, asset)
     return _to_price_out(asset_id, result)
+
+
+@router.get("/{asset_id}/price-config", response_model=AssetPriceConfigOut)
+async def get_asset_price_config(
+    asset_id: UUID, session: AsyncSession = Depends(get_db_session)
+) -> AssetPriceConfigOut:
+    """Phase 12 administration read. `configured: false` (with every
+    other field null/default) is a normal response for an asset that
+    has no config row yet -- never a 404."""
+    try:
+        return await price_config_service.get_price_config(session, asset_id)
+    except PriceConfigAssetNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.put("/{asset_id}/price-config", response_model=AssetPriceConfigOut)
+async def put_asset_price_config(
+    asset_id: UUID, request: AssetPriceConfigUpsertRequest, session: AsyncSession = Depends(get_db_session)
+) -> AssetPriceConfigOut:
+    """Full-replacement upsert (Phase 12) -- creates the config row if
+    none exists yet. Provider names are validated against the real
+    provider registry, never accepted merely because a string was
+    entered (see FINANCIAL_RULES.md, "Provider Configuration Is Data,
+    Not Code")."""
+    try:
+        return await price_config_service.upsert_price_config(session, asset_id, request)
+    except PriceConfigAssetNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except (InvalidProviderError, InvalidPriceConfigError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
