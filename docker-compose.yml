@@ -20,7 +20,6 @@ services:
     build:
       context: ./backend
     restart: unless-stopped
-    network_mode: host
     depends_on:
       db:
         condition: service_healthy
@@ -29,8 +28,8 @@ services:
       APP_DEBUG: "true"
       DEV_MODE: "true"
       BACKEND_CORS_ORIGINS: http://localhost:3000
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-thndr}:${POSTGRES_PASSWORD:-thndr_dev_password}@localhost:5432/${POSTGRES_DB:-thndr_portfolio}
-      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-thndr}:${POSTGRES_PASSWORD:-thndr_dev_password}@localhost:5432/${POSTGRES_DB:-thndr_portfolio}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-thndr}:${POSTGRES_PASSWORD:-thndr_dev_password}@db:5432/${POSTGRES_DB:-thndr_portfolio}
+      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-thndr}:${POSTGRES_PASSWORD:-thndr_dev_password}@db:5432/${POSTGRES_DB:-thndr_portfolio}
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
     ports:
       - "8000:8000"
