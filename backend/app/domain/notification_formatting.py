@@ -51,7 +51,7 @@ def format_telegram_alert_message(
     timestamp = sent_at.strftime("%Y-%m-%d %H:%M UTC")
 
     return (
-        "🔔 THNDR Alert\n"
+        "🔔 MIZAN Alert\n"
         "\n"
         f"{asset_symbol}\n"
         f"Alert: {label} — {check.reason}\n"

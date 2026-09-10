@@ -1,4 +1,4 @@
-# THNDR Smart Portfolio
+# MIZAN Smart Portfolio Manager
 
 A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
@@ -61,7 +61,7 @@ functionally by apps like Thndr, but an independent, standalone product.
 ## Repository Structure
 
 ```
-thndr-smart-portfolio/
+mizan-smart-portfolio/
 ├── README.md
 ├── ARCHITECTURE.md
 ├── DATABASE.md

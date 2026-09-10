@@ -13,9 +13,12 @@ const cairo = Cairo({
 });
 
 export const metadata: Metadata = {
-  title: "THNDR Smart Portfolio",
+  title: "MIZAN — Smart Portfolio Manager",
   description: "متابعة محفظتك الاستثمارية المصرية بذكاء — بدون تنفيذ تلقائي للصفقات.",
   manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    title: "MIZAN",
+  },
 };
 
 export const viewport: Viewport = {
@@ -38,9 +41,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <div className="mx-auto flex max-w-4xl items-center justify-between gap-3 px-4 py-3">
                 <Link href="/" className="flex items-center gap-2">
                   <span className="grid h-8 w-8 place-items-center rounded-xl bg-primary text-sm font-bold text-primary-foreground">
-                    ث
+                    M
                   </span>
-                  <span className="text-sm font-bold text-foreground">THNDR Smart Portfolio</span>
+                  <span className="text-sm font-bold text-foreground">MIZAN Smart Portfolio Manager</span>
                 </Link>
                 <div className="flex items-center gap-2">
                   <TopNav />

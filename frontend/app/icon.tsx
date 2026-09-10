@@ -3,6 +3,10 @@ import { ImageResponse } from "next/og";
 export const size = { width: 512, height: 512 };
 export const contentType = "image/png";
 
+/** MIZAN monogram: a plain, bold "M" letterform on the existing brand
+ * background -- deliberately minimal (no wordmark, no external asset,
+ * no new dependency) so it stays legible at favicon size and as a
+ * PWA/home-screen icon. See DECISIONS.md, "MIZAN Brand Migration". */
 export default function Icon() {
   return new ImageResponse(
     (
@@ -21,7 +25,7 @@ export default function Icon() {
           fontFamily: "sans-serif",
         }}
       >
-        ث
+        M
       </div>
     ),
     { ...size }

@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     )
 
     app_env: str = Field(default="development", alias="APP_ENV")
-    app_name: str = Field(default="THNDR Smart Portfolio", alias="APP_NAME")
+    app_name: str = Field(default="MIZAN Smart Portfolio Manager", alias="APP_NAME")
     app_debug: bool = Field(default=True, alias="APP_DEBUG")
     dev_mode: bool = Field(default=True, alias="DEV_MODE")
 

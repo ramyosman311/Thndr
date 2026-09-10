@@ -8,8 +8,8 @@ import type { MetadataRoute } from "next";
  */
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "THNDR Smart Portfolio",
-    short_name: "THNDR",
+    name: "MIZAN Smart Portfolio Manager",
+    short_name: "MIZAN",
     description: "متابعة محفظتك الاستثمارية المصرية بذكاء",
     start_url: "/",
     display: "standalone",

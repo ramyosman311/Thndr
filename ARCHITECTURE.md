@@ -2,7 +2,7 @@
 
 ## Status
 
-This document describes the architecture of THNDR Smart Portfolio. The
+This document describes the architecture of MIZAN Smart Portfolio Manager. The
 backend (FastAPI, domain/service/repository layering) is implemented
 through Phase 11; the frontend (Next.js) is implemented as of Phase 9,
 extended for price states in Phase 11 — see "Frontend Layering" below

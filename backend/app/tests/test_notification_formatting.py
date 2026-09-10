@@ -19,7 +19,7 @@ def test_price_target_message_includes_symbol_label_and_reason():
     )
     message = format_telegram_alert_message(check, asset_symbol="TMGH", sent_at=_SENT_AT)
 
-    assert "🔔 THNDR Alert" in message
+    assert "🔔 MIZAN Alert" in message
     assert "TMGH" in message
     assert "Price Target" in message
     assert "price 58.50 >= target 55.00" in message
