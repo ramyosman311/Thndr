@@ -189,7 +189,11 @@ const RANGE_LABELS: Record<AnalyticsRange, string> = {
 
 function RangeSwitcher({ value, onChange }: { value: AnalyticsRange; onChange: (range: AnalyticsRange) => void }) {
   return (
-    <div className="flex gap-1 rounded-full bg-muted p-0.5" role="tablist" aria-label="النطاق الزمني">
+    <div
+      className="flex gap-1 overflow-x-auto rounded-full bg-muted p-0.5"
+      role="tablist"
+      aria-label="النطاق الزمني"
+    >
       {ANALYTICS_RANGES.map((range) => (
         <button
           key={range}
@@ -197,7 +201,7 @@ function RangeSwitcher({ value, onChange }: { value: AnalyticsRange; onChange: (
           role="tab"
           aria-selected={value === range}
           onClick={() => onChange(range)}
-          className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
+          className={`shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
             value === range ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
           }`}
         >
@@ -221,11 +225,17 @@ export function WealthHistoryCard() {
 
   return (
     <Card>
-      <CardHeader
-        title="نمو الثروة"
-        subtitle="قيمة المحفظة مقابل رأس المال المستثمر عبر الزمن"
-        action={<RangeSwitcher value={range} onChange={setRange} />}
-      />
+      <div className="flex flex-wrap items-start justify-between gap-2 p-4 pb-2">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-foreground">نمو الثروة</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            قيمة المحفظة مقابل رأس المال المستثمر عبر الزمن
+          </p>
+        </div>
+        <div className="w-full sm:w-auto sm:shrink-0">
+          <RangeSwitcher value={range} onChange={setRange} />
+        </div>
+      </div>
       <CardBody>
         <QueryBoundary state={query} onRetry={query.refetch} loadingLabel="جارٍ تحميل السجل التاريخي...">
           {(history) =>
@@ -306,16 +316,31 @@ function WealthLineChart({ history }: { history: PortfolioAnalyticsHistoryOut })
 
       <svg
         viewBox={`0 0 ${width} ${height}`}
-        className="mt-3 w-full touch-none"
+        className="mt-3 w-full"
         role="img"
         aria-label="مخطط قيمة المحفظة ورأس المال المستثمر عبر الزمن"
-        onMouseMove={(event) => {
+        onPointerMove={(event) => {
+          // Touch drags are left free to scroll the page (see the removed
+          // `touch-none`, Phase 16B fix D) — only a discrete tap (handled
+          // by onPointerDown below) sets the touch tooltip, so a moving
+          // touch never fights the browser's own scroll gesture.
+          if (event.pointerType === "touch") return;
           const rect = event.currentTarget.getBoundingClientRect();
           const relativeX = ((event.clientX - rect.left) / rect.width) * width;
           const index = Math.round(((relativeX - paddingX) / (width - paddingX * 2)) * (points.length - 1));
           setHoverIndex(Math.min(Math.max(index, 0), points.length - 1));
         }}
-        onMouseLeave={() => setHoverIndex(null)}
+        onPointerDown={(event) => {
+          if (event.pointerType !== "touch") return;
+          const rect = event.currentTarget.getBoundingClientRect();
+          const relativeX = ((event.clientX - rect.left) / rect.width) * width;
+          const index = Math.round(((relativeX - paddingX) / (width - paddingX * 2)) * (points.length - 1));
+          setHoverIndex(Math.min(Math.max(index, 0), points.length - 1));
+        }}
+        onPointerLeave={(event) => {
+          if (event.pointerType === "touch") return;
+          setHoverIndex(null);
+        }}
       >
         <path
           d={pathFor(investedValues)}
