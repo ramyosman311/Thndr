@@ -697,3 +697,147 @@ listed Phase 15 as "PWA" — this work was inserted under the same number
 at the user's explicit direction; the original PWA/Capacitor/production-
 deployment phases are renumbered further down rather than dropped (see
 README.md's Phase Plan).
+
+## Phase 16 — Financial Core & Cash Logic (P0)
+
+### Inspection findings before implementation
+
+Traced the full valuation data flow (`portfolio_shared.build_positions`
+→ `domain/portfolio_engine.calculate_portfolio_totals` →
+`portfolio_service.get_portfolio_summary`) before changing anything, per
+this phase's explicit "do not invent a new accounting model blindly"
+instruction. Two confirmed, distinct root causes, not one:
+
+1. **The reported P0 bug is real and structural.** There was never a
+   concept of "actual spendable cash" anywhere in the schema or domain
+   layer — only `emergency_value` (one designated asset) and
+   `investable_value` (`total_value - emergency_value`, an allocation-
+   percentage denominator that INCLUDES every other holding, cash or
+   not). The frontend displayed `investable_value` under the label
+   "القيمة القابلة للاستثمار" ("Investable Value/Cash"), which is exactly
+   how a user holding only stocks could see a large nonzero "investable
+   cash" with literally zero free cash on hand.
+2. **A previously-disclosed Phase 15 limitation compounds it.** A
+   CASH/SAVINGS holding created purely via DEPOSIT/WITHDRAWAL (Phase 15)
+   has no price observation unless one is manually recorded — before
+   Phase 16, that meant the holding's value was silently EXCLUDED from
+   every total rather than valued at its own quantity, which is worse
+   for a cash-like asset than for a stock (a stock without a price is a
+   genuine data gap; a CASH holding's value is definitionally its own
+   quantity — cash + a note "value unknown" is nonsensical).
+
+### Design decisions (why, not just what)
+
+- **`investable_value`/`denominator_value`/`denominator_basis`/`total_value`/
+  `emergency_value` are all UNCHANGED.** These are correctly-designed,
+  already-tested Phase 5/6 concepts (the allocation-percentage
+  denominator and its historical exclusion-of-emergency-cash rule) that
+  have nothing wrong with them — the bug was purely that the wrong field
+  was shown under the wrong label. Renaming or restructuring them would
+  have been unnecessary churn across the Allocation/Strategy/Smart
+  Inflow engines that already correctly depend on them.
+- **`available_cash`/`invested_market_value` are NEW, additive fields**,
+  computed from the exact same already-resolved positions
+  (`domain/portfolio_engine.AssetPosition` gained an `asset_type` field
+  purely to classify CASH/SAVINGS vs. everything else — no new I/O, no
+  new query). `available_cash` uses the same CASH/SAVINGS classification
+  Phase 15 already established for DEPOSIT/WITHDRAWAL eligibility,
+  reusing an existing boundary rather than inventing a new one.
+- **The missing-price fallback (`services/portfolio_shared.resolve_valuation_price`)
+  is applied at the SAME shared position-building layer used by
+  Portfolio Summary, Allocation, Smart Inflow, AND the Snapshot
+  lifecycle** — not bolted on separately to just the P/L card — so a
+  holding's value can never disagree between screens (an explicit
+  requirement of this phase, "Portfolio Aggregation Consistency"). This
+  was the highest-risk design choice: it changes `is_complete`/
+  `unpriced_asset_ids` behavior for every existing consumer, so ~20
+  existing tests that asserted the old "excluded, not fabricated"
+  behavior for a plain missing price needed updating. Each was checked
+  individually: either it needed only a mechanical constructor-signature
+  fix (a new required `asset_type` field on `AssetPosition`), or it
+  genuinely asserted the now-superseded exclusion policy — in the latter
+  case (`test_portfolio_service.py`,
+  `test_snapshot_service.py`) the test was rewritten to prove the NEW
+  correct behavior (fallback used, `PENDING_SYNC`) while preserving a
+  distinct case for the one scenario that is still genuinely excluded
+  (no fallback price possible at all — see below).
+- **The average-cost fallback is deliberately currency-gated.**
+  `average_cost` is stored in the asset's own currency (never
+  converted); using it as a stand-in price for an asset in a different
+  currency than the portfolio's base currency, with no FX rate on hand
+  to convert it, would silently produce a wrong-currency number
+  presented as base-currency — exactly the class of bug
+  "Base Currency & FX Conversion" already forbids. So the fallback only
+  fires when `asset.currency == base_currency`; a genuinely
+  cross-currency unpriced asset still falls through to the old
+  exclusion behavior. This codebase is single-currency (EGP) in every
+  seed/test asset today, so this gate has zero practical effect right
+  now and exists purely to keep the FX guarantee intact if/when a second
+  currency is ever introduced.
+- **`PENDING_SYNC`/`LIVE` is a NEW, separate, two-value field — the
+  existing 4-value `PriceStatus` enum (`CURRENT_PRICE_AVAILABLE`/
+  `LAST_KNOWN_PRICE`/`PRICE_UNAVAILABLE`/`CURRENCY_CONVERSION_UNAVAILABLE`)
+  is completely untouched** and still used, unchanged, by
+  `/api/assets/{id}/price`, the admin price-config UI, and everywhere
+  else it already applied. Only `HoldingPnLOut.price_status` (Portfolio
+  Summary's per-holding field) changes to the simpler two-value
+  vocabulary the phase's acceptance criteria explicitly require
+  ("frontend should distinguish LIVE from PENDING_SYNC"). Collapsing a
+  stale-but-real price and a pure cost-basis guess into the same
+  `PENDING_SYNC` label was a deliberate simplification for this one
+  field, not a claim that the two are equally reliable internally — the
+  underlying `PriceResult`/`is_stale` distinction is preserved and still
+  available via `price_is_stale`.
+- **BUY/SELL were confirmed to NOT automatically move `available_cash`,
+  and this was kept exactly as-is, not "fixed."** Inspecting
+  `transaction_service.create_transaction` confirmed BUY/SELL only ever
+  change the traded asset's own `Holding` row — there has never been an
+  automatic link from a BUY/SELL to any cash balance in this codebase.
+  The task's cash-accounting formulas (`Available Cash -= qty*price+fees`
+  on BUY, etc.) describe a fully-integrated cash ledger that does not
+  exist and was never approved — building it now would require answering
+  unaddressed product questions (which CASH/SAVINGS asset gets
+  debited when several exist? is a BUY rejected for insufficient cash?)
+  that are exactly the kind of "invent a new accounting model blindly"
+  this phase's own instructions forbid. Instead, the existing,
+  already-correct scope boundary is now made explicit and tested
+  (`test_phase16_financial_core.py::test_d_sell_proceeds_...`): a SELL's
+  proceeds do not appear in `available_cash` until the user separately
+  records a DEPOSIT for them, exactly mirroring how a DEPOSIT was already
+  required to record cash at all. **This is flagged here explicitly as a
+  scope decision made without a product conversation, in case the
+  intended design was in fact the fully-integrated ledger** — if so, it
+  is a materially larger, separate feature (a real cash-balance model
+  spanning BUY/SELL/DEPOSIT/WITHDRAWAL together) that should be scoped
+  and approved on its own, not inferred from formulas alone.
+
+### A real bug found and fixed in passing (not originally in scope)
+
+Live browser verification during this phase (screenshotting the
+dashboard/portfolio pages with disposable test transactions) surfaced
+that `components/portfolio/transaction-history.tsx` labeled every
+non-BUY transaction "بيع" (SELL) — including a DEPOSIT, which rendered
+with a red "SELL" badge. This predates Phase 16 (introduced when Phase
+15 added DEPOSIT/WITHDRAWAL without updating this display) but sits
+directly in the transaction-history component this phase already
+touches for the newest-first ordering fix, so it was fixed alongside
+rather than filed separately (`TRANSACTION_TYPE_META` now maps all four
+types explicitly).
+
+### Database / migration
+
+None. Every field this phase reads (`asset_type`, `average_cost`,
+`currency`) already existed; every new API field is a pure computation
+over already-loaded data. No Alembic migration, no schema change, no
+seed change.
+
+### Regression
+
+Full backend suite: 535 pre-existing tests, all still green (2 rewritten
+to assert the new, correct fallback behavior instead of the superseded
+exclusion behavior — see above; ~20 more needed only a mechanical
+`asset_type` constructor argument, no assertion changes). 8 new tests
+added (`test_phase16_financial_core.py`, cases A–H from the approved
+spec) — 543 total. Frontend: 79 pre-existing tests green, 9 new
+(`pnl-badge.test.tsx` x5, `transaction-history.test.tsx` x1, plus 3 new
+`format.test.ts` cases) — 88 total.

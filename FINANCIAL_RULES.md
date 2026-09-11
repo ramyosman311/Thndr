@@ -880,11 +880,14 @@ misleading flat/empty chart presented as a real result.
 
 **Known Limitations (disclosed, not silently worked around):**
 - `TRANSFER` is unimplemented (see above).
-- A CASH/SAVINGS asset used for DEPOSIT/WITHDRAWAL needs its own usable
-  price (e.g. a manual price of `1`, via the existing Phase 11 manual
-  price endpoint) to be included in a snapshot's `total_value`/items —
-  Phase 15 does not special-case pricing for cash; it reuses the
-  existing Price Service exactly as every other asset does.
+- ~~A CASH/SAVINGS asset used for DEPOSIT/WITHDRAWAL needs its own usable
+  price... to be included in a snapshot's total_value/items~~ — **resolved
+  by Phase 16's missing-price fallback** (see "Phase 16: Missing-Price
+  Fallback" below): a held asset with no live/stale price now falls back
+  to its own average cost (same-currency only) rather than being
+  excluded, so a DEPOSIT/WITHDRAWAL-only CASH/SAVINGS asset is valued
+  correctly (at exactly its own quantity, since `average_cost` is pinned
+  to `1`) with no manual price ever required.
 - Mixing BUY/SELL and DEPOSIT/WITHDRAWAL on the *same* asset is undefined
   behavior and not guarded against (a DEPOSIT/WITHDRAWAL always pins
   `average_cost` to `1`, which would silently overwrite a
@@ -892,6 +895,96 @@ misleading flat/empty chart presented as a real result.
 - Historical data predating this phase (the five original dev-seed
   snapshots) is excluded from analytics/TWR, not retroactively
   backfilled.
+
+## Phase 16: Portfolio Value vs Investable Value vs Available Cash
+
+A P0 fix for a real, confirmed bug: the dashboard labeled
+`investable_value` (total value minus emergency value — an existing,
+correctly-implemented Phase 5/6 concept) as "Investable Cash." That field
+INCLUDES invested market value — a user holding only stocks and no cash
+at all would see a large, nonzero "Investable Cash," which is wrong.
+There was no field anywhere representing actual spendable cash.
+
+**The six related values, now all distinct and all present on
+`PortfolioSummaryOut`:**
+
+- **`total_value`** ("Portfolio Value"): every held position, always.
+  `= emergency_value + available_cash + invested_market_value`, exactly,
+  by construction (never independently computed).
+- **`emergency_value`** ("Reserved/Emergency Cash"): the value of
+  whichever single asset is configured as `portfolio_configs.emergency_asset_id`,
+  if any. Unchanged from Phase 5.
+- **`investable_value`**: `total_value - emergency_value`. This is
+  **only** the allocation-percentage denominator (see "Emergency Cash"
+  and "Risk Allocation vs. Total Portfolio Percentage" above) — it is
+  NOT spendable cash, and it INCLUDES invested market value. **Never
+  label this "Investable Cash" in any UI.**
+- **`available_cash`** ("Available/Free Cash" — what the product calls
+  "Investable Cash"): the value of non-emergency holdings whose
+  `asset_type` is `CASH` or `SAVINGS` — exactly the same two types Phase
+  15 restricted DEPOSIT/WITHDRAWAL to. This is the actual amount a user
+  could deploy into a new purchase right now. Zero whenever no free cash
+  is held, regardless of how large `total_value`/`investable_value` are.
+- **`invested_market_value`**: the value of every other (non-cash,
+  non-emergency) holding. `investable_value - available_cash`.
+- **`denominator_value`/`denominator_basis`**: unchanged Phase 5/6
+  concept, unrelated to cash.
+
+A CASH/SAVINGS holding that IS the configured emergency asset counts
+toward `emergency_value`, never `available_cash` — "reserved" and
+"available" are mutually exclusive by definition. A BUY of TMGH does not
+create "investable cash" simply because `investable_value` happens to be
+large; only an actual CASH/SAVINGS holding does.
+
+**Existing cash-accounting model, preserved (not invented new):** BUY and
+SELL only ever change the traded asset's own `quantity`/`average_cost` —
+neither one automatically debits or credits any cash holding, and this
+was true before Phase 16 too (see "Transaction Accounting" above; there
+is no unified cash ledger a BUY "spends from" or a SELL "deposits into").
+`available_cash` only ever changes via an explicit DEPOSIT/WITHDRAWAL
+against a CASH/SAVINGS asset. Selling a stock does not itself increase
+`available_cash` — the user must separately record a DEPOSIT for the
+proceeds if they want them tracked as free cash. This is a disclosed
+scope boundary (see DECISIONS.md, "Phase 16 — Financial Core & Cash
+Logic"), not an oversight, and nothing in Phase 16 invents an automatic
+BUY/SELL-to-cash link that did not exist before.
+
+## Phase 16: Missing-Price Fallback
+
+Before Phase 16, a held asset with no usable price (`PRICE_UNAVAILABLE`/
+`CURRENCY_CONVERSION_UNAVAILABLE`) was wholly excluded from every total
+(see "Incomplete Valuation Is Not Zero Valuation" in
+domain/portfolio_engine.py) — correct in spirit (never fabricate a
+price) but meant a portfolio could sit "incomplete" indefinitely for an
+asset that simply never got a price recorded (see the now-resolved
+Phase 15 known limitation above).
+
+**New fallback priority** (`services/portfolio_shared.resolve_valuation_price`,
+the one function every valuation consumer shares — Portfolio Summary,
+Allocation, Smart Inflow, and the Snapshot lifecycle alike, so they can
+never disagree about the same holding's value):
+1. A genuinely current price (`PriceStatus.CURRENT`) — **LIVE**.
+2. A real but stale last-known observation (`PriceStatus.LAST_KNOWN`) —
+   still a real, previously-recorded market price. **PENDING_SYNC**.
+3. The holding's own `average_cost`, but **only** when the asset's
+   currency matches the portfolio's base currency — `average_cost` is
+   stored in the asset's own currency (see "Transaction Accounting"),
+   so using it across a currency boundary without an FX rate would
+   silently mix currencies. **PENDING_SYNC**.
+4. Otherwise: `current_price = None`, exactly the pre-Phase-16 exclusion
+   behavior — this is the only case still capable of `is_complete=False`.
+
+**PENDING_SYNC Never Implies Profit:** whenever a holding's price comes
+from (2) or (3) above, its `unrealized_pnl`/`unrealized_pnl_percent` in
+`HoldingPnLOut` are always forced to exactly `0`/`0.00%`
+(never the real, computed delta) — a P/L number derived from a non-live
+price is never presented as a confirmed profit or loss, even though
+`market_value` itself still shows the best available estimate. This
+applies identically whether the fallback used a real stale price or a
+pure cost-basis guess: the frontend only ever needs to distinguish
+`price_status: "LIVE"` from `"PENDING_SYNC"` (a deliberately coarser,
+two-value field, distinct from the internal 4-value `PriceStatus` still
+used unchanged everywhere else — see schemas/portfolio.py).
 
 ## Summary of Non-Negotiable Distinctions
 
@@ -908,6 +1001,10 @@ misleading flat/empty chart presented as a real result.
 - **Evaluation ≠ Delivery** (Phase 14 — the alert engine decides a condition is newly true; a separate, isolated `NotificationDispatcher` decides whether/how to tell someone. A delivery failure never breaks evaluation, and evaluation never blocks on a live delivery call)
 - **Cash Flow ≠ Investment Return** (Phase 15 — a DEPOSIT/WITHDRAWAL is external capital, never counted as market performance; Time-Weighted Return exists specifically to isolate the two)
 - **A Snapshot Observation ≠ A Ledger** (Phase 15 — `realized_pnl_cumulative`/`total_cost_basis`/`invested_capital` on `portfolio_snapshots` are computed once at write time from already-persisted state; they are not incrementally-maintained columns that `transactions`/`holdings` themselves write to)
+- **Investable Value ≠ Available Cash** (Phase 16 — `investable_value` is only the allocation-percentage denominator and INCLUDES invested market value; `available_cash` is the only field representing actual spendable cash. Never label the former "Investable Cash" in any UI)
+- **Reserved Cash ≠ Available Cash** (Phase 16 — a CASH/SAVINGS holding that is the configured emergency asset counts toward `emergency_value`, never `available_cash`; the two are mutually exclusive by definition)
+- **PENDING_SYNC ≠ LIVE, and Never Implies Profit** (Phase 16 — a stale or cost-basis-fallback price is a real number safe to display as a holding's estimated value, but its implied `unrealized_pnl` is always forced to exactly 0, never a computed delta presented as confirmed profit/loss)
+- **A BUY/SELL Never Touches Cash** (Phase 16 clarification of a pre-existing Phase 10 design — no transaction type automatically debits or credits `available_cash`; only an explicit DEPOSIT/WITHDRAWAL does)
 
 These distinctions must be preserved end-to-end: in the database schema
 (DATABASE.md), the domain logic (this document), the API contract

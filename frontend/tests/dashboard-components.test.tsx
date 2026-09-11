@@ -9,6 +9,8 @@ function makeSummary(overrides: Partial<PortfolioSummaryOut> = {}): PortfolioSum
     total_value: "10000.00",
     emergency_value: "0.00",
     investable_value: "10000.00",
+    available_cash: "10000.00",
+    invested_market_value: "0.00",
     denominator_basis: "investable",
     denominator_value: "10000.00",
     emergency_excluded: true,

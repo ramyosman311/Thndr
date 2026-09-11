@@ -13,7 +13,8 @@ import {
   WealthHistoryCard,
 } from "@/components/dashboard";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
-import { formatCurrency, formatPercent, isNegative, isZero } from "@/lib/format";
+import { PnLBadge } from "@/components/ui/pnl-badge";
+import { formatCurrency } from "@/lib/format";
 import type { HoldingPnLOut } from "@/types/api";
 
 export default function DashboardPage() {
@@ -69,23 +70,15 @@ function HoldingsPreview({ holdings }: { holdings: HoldingPnLOut[] }) {
     <Card>
       <CardHeader title="أبرز المراكز" subtitle={`${holdings.length} مركز نشط`} />
       <CardBody className="flex flex-col gap-2">
-        {top.map((h) => {
-          const negative = isNegative(h.unrealized_pnl);
-          const zero = isZero(h.unrealized_pnl);
-          const tone = zero ? "text-muted-foreground" : negative ? "text-danger" : "text-success";
-          return (
-            <div key={h.asset_id} className="flex items-center justify-between text-sm">
-              <span className="font-semibold text-foreground">{h.symbol}</span>
-              <div className="text-end">
-                <p className="tabular-nums text-foreground">{formatCurrency(h.market_value)}</p>
-                <p className={`tabular-nums text-xs ${tone}`}>
-                  {formatCurrency(h.unrealized_pnl)}
-                  {h.unrealized_pnl_percent !== null ? ` (${formatPercent(h.unrealized_pnl_percent)})` : ""}
-                </p>
-              </div>
+        {top.map((h) => (
+          <div key={h.asset_id} className="flex items-center justify-between text-sm">
+            <span className="font-semibold text-foreground">{h.symbol}</span>
+            <div className="text-end">
+              <p className="tabular-nums text-foreground">{formatCurrency(h.market_value)}</p>
+              <PnLBadge value={h.unrealized_pnl} percent={h.unrealized_pnl_percent} />
             </div>
-          );
-        })}
+          </div>
+        ))}
       </CardBody>
     </Card>
   );

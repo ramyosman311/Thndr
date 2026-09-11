@@ -7,28 +7,32 @@ import { priceStatusMeta } from "@/lib/status-labels";
 import { StatusPill } from "@/components/ui/status-pill";
 import { PencilIcon } from "@/components/icons";
 import { ErrorBlock } from "@/components/ui/query-boundary";
-import type { PriceStatus } from "@/types/api";
+import type { PriceConfidence, PriceStatus } from "@/types/api";
 
 /** The price-state badge required everywhere a current price is shown
  * (Phase 11, FINANCIAL_RULES.md "Frontend Price States"): a live price
  * always reads differently from a stale/last-known one, and an
  * unavailable price is never rendered as if it were 0. This never
  * infers freshness itself — `status`/`isStale` are exactly what the
- * backend's Price Service already classified. */
+ * backend's Price Service already classified. Shared by the detailed
+ * 4-value `PriceStatus` (admin/price-config contexts) and the Phase 16
+ * 2-value `PriceConfidence` (Portfolio Summary) — both resolve through
+ * the same `priceStatusMeta` label map (see lib/status-labels.ts). */
 export function PriceStateBadge({
   status,
   isStale,
   recordedAt,
 }: {
-  status: PriceStatus;
+  status: PriceStatus | PriceConfidence;
   isStale: boolean;
   recordedAt: string | null;
 }) {
   const meta = priceStatusMeta(status);
-  const showAge = recordedAt !== null && (status === "CURRENT_PRICE_AVAILABLE" || status === "LAST_KNOWN_PRICE");
+  const isLive = status === "CURRENT_PRICE_AVAILABLE" || status === "LIVE";
+  const showAge = recordedAt !== null && (isLive || status === "LAST_KNOWN_PRICE" || status === "PENDING_SYNC");
   return (
     <div className="flex flex-col items-end gap-0.5">
-      <StatusPill label={meta.label} tone={isStale && status === "CURRENT_PRICE_AVAILABLE" ? "warning" : meta.tone} />
+      <StatusPill label={meta.label} tone={isStale && isLive ? "warning" : meta.tone} />
       {showAge ? <span className="text-[10px] text-muted-foreground">تحديث {formatRelativeTime(recordedAt)}</span> : null}
     </div>
   );

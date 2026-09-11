@@ -12,12 +12,24 @@ export type DecimalStr = string;
 
 // --- Portfolio (Phase 5) ----------------------------------------------
 
-/** Phase 11: matches domain/price_types.py's PriceStatus exactly. */
+/** Phase 11: matches domain/price_types.py's PriceStatus exactly. Used by
+ * `PriceOut`/`HoldingSnapshotOut` — the detailed, unchanged 4-value
+ * status for admin/price-config contexts. NOT used by `HoldingPnLOut`
+ * below, which uses the simpler Phase 16 `PriceConfidence` instead. */
 export type PriceStatus =
   | "CURRENT_PRICE_AVAILABLE"
   | "LAST_KNOWN_PRICE"
   | "PRICE_UNAVAILABLE"
   | "CURRENCY_CONVERSION_UNAVAILABLE";
+
+/** Phase 16: whether a holding's `current_price`/`unrealized_pnl` in the
+ * Portfolio Summary should be trusted as a confirmed live market price.
+ * "PENDING_SYNC" covers both a stale last-known price and the average-
+ * cost fallback — in both cases `unrealized_pnl` is always exactly 0
+ * (see FINANCIAL_RULES.md, "PENDING_SYNC Never Implies Profit"). This is
+ * deliberately a separate, coarser concept from `PriceStatus` above, not
+ * a replacement for it. */
+export type PriceConfidence = "LIVE" | "PENDING_SYNC";
 
 export interface HoldingPnLOut {
   asset_id: string;
@@ -31,7 +43,7 @@ export interface HoldingPnLOut {
   /** Phase 11: null when the Price Service has no usable price — never
    * a fabricated 0. Never render this as "0.00"; use `price_status`. */
   current_price: DecimalStr | null;
-  price_status: PriceStatus;
+  price_status: PriceConfidence;
   price_recorded_at: string | null;
   price_is_stale: boolean;
   market_value: DecimalStr | null;
@@ -42,9 +54,23 @@ export interface HoldingPnLOut {
 
 export interface PortfolioSummaryOut {
   base_currency: string;
+  /** "Portfolio Value" — every held position, always. Equals
+   * `emergency_value + available_cash + invested_market_value`. */
   total_value: DecimalStr;
+  /** "Reserved/Emergency Cash" — the configured emergency asset's value. */
   emergency_value: DecimalStr;
+  /** The risk-allocation-percentage denominator basis (total_value minus
+   * emergency_value) — NOT spendable cash, and INCLUDES invested market
+   * value. Never label this "Investable Cash" in the UI — see
+   * `available_cash` below. */
   investable_value: DecimalStr;
+  /** "Available/Free Cash" (what the product calls "Investable Cash"):
+   * the value of non-emergency CASH/SAVINGS holdings only — the actual
+   * amount that could be deployed into a new purchase right now. */
+  available_cash: DecimalStr;
+  /** The value of every other (non-cash, non-emergency) holding —
+   * `investable_value` minus `available_cash`. */
+  invested_market_value: DecimalStr;
   denominator_basis: string;
   denominator_value: DecimalStr;
   emergency_excluded: boolean;

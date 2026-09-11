@@ -29,9 +29,15 @@ async def get_holding_by_asset_id_for_update(session: AsyncSession, asset_id: UU
 
 
 async def list_transactions(session: AsyncSession) -> list[Transaction]:
+    """Newest first, by the actual transaction timestamp -- never DB
+    insertion order (see FINANCIAL_RULES.md, "Transaction History Order").
+    `created_at`/`id` are deterministic tie-breakers for transactions
+    sharing the same `transaction_date` (e.g. two same-day backdated
+    entries), so the result order is stable and reproducible rather than
+    depending on the database's arbitrary tie-break for equal sort keys."""
     result = await session.execute(
         select(Transaction)
         .options(selectinload(Transaction.asset))
-        .order_by(Transaction.transaction_date.desc())
+        .order_by(Transaction.transaction_date.desc(), Transaction.created_at.desc(), Transaction.id.desc())
     )
     return list(result.scalars().all())

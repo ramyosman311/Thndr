@@ -80,7 +80,7 @@ async def get_inflow_allocation(session: AsyncSession, amount: Decimal) -> Inflo
 
     assets = await get_active_assets(session)
     prices = await price_service.get_prices_for_assets_in_base_currency(session, assets, config.base_currency)
-    positions = build_positions(assets, config.emergency_asset_id, prices)
+    positions = build_positions(assets, config.emergency_asset_id, prices, config.base_currency)
     totals = calculate_portfolio_totals(positions, emergency_excluded=config.emergency_excluded)
 
     buckets = await get_active_strategy_buckets(session, config.id)

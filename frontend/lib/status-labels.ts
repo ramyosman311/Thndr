@@ -60,6 +60,11 @@ export const PRICE_STATUS: Record<string, StatusMeta> = {
   LAST_KNOWN_PRICE: { label: "آخر سعر معروف", tone: "warning" },
   PRICE_UNAVAILABLE: { label: "السعر غير متاح", tone: "neutral" },
   CURRENCY_CONVERSION_UNAVAILABLE: { label: "تعذّر تحويل العملة", tone: "danger" },
+  // Phase 16: the Portfolio Summary's simpler two-value price-confidence
+  // field (see types/api.ts, PriceConfidence) — shares this same label
+  // map/badge component rather than a separate one.
+  LIVE: { label: "سعر مباشر", tone: "success" },
+  PENDING_SYNC: { label: "بانتظار مزامنة السعر", tone: "warning" },
 };
 
 export const ALERT_TYPE_LABEL: Record<string, string> = {

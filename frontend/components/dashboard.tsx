@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { MetricCard } from "@/components/ui/metric-card";
+import { PnLBadge } from "@/components/ui/pnl-badge";
 import { StatusPill } from "@/components/ui/status-pill";
 import { EmptyBlock, QueryBoundary } from "@/components/ui/query-boundary";
 import { ForwardChevronIcon, BellIcon, CashIcon, CheckCircleIcon, WalletIcon } from "@/components/icons";
@@ -21,9 +22,6 @@ import type {
 } from "@/types/api";
 
 export function TotalValueCard({ summary }: { summary: PortfolioSummaryOut }) {
-  const pnlNegative = isNegative(summary.total_unrealized_pnl);
-  const pnlZero = isZero(summary.total_unrealized_pnl);
-  const tone = pnlZero ? "neutral" : pnlNegative ? "danger" : "success";
   return (
     <Card>
       <CardBody className="p-5">
@@ -32,21 +30,11 @@ export function TotalValueCard({ summary }: { summary: PortfolioSummaryOut }) {
           {formatCurrency(summary.total_value, summary.base_currency)}
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span
-            className={`tabular-nums inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
-              tone === "success"
-                ? "bg-success-muted text-success"
-                : tone === "danger"
-                  ? "bg-danger-muted text-danger"
-                  : "bg-muted text-muted-foreground"
-            }`}
-          >
-            {formatCurrency(summary.total_unrealized_pnl, summary.base_currency)}
-            {summary.total_unrealized_pnl_percent !== null
-              ? ` (${formatPercent(summary.total_unrealized_pnl_percent)})`
-              : ""}
-          </span>
-          <span className="text-[11px] text-muted-foreground">ربح/خسارة غير محققة</span>
+          <PnLBadge
+            value={summary.total_unrealized_pnl}
+            percent={summary.total_unrealized_pnl_percent}
+            currency={summary.base_currency}
+          />
         </div>
         {summary.total_unrealized_pnl_percent === null ? (
           <p className="mt-1 text-[11px] text-muted-foreground">
@@ -58,14 +46,29 @@ export function TotalValueCard({ summary }: { summary: PortfolioSummaryOut }) {
   );
 }
 
+/** Phase 16: shows the actually-correct cash/investment breakdown.
+ * `available_cash` ("Investable Cash" in product language) is NEVER
+ * inflated by invested market value — see FINANCIAL_RULES.md, "Portfolio
+ * Value vs Investable Value vs Available Cash". The old card here showed
+ * `investable_value` (total minus emergency, which INCLUDES stock market
+ * value) mislabeled as spendable cash; that field is intentionally not
+ * shown on the dashboard anymore to avoid repeating that confusion — it
+ * remains available via the API for the allocation-percentage
+ * denominator it actually serves. */
 export function ValueSplitCard({ summary }: { summary: PortfolioSummaryOut }) {
   return (
     <div className="grid grid-cols-2 gap-3">
       <MetricCard
-        label="القيمة القابلة للاستثمار"
-        value={formatCurrency(summary.investable_value, summary.base_currency)}
-        hint={summary.emergency_excluded ? "أساس الحساب المستخدم في التوزيع" : undefined}
+        label="النقد المتاح"
+        value={formatCurrency(summary.available_cash, summary.base_currency)}
+        hint="متاح للاستثمار الآن"
         icon={<WalletIcon width={16} height={16} />}
+      />
+      <MetricCard
+        label="قيمة الاستثمارات"
+        value={formatCurrency(summary.invested_market_value, summary.base_currency)}
+        hint="القيمة السوقية للمراكز المملوكة"
+        icon={<CashIcon width={16} height={16} />}
       />
       <MetricCard
         label="النقد الاحتياطي"

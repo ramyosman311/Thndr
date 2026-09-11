@@ -187,7 +187,13 @@ async def test_summary_reports_incomplete_valuation_for_a_held_but_unpriced_asse
     unpriced_pnl = next(h for h in summary.holdings_pnl if h.symbol == "UNPRICEDONE")
     assert unpriced_pnl.current_price is None
     assert unpriced_pnl.market_value is None
-    assert unpriced_pnl.price_status == "PRICE_UNAVAILABLE"
+    # Phase 16: no live/stale price AND no average-cost fallback (this
+    # holding's average_cost is the Holding model's default of 0, so no
+    # safe fallback price exists) -- still genuinely unpriced, now
+    # reported as PENDING_SYNC rather than the old, more granular
+    # PRICE_UNAVAILABLE string (see services/portfolio_shared.py,
+    # "resolve_valuation_price").
+    assert unpriced_pnl.price_status == "PENDING_SYNC"
 
 
 async def test_allocation_reports_complete_valuation_when_every_position_is_priced(db_session):

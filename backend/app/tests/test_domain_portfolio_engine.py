@@ -4,10 +4,11 @@ from uuid import uuid4
 from app.domain.portfolio_engine import AssetPosition, calculate_portfolio_totals
 
 
-def make_position(*, is_emergency=False, bucket_id=None, quantity="0", price="0", asset_id=None):
+def make_position(*, is_emergency=False, bucket_id=None, quantity="0", price="0", asset_id=None, asset_type="STOCK"):
     return AssetPosition(
         asset_id=asset_id or uuid4(),
         symbol="TEST",
+        asset_type=asset_type,
         is_emergency=is_emergency,
         strategy_bucket_id=bucket_id,
         quantity=Decimal(quantity),

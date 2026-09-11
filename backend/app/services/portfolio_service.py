@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.allocation_engine import evaluate_bucket_allocation
 from app.domain.pnl_engine import HoldingPnL, calculate_holding_pnl, calculate_portfolio_pnl_totals
 from app.domain.portfolio_engine import calculate_portfolio_totals
-from app.domain.price_types import PriceStatus
 from app.repositories.portfolio_repository import (
     get_active_allocation_targets,
     get_active_assets,
@@ -26,7 +25,7 @@ from app.repositories.portfolio_repository import (
 )
 from app.schemas.portfolio import BucketAllocationOut, HoldingPnLOut, PortfolioAllocationOut, PortfolioSummaryOut
 from app.services import price_service
-from app.services.portfolio_shared import build_positions, find_emergency_bucket_id
+from app.services.portfolio_shared import build_positions, find_emergency_bucket_id, resolve_valuation_price
 
 _PRESENTATION_QUANT = Decimal("0.01")
 
@@ -49,7 +48,7 @@ async def get_portfolio_summary(session: AsyncSession) -> PortfolioSummaryOut:
 
     assets = await get_active_assets(session)
     prices = await price_service.get_prices_for_assets_in_base_currency(session, assets, config.base_currency)
-    positions = build_positions(assets, config.emergency_asset_id, prices)
+    positions = build_positions(assets, config.emergency_asset_id, prices, config.base_currency)
     totals = calculate_portfolio_totals(positions, emergency_excluded=config.emergency_excluded)
 
     holdings_pnl: list[HoldingPnLOut] = []
@@ -59,13 +58,39 @@ async def get_portfolio_summary(session: AsyncSession) -> PortfolioSummaryOut:
         if holding is None or holding.quantity == 0:
             continue
         price_result = prices.get(asset.id)
-        current_price = price_result.price if price_result is not None and price_result.is_usable else None
+        resolved = resolve_valuation_price(
+            price_result,
+            average_cost=holding.average_cost,
+            asset_currency=asset.currency,
+            base_currency=config.base_currency,
+        )
+        current_price = resolved.price
         pnl = calculate_holding_pnl(
             quantity=holding.quantity,
             average_cost=holding.average_cost,
             current_price=current_price,
         )
-        raw_pnls.append(pnl)
+        # A PENDING_SYNC price (stale last-known, or the average-cost
+        # fallback) is a real number safe to show as the holding's
+        # estimated value, but its implied profit/loss is NOT safe to
+        # show as real -- it may reflect an outdated or entirely assumed
+        # price rather than a confirmed live market price (see
+        # FINANCIAL_RULES.md, "PENDING_SYNC Never Implies Profit"). Only
+        # a genuinely LIVE price ever produces a displayed non-zero
+        # unrealized P/L.
+        display_unrealized_pnl = pnl.unrealized_pnl
+        display_unrealized_pnl_percent = pnl.unrealized_pnl_percent
+        if not resolved.is_live and pnl.unrealized_pnl is not None:
+            display_unrealized_pnl = Decimal("0")
+            display_unrealized_pnl_percent = Decimal("0") if pnl.cost_basis != 0 else None
+        raw_pnls.append(
+            HoldingPnL(
+                market_value=pnl.market_value,
+                cost_basis=pnl.cost_basis,
+                unrealized_pnl=display_unrealized_pnl,
+                unrealized_pnl_percent=display_unrealized_pnl_percent,
+            )
+        )
         holdings_pnl.append(
             HoldingPnLOut(
                 asset_id=asset.id,
@@ -74,14 +99,14 @@ async def get_portfolio_summary(session: AsyncSession) -> PortfolioSummaryOut:
                 average_cost=holding.average_cost,
                 asset_currency=asset.currency,
                 current_price=current_price,
-                price_status=price_result.status.value if price_result else PriceStatus.UNAVAILABLE.value,
+                price_status="LIVE" if resolved.is_live else "PENDING_SYNC",
                 price_recorded_at=price_result.recorded_at if price_result else None,
                 price_is_stale=price_result.is_stale if price_result else False,
                 market_value=_round(pnl.market_value) if pnl.market_value is not None else None,
                 cost_basis=_round(pnl.cost_basis) if pnl.cost_basis is not None else None,
-                unrealized_pnl=_round(pnl.unrealized_pnl) if pnl.unrealized_pnl is not None else None,
+                unrealized_pnl=_round(display_unrealized_pnl) if display_unrealized_pnl is not None else None,
                 unrealized_pnl_percent=(
-                    _round(pnl.unrealized_pnl_percent) if pnl.unrealized_pnl_percent is not None else None
+                    _round(display_unrealized_pnl_percent) if display_unrealized_pnl_percent is not None else None
                 ),
             )
         )
@@ -93,6 +118,8 @@ async def get_portfolio_summary(session: AsyncSession) -> PortfolioSummaryOut:
         total_value=_round(totals.total_value),
         emergency_value=_round(totals.emergency_value),
         investable_value=_round(totals.investable_value),
+        available_cash=_round(totals.available_cash),
+        invested_market_value=_round(totals.invested_market_value),
         denominator_basis=totals.denominator_basis,
         denominator_value=_round(totals.denominator_value),
         emergency_excluded=config.emergency_excluded,
@@ -115,7 +142,7 @@ async def get_portfolio_allocation(session: AsyncSession) -> PortfolioAllocation
 
     assets = await get_active_assets(session)
     prices = await price_service.get_prices_for_assets_in_base_currency(session, assets, config.base_currency)
-    positions = build_positions(assets, config.emergency_asset_id, prices)
+    positions = build_positions(assets, config.emergency_asset_id, prices, config.base_currency)
     totals = calculate_portfolio_totals(positions, emergency_excluded=config.emergency_excluded)
 
     buckets = await get_active_strategy_buckets(session, config.id)

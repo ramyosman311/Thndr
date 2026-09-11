@@ -9,8 +9,9 @@ import { TotalValueCard, ValueSplitCard } from "@/components/dashboard";
 import { TransactionForm } from "@/components/portfolio/transaction-form";
 import { TransactionHistory } from "@/components/portfolio/transaction-history";
 import { ManualPriceEditor, PriceStateBadge } from "@/components/portfolio/price-state";
+import { PnLBadge } from "@/components/ui/pnl-badge";
 import { AlertTriangleIcon } from "@/components/icons";
-import { formatCurrency, formatNumber, formatPercent, isNegative, isZero } from "@/lib/format";
+import { formatCurrency, formatNumber } from "@/lib/format";
 import type { HoldingPnLOut } from "@/types/api";
 
 export default function PortfolioPage() {
@@ -98,9 +99,6 @@ function HoldingRow({
   currency: string;
   onPriceChanged: () => void;
 }) {
-  const negative = isNegative(holding.unrealized_pnl);
-  const zero = isZero(holding.unrealized_pnl);
-  const tone = holding.unrealized_pnl === null ? "text-muted-foreground" : zero ? "text-muted-foreground" : negative ? "text-danger" : "text-success";
   const priceUnavailable = holding.current_price === null;
 
   return (
@@ -130,15 +128,13 @@ function HoldingRow({
       </div>
 
       <div className="flex items-center justify-between gap-2">
-        <p className={`tabular-nums text-xs font-semibold ${tone}`}>
-          {holding.unrealized_pnl !== null
-            ? `${formatCurrency(holding.unrealized_pnl, currency)}${
-                holding.unrealized_pnl_percent !== null ? ` (${formatPercent(holding.unrealized_pnl_percent)})` : " (النسبة غير محسوبة)"
-              }`
-            : priceUnavailable
-              ? "الربح/الخسارة غير متاحة — السعر الحالي غير متوفر"
-              : "غير متاح"}
-        </p>
+        {holding.unrealized_pnl !== null ? (
+          <PnLBadge value={holding.unrealized_pnl} percent={holding.unrealized_pnl_percent} currency={currency} />
+        ) : (
+          <p className="text-xs font-semibold text-muted-foreground">
+            {priceUnavailable ? "الربح/الخسارة غير متاحة — السعر الحالي غير متوفر" : "غير متاح"}
+          </p>
+        )}
         <div className="flex items-center gap-1.5">
           <PriceStateBadge status={holding.price_status} isStale={holding.price_is_stale} recordedAt={holding.price_recorded_at} />
           <ManualPriceEditor assetId={holding.asset_id} assetCurrency={holding.asset_currency} onSaved={onPriceChanged} />

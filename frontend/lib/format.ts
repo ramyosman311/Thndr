@@ -21,13 +21,73 @@ function groupDigits(value: DecimalStr): string {
   return negative ? `-${withFraction}` : withFraction;
 }
 
-/** Formats a currency Decimal string, e.g. "12345.6" -> "12,345.60 EGP". */
+/** Rounds a Decimal string to exactly `decimals` fractional digits,
+ * half-up, using plain digit arithmetic — never `Number`/`parseFloat`,
+ * so a value with more precision than the display wants (e.g. a raw
+ * `average_cost` or `current_price` carrying 8 decimal places) is never
+ * round-tripped through a binary float to get there (see
+ * FINANCIAL_RULES.md, "Precision"). The backend's own stored precision
+ * is never touched — this only affects what this one render shows. */
+function roundDecimalString(value: DecimalStr, decimals: number): string {
+  const negative = value.startsWith("-");
+  const unsigned = negative ? value.slice(1) : value;
+  const [intPart, fracPart = ""] = unsigned.split(".");
+
+  let digits: string;
+  let pointFromEnd: number;
+  if (fracPart.length <= decimals) {
+    digits = intPart + fracPart.padEnd(decimals, "0");
+    pointFromEnd = decimals;
+  } else {
+    const kept = fracPart.slice(0, decimals);
+    const roundUp = Number(fracPart[decimals]) >= 5;
+    const rawDigits = (intPart + kept).split("");
+    if (roundUp) {
+      let i = rawDigits.length - 1;
+      while (i >= 0) {
+        if (rawDigits[i] === "9") {
+          rawDigits[i] = "0";
+          i -= 1;
+        } else {
+          rawDigits[i] = String(Number(rawDigits[i]) + 1);
+          break;
+        }
+      }
+      if (i < 0) rawDigits.unshift("1");
+    }
+    digits = rawDigits.join("");
+    pointFromEnd = decimals;
+  }
+
+  const intLen = digits.length - pointFromEnd;
+  const newIntPart = (intLen > 0 ? digits.slice(0, intLen) : "0").replace(/^0+(?=\d)/, "");
+  const newFracPart = pointFromEnd > 0 ? digits.slice(intLen < 0 ? 0 : intLen).padStart(pointFromEnd, "0") : "";
+  const magnitude = pointFromEnd > 0 ? `${newIntPart}.${newFracPart}` : newIntPart;
+  const isZero = /^0+(\.0+)?$/.test(magnitude);
+  return negative && !isZero ? `-${magnitude}` : magnitude;
+}
+
+/** Formats a currency Decimal string as exactly 2 decimal places, e.g.
+ * "12345.6" -> "12,345.60 EGP", "12345.678" -> "12,345.68 EGP". Rounds
+ * (half-up), never truncates or pads past 2dp, regardless of how much
+ * precision the backend value carries — the backend's own stored value
+ * is untouched, this is a display-only rounding. */
 export function formatCurrency(value: DecimalStr | null | undefined, currency?: string): string {
   if (value === null || value === undefined) return "—";
-  const [intPart, fracPart = ""] = value.split(".");
-  const padded = `${intPart}.${fracPart.padEnd(2, "0").slice(0, Math.max(2, fracPart.length))}`;
-  const grouped = groupDigits(padded);
+  const grouped = groupDigits(roundDecimalString(value, 2));
   return currency ? `${grouped} ${currency}` : grouped;
+}
+
+/** Like `formatCurrency`, but prepends an explicit "+" for a positive
+ * value (a negative value already carries its own "-", and this never
+ * adds a sign to exactly zero) — used wherever a profit/loss figure must
+ * communicate its direction through more than color alone (Phase 16, see
+ * components/ui/pnl-badge.tsx and FINANCIAL_RULES.md, "P/L Presentation
+ * Is Never Color-Only"). */
+export function formatSignedCurrency(value: DecimalStr | null | undefined, currency?: string): string {
+  if (value === null || value === undefined) return "—";
+  const formatted = formatCurrency(value, currency);
+  return isNegative(value) || isZero(value) ? formatted : `+${formatted}`;
 }
 
 /** Formats a percent Decimal string, e.g. "54.0500" -> "54.05%". */
@@ -36,10 +96,21 @@ export function formatPercent(value: DecimalStr | null | undefined): string {
   return `${groupDigits(value)}%`;
 }
 
-/** Formats a plain quantity/number Decimal string with grouping, no unit. */
+/** Formats a quantity Decimal string with grouping, no unit — trims
+ * trailing fractional zeros so a mathematically integral quantity shows
+ * as "50", never "50.00000000", while a genuinely fractional quantity
+ * still shows only as much precision as it actually carries (e.g.
+ * "0.50000000" -> "0.5"). Never rounds away real fractional precision —
+ * only removes trailing zeros already present in the backend's own
+ * string. */
 export function formatNumber(value: DecimalStr | null | undefined): string {
   if (value === null || value === undefined) return "—";
-  return groupDigits(value);
+  const negative = value.startsWith("-");
+  const unsigned = negative ? value.slice(1) : value;
+  const [intPart, fracPart = ""] = unsigned.split(".");
+  const trimmedFrac = fracPart.replace(/0+$/, "");
+  const trimmed = trimmedFrac ? `${intPart}.${trimmedFrac}` : intPart;
+  return groupDigits(negative ? `-${trimmed}` : trimmed);
 }
 
 /** True when a Decimal string represents a value < 0 — for choosing a

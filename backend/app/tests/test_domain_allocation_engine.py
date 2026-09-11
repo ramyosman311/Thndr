@@ -10,10 +10,11 @@ from app.domain.allocation_engine import (
 from app.domain.portfolio_engine import AssetPosition
 
 
-def make_position(bucket_id, quantity, price, is_emergency=False):
+def make_position(bucket_id, quantity, price, is_emergency=False, asset_type="STOCK"):
     return AssetPosition(
         asset_id=uuid4(),
         symbol="X",
+        asset_type=asset_type,
         is_emergency=is_emergency,
         strategy_bucket_id=bucket_id,
         quantity=Decimal(quantity),

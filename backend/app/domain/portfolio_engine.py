@@ -22,12 +22,25 @@ from decimal import Decimal
 from uuid import UUID
 
 
+# Asset types treated as cash-equivalent for the Available/Investable Cash
+# split (Phase 16) -- exactly the same two types Phase 15 restricted
+# DEPOSIT/WITHDRAWAL to (see domain/transaction_engine.py). A position of
+# either type that is NOT the configured emergency asset is "available
+# cash"; everything else non-emergency is "invested market value". This
+# is a presentation-level split only -- it changes neither `total_value`
+# nor `investable_value`/the allocation-percentage denominator below,
+# which keep their existing, separately-approved meaning (see
+# FINANCIAL_RULES.md, "Investable Cash Is Not The Allocation Denominator").
+_CASH_LIKE_ASSET_TYPES = frozenset({"CASH", "SAVINGS"})
+
+
 @dataclass(frozen=True)
 class AssetPosition:
     """A DB-independent snapshot of one asset's current position."""
 
     asset_id: UUID
     symbol: str
+    asset_type: str
     is_emergency: bool
     strategy_bucket_id: UUID | None
     quantity: Decimal
@@ -41,6 +54,10 @@ class AssetPosition:
             return None
         return self.quantity * self.current_price
 
+    @property
+    def is_cash_like(self) -> bool:
+        return self.asset_type in _CASH_LIKE_ASSET_TYPES
+
 
 @dataclass(frozen=True)
 class PortfolioTotals:
@@ -50,6 +67,17 @@ class PortfolioTotals:
     denominator_value: Decimal
     denominator_basis: str  # "investable" | "total"
     denominator_is_zero: bool
+    # Phase 16: `investable_value` above is split further into the part
+    # that is actual spendable cash and the part that is invested in
+    # priced positions. `available_cash` = value of non-emergency
+    # CASH/SAVINGS holdings only -- this, and ONLY this, is what a user
+    # could deploy into a new purchase right now (see FINANCIAL_RULES.md,
+    # "Available Cash vs Investable Value"). `invested_market_value` =
+    # value of every other non-emergency holding. By construction:
+    # investable_value == available_cash + invested_market_value, and
+    # total_value == emergency_value + available_cash + invested_market_value.
+    available_cash: Decimal
+    invested_market_value: Decimal
     # Asset IDs held in a non-zero quantity but excluded from every sum
     # above because no usable price was available -- the valuation is
     # INCOMPLETE, never silently treated as if those positions were
@@ -79,6 +107,8 @@ def calculate_portfolio_totals(
     """
     emergency_value = Decimal("0")
     investable_value = Decimal("0")
+    available_cash = Decimal("0")
+    invested_market_value = Decimal("0")
     unpriced_asset_ids: set[UUID] = set()
 
     for position in positions:
@@ -90,6 +120,10 @@ def calculate_portfolio_totals(
             emergency_value += value
         else:
             investable_value += value
+            if position.is_cash_like:
+                available_cash += value
+            else:
+                invested_market_value += value
 
     total_value = emergency_value + investable_value
     if emergency_excluded:
@@ -106,5 +140,7 @@ def calculate_portfolio_totals(
         denominator_value=denominator_value,
         denominator_basis=denominator_basis,
         denominator_is_zero=denominator_value == 0,
+        available_cash=available_cash,
+        invested_market_value=invested_market_value,
         unpriced_asset_ids=frozenset(unpriced_asset_ids),
     )

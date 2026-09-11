@@ -25,21 +25,36 @@ class HoldingPnLOut(BaseModel):
     # must be denominated in this currency, not in whatever currency
     # `current_price` below happens to be displayed in.
     asset_currency: str
-    # Phase 11: null when the Price Service has no usable price for this
-    # asset (PRICE_UNAVAILABLE) -- never a fabricated 0. `price_status`/
-    # `price_recorded_at`/`price_is_stale` let the UI distinguish a live
-    # price from a stale last-known one without guessing from nullness
-    # alone (see FINANCIAL_RULES.md, "Frontend Price States"). This
-    # value is in the portfolio's base_currency (see PortfolioSummaryOut),
-    # already converted where needed -- it is NOT necessarily in
-    # `asset_currency`.
+    # Phase 16: `current_price` is null only in the true worst case --
+    # no live price, no stale last-known price, AND no safe same-
+    # currency average-cost fallback (see
+    # services/portfolio_shared.resolve_valuation_price). Whenever a
+    # price IS present, `price_status` says whether it should be
+    # trusted as a confirmed live market price:
+    #   "LIVE"         -- a genuinely current market price.
+    #   "PENDING_SYNC" -- a stale last-known price OR the average-cost
+    #                     fallback; a real number safe to display as
+    #                     the holding's estimated value, but
+    #                     `unrealized_pnl`/`unrealized_pnl_percent` are
+    #                     always exactly 0 in this state -- a P/L
+    #                     computed from a non-live price is never
+    #                     presented as a real profit/loss (see
+    #                     FINANCIAL_RULES.md, "PENDING_SYNC Never
+    #                     Implies Profit"). This value is in the
+    #                     portfolio's base_currency (see
+    #                     PortfolioSummaryOut), already converted where
+    #                     needed -- it is NOT necessarily in
+    #                     `asset_currency`.
     current_price: DecimalStr | None
     price_status: str
     price_recorded_at: datetime | None
     price_is_stale: bool
-    # market_value/unrealized_pnl are null exactly when current_price is
-    # null -- see domain/pnl_engine.py. cost_basis never depends on price
-    # so it stays populated whenever a holding exists.
+    # market_value is null exactly when current_price is null -- see
+    # domain/pnl_engine.py. cost_basis never depends on price so it
+    # stays populated whenever a holding exists. unrealized_pnl is null
+    # only alongside a null market_value; whenever a price (live or
+    # PENDING_SYNC) is available it is a real Decimal, forced to exactly
+    # 0 in the PENDING_SYNC case (see `price_status` above).
     market_value: DecimalStr | None
     cost_basis: DecimalStr | None
     unrealized_pnl: DecimalStr | None
@@ -47,10 +62,41 @@ class HoldingPnLOut(BaseModel):
 
 
 class PortfolioSummaryOut(BaseModel):
+    """Phase 16 note on the six value fields below -- each has a distinct,
+    non-overlapping meaning (see FINANCIAL_RULES.md, "Portfolio Value vs
+    Investable Value vs Available Cash"):
+
+    - `total_value` ("Portfolio Value"): every held position's value,
+      always -- equals `emergency_value + available_cash +
+      invested_market_value` by construction.
+    - `emergency_value` ("Reserved/Emergency Cash"): the value of
+      whichever single asset is configured as the portfolio's emergency
+      reserve (`portfolio_configs.emergency_asset_id`), if any.
+    - `investable_value`: total_value minus emergency_value -- this is
+      ONLY the denominator historically used for risk-allocation
+      percentages (see domain/allocation_engine.py); it is NOT spendable
+      cash and INCLUDES invested market value. Never label this
+      "Investable Cash" in any UI -- that is `available_cash` below.
+    - `available_cash` ("Available/Free Cash", i.e. what the product
+      calls "Investable Cash"): the value of non-emergency CASH/SAVINGS
+      holdings only -- the actual amount a user could deploy into a new
+      purchase right now. Zero whenever no free cash is held, even if
+      `total_value` and `investable_value` are both large.
+    - `invested_market_value`: the value of every other (non-cash,
+      non-emergency) holding -- `investable_value` minus
+      `available_cash`.
+    - `denominator_value`/`denominator_basis`: unchanged Phase 5/6
+      concept, unrelated to cash -- which of `investable_value`/
+      `total_value` is actually used as the allocation-percentage
+      denominator, per `emergency_excluded`.
+    """
+
     base_currency: str
     total_value: DecimalStr
     emergency_value: DecimalStr
     investable_value: DecimalStr
+    available_cash: DecimalStr
+    invested_market_value: DecimalStr
     denominator_basis: str
     denominator_value: DecimalStr
     emergency_excluded: bool

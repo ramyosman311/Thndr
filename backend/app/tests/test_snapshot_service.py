@@ -94,17 +94,26 @@ async def test_post_transaction_snapshot_reflects_multiple_assets(db_session):
     assert values[cash.id] == Decimal("1000.00")
 
 
-async def test_post_transaction_snapshot_excludes_unpriced_holdings_from_value_but_not_cost_basis(db_session):
-    """A held asset with no usable price must never fabricate a value —
-    it is simply excluded from the snapshot's item rows and total_value,
-    while its cost basis (which never depends on price) is still
-    counted (see domain/pnl_engine.py)."""
+async def test_post_transaction_snapshot_uses_average_cost_fallback_for_a_held_but_unpriced_asset(db_session):
+    """Phase 16: a held asset with no live/stale price observation but a
+    genuine (same-currency) average cost is now valued via the average-
+    cost fallback rather than excluded — see
+    services/portfolio_shared.resolve_valuation_price, which every
+    valuation consumer (Portfolio Summary AND the snapshot lifecycle
+    here) shares, so both agree on the same number for the same holding
+    (FINANCIAL_RULES.md, "Portfolio Aggregation Consistency"). Cost
+    basis (which never depended on price) is unaffected either way."""
     await _configure_portfolio(db_session)
-    unpriced = make_asset("SNAPUNPRICED", asset_type=AssetType.FUND)
+    fallback_priced = make_asset("SNAPFALLBACK", asset_type=AssetType.FUND)
+    genuinely_unpriced = make_asset("SNAPNOFALLBACK", asset_type=AssetType.FUND)
     cash = make_asset("SNAPUNPRICEDCASH", asset_type=AssetType.CASH)
-    db_session.add_all([unpriced, cash])
+    db_session.add_all([fallback_priced, genuinely_unpriced, cash])
     await db_session.commit()
-    db_session.add(Holding(asset_id=unpriced.id, quantity=Decimal("5"), average_cost=Decimal("20")))
+    db_session.add(Holding(asset_id=fallback_priced.id, quantity=Decimal("5"), average_cost=Decimal("20")))
+    # No average_cost given -- defaults to 0, so there is genuinely no
+    # safe fallback price for this one either (see "if neither is
+    # available" in FINANCIAL_RULES.md, "Missing-Price Fallback").
+    db_session.add(Holding(asset_id=genuinely_unpriced.id, quantity=Decimal("3")))
     await make_current_price(db_session, cash, Decimal("1"))
     await db_session.commit()
 
@@ -118,10 +127,12 @@ async def test_post_transaction_snapshot_excludes_unpriced_holdings_from_value_b
             select(PortfolioSnapshot).where(PortfolioSnapshot.source_transaction_id == result.transaction.id)
         )
     ).scalar_one()
-    assert snapshot.total_cost_basis == Decimal("300.00")  # (5*20) + (200*1)
-    item_asset_ids = {item.asset_id for item in snapshot.items}
-    assert unpriced.id not in item_asset_ids  # never fabricated a value
-    assert cash.id in item_asset_ids
+    # (5*20) + (3*0, no holding cost recorded) + (200*1)
+    assert snapshot.total_cost_basis == Decimal("300.00")
+    item_by_asset_id = {item.asset_id: item.value for item in snapshot.items}
+    assert item_by_asset_id[fallback_priced.id] == Decimal("100.00")  # 5 * average_cost fallback of 20
+    assert item_by_asset_id[cash.id] == Decimal("200.00")
+    assert genuinely_unpriced.id not in item_by_asset_id  # still never fabricated a value from nothing
 
 
 # --- Cumulative realized P/L replay ------------------------------------------

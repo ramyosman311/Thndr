@@ -26,18 +26,38 @@ export function TransactionHistory({ refreshToken }: { refreshToken: number }) {
   );
 }
 
+/** Phase 15 added DEPOSIT/WITHDRAWAL alongside BUY/SELL — this must
+ * label all four distinctly (previously anything that wasn't BUY was
+ * mislabeled "بيع"/SELL, including a DEPOSIT — a real display defect
+ * found during Phase 16 live verification, fixed here since it sits
+ * directly in the transaction-history display this phase already
+ * touches for ordering). */
+const TRANSACTION_TYPE_META: Record<string, { label: string; tone: "success" | "danger" | "warning" }> = {
+  BUY: { label: "شراء", tone: "success" },
+  SELL: { label: "بيع", tone: "danger" },
+  DEPOSIT: { label: "إيداع", tone: "success" },
+  WITHDRAWAL: { label: "سحب", tone: "warning" },
+};
+
 function TransactionRow({ transaction }: { transaction: TransactionOut }) {
-  const isBuy = transaction.transaction_type === "BUY";
+  const meta = TRANSACTION_TYPE_META[transaction.transaction_type] ?? {
+    label: transaction.transaction_type,
+    tone: "warning" as const,
+  };
   return (
     <li className="flex flex-col gap-1 py-3 first:pt-0 last:pb-0">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span
             className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
-              isBuy ? "bg-success-muted text-success" : "bg-danger-muted text-danger"
+              meta.tone === "success"
+                ? "bg-success-muted text-success"
+                : meta.tone === "danger"
+                  ? "bg-danger-muted text-danger"
+                  : "bg-warning-muted text-warning"
             }`}
           >
-            {isBuy ? "شراء" : "بيع"}
+            {meta.label}
           </span>
           <span className="text-sm font-bold text-foreground">{transaction.asset_symbol}</span>
         </div>

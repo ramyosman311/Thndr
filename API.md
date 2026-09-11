@@ -78,30 +78,34 @@ transactions, snapshots, or configuration.
 ```jsonc
 {
   "base_currency": "EGP",
-  "total_value": "110000.00",       // emergency_value + investable_value, always
-  "emergency_value": "100000.00",
-  "investable_value": "10000.00",
+  "total_value": "110000.00",       // "Portfolio Value": emergency_value + available_cash + invested_market_value, always
+  "emergency_value": "100000.00",   // "Reserved/Emergency Cash": the one configured emergency asset, if any
+  "investable_value": "10000.00",   // ONLY the allocation-% denominator basis — INCLUDES invested market value, NOT spendable cash
+  "available_cash": "2000.00",      // Phase 16: "Available/Free Cash" — non-emergency CASH/SAVINGS holdings ONLY. This is what the product calls "Investable Cash"
+  "invested_market_value": "8000.00", // Phase 16: investable_value - available_cash — every other non-emergency holding
   "denominator_basis": "investable", // "investable" | "total" — driven by portfolio_configs.emergency_excluded
   "denominator_value": "10000.00",
   "emergency_excluded": true,
-  "is_complete": true,          // Phase 11: false if any held asset had no usable price (see below)
+  "is_complete": true,          // Phase 11/16: false only when a held asset has no live/stale price AND no same-currency average-cost fallback (see below)
   "unpriced_asset_ids": [],     // asset ids EXCLUDED from the totals above, never counted as 0
   "holdings_pnl": [
     {
       "asset_id": "...", "symbol": "BWA",
       "quantity": "100.00000000", "average_cost": "90.00000000", "asset_currency": "EGP",
-      "current_price": "100.00000000",           // null when price_status is *_UNAVAILABLE — never a fabricated 0
-      "price_status": "CURRENT_PRICE_AVAILABLE",  // Phase 11 — same vocabulary as GET .../price
+      "current_price": "100.00000000",  // null only in the true worst case — no live/stale price AND no fallback (see below)
+      "price_status": "LIVE",           // Phase 16: "LIVE" | "PENDING_SYNC" — NOT the same vocabulary as GET .../price (see below)
       "price_recorded_at": "2026-09-10T06:40:15Z",
       "price_is_stale": false,
       "market_value": "10000.00", "cost_basis": "9000.00",
       "unrealized_pnl": "1000.00", "unrealized_pnl_percent": "11.11"
-      // market_value/unrealized_pnl/unrealized_pnl_percent are null
-      // exactly when current_price is null, OR when cost_basis is 0
-      // (division undefined) — never fabricated either way.
+      // market_value is null exactly when current_price is null.
+      // unrealized_pnl is null only alongside a null market_value;
+      // whenever a price is available it is a real Decimal, forced to
+      // exactly 0 when price_status is "PENDING_SYNC" (see below) —
+      // never fabricated either way.
     }
   ],
-  "total_unrealized_pnl": "1000.00",       // added in Phase 9 — sum of holdings_pnl[].unrealized_pnl
+  "total_unrealized_pnl": "1000.00",       // added in Phase 9 — sum of holdings_pnl[].unrealized_pnl (PENDING_SYNC holdings contribute exactly 0)
   "total_unrealized_pnl_percent": "11.11"  // null when total cost basis is 0, never fabricated
 }
 ```
@@ -117,6 +121,35 @@ independent of any provider's — see FINANCIAL_RULES.md, "Non-Blocking
 Valuation"); `current_price` is already converted into `base_currency`
 when the asset's own currency differs (see "Base Currency & FX
 Conversion").
+
+**Phase 16 — six distinct value fields, never interchangeable** (see
+FINANCIAL_RULES.md, "Portfolio Value vs Investable Value vs Available
+Cash", for the full rationale): `total_value` ("Portfolio Value"),
+`emergency_value` ("Reserved/Emergency Cash"), `investable_value` (the
+allocation-% denominator basis ONLY — never label this "Investable
+Cash" in a UI), `available_cash` (the actual spendable-cash field — this
+IS "Investable Cash" in product language), `invested_market_value`, and
+`denominator_value`/`denominator_basis` (unrelated to cash). By
+construction: `total_value == emergency_value + available_cash +
+invested_market_value`, and `investable_value == available_cash +
+invested_market_value`.
+
+**Phase 16 — missing-price fallback and `price_status`:** when no
+current price exists, a real but stale last-known price is used if one
+exists; otherwise the holding's own `average_cost` is used, but only
+when the asset's currency matches `base_currency` (never mixing
+currencies without an FX rate — see "Base Currency & FX Conversion").
+`price_status` on `HoldingPnLOut` reflects this as a simple two-value
+signal — `"LIVE"` for a genuinely current price, `"PENDING_SYNC"` for
+either fallback case — deliberately simpler than, and NOT to be confused
+with, the four-value `PriceStatus` vocabulary `GET /api/assets/{id}/price`
+still returns unchanged (`CURRENT_PRICE_AVAILABLE`/`LAST_KNOWN_PRICE`/
+`PRICE_UNAVAILABLE`/`CURRENCY_CONVERSION_UNAVAILABLE`). Whenever
+`price_status` is `"PENDING_SYNC"`, `unrealized_pnl`/
+`unrealized_pnl_percent` are always exactly `0`/`"0.00"` — a P/L
+computed from a non-live price is never presented as a confirmed
+profit/loss, even though `market_value` still shows the best available
+estimate.
 
 **`GET /api/portfolio/allocation`** — same `404` behavior. Otherwise, one
 entry per active strategy bucket (all of them — a bucket with no

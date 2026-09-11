@@ -4,32 +4,33 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 15 — Historical Snapshots & Wealth Analytics Engine.
-> Real, persisted portfolio history now exists: a DEPOSIT/WITHDRAWAL
-> transaction (restricted to `CASH`/`SAVINGS` assets, `services/
-> transaction_service.py`) atomically creates a post-flow
-> `PortfolioSnapshot`, and an out-of-band `python -m app.workers.
-> snapshot_eod` worker (same external-scheduler execution model as
-> `price_refresh`/`alert_notify`) creates one end-of-day snapshot per
-> portfolio per UTC calendar day — both idempotent at the database level
-> via partial unique indexes. `domain/twr_engine.py` computes true
-> Time-Weighted Return, isolating market performance from external cash
-> flows via a "snapshot-after-flow with algebraic pre-flow
-> reconstruction" convention (16 mathematically verified fixtures in
-> `test_domain_twr_engine.py`) — a deposit or withdrawal never appears as
-> investment gain or loss. `GET /api/portfolio/analytics/history` (1W/
-> 1M/3M/YTD/ALL) serves this to a real dashboard chart (Portfolio Value
-> vs. Invested Capital, with an explicit "insufficient historical data"
-> state — never a fabricated or interpolated point). `TRANSFER`
-> transaction semantics and an Egypt-local EOD boundary remain
-> unimplemented, disclosed limitations — see
-> [DECISIONS.md](./DECISIONS.md), "Phase 15 — Historical Snapshots &
-> Wealth Analytics" for the full design and known limitations. One
-> additive-only migration (`3210d10067b1`) added five nullable columns
-> and two partial unique indexes to `portfolio_snapshots`; the five
-> original dev-seed snapshots are untouched. No broker integration,
-> automatic trading, authentication, or full multi-user/multi-portfolio
-> system exist yet. See [Phase Plan](#phase-plan) below.
+> **Status:** Phase 16 — Financial Core & Cash Logic (P0). A confirmed
+> bug is fixed: the dashboard previously labeled `investable_value`
+> (total value minus emergency value — an allocation-percentage
+> denominator that INCLUDES invested market value) as "Investable Cash,"
+> so a user holding only stocks could see a large nonzero "cash" figure
+> with none actually available. `GET /api/portfolio/summary` now exposes
+> a genuinely separate `available_cash` (non-emergency CASH/SAVINGS
+> holdings only — the real spendable-cash figure) and
+> `invested_market_value`, alongside the unchanged `total_value`/
+> `emergency_value`/`investable_value`. A held asset with no live price
+> now falls back to a real stale price or its own same-currency average
+> cost (`services/portfolio_shared.resolve_valuation_price`) instead of
+> being silently excluded, exposed via a simple `price_status`:
+> `"LIVE"`/`"PENDING_SYNC"` — `unrealized_pnl` is always exactly 0 when
+> not live, never a fabricated profit. The frontend shows quantities/
+> prices with sane precision (no more `50.00000000`), P/L with an
+> explicit arrow and direction wording rather than color alone, and
+> transactions strictly newest-first. BUY/SELL were confirmed to have no
+> automatic link to `available_cash` (only DEPOSIT/WITHDRAWAL move it) —
+> a disclosed, pre-existing scope boundary, not a new limitation — see
+> [DECISIONS.md](./DECISIONS.md), "Phase 16 — Financial Core & Cash
+> Logic" for the full design rationale and open scope question. No
+> database/migration change was needed. `TRANSFER` transaction semantics
+> and an Egypt-local EOD boundary remain unimplemented (Phase 15,
+> disclosed). No broker integration, automatic trading, authentication,
+> or full multi-user/multi-portfolio system exist yet. See
+> [Phase Plan](#phase-plan) below.
 
 ## What this project does (target scope)
 
@@ -153,14 +154,16 @@ before the next begins.
 12. Portfolio & Asset Administration + Domain Readiness (Settings UI for Assets/Pricing/Portfolio/Strategy, single-portfolio assumption audit) — done
 13. EGX Market Data Provider Integration & Verification (EGID/EGXAPI investigated and rejected; Mubasher Egypt implemented as primary, mock-tested, with Yahoo Finance retained as secondary fallback for the real EGX equities) — done
 14. Telegram Notifications (real delivery, out-of-band worker, strict AND-gated enablement, mock-tested) — done
-15. Historical Snapshots & Wealth Analytics Engine (DEPOSIT/WITHDRAWAL cash-flow semantics, EOD + post-transaction snapshot lifecycle, Time-Weighted Return isolating market performance from cash flow, real snapshot-driven dashboard chart with 1W/1M/3M/YTD/ALL ranges) — done *(current)*
-16. PWA (installable, offline-capable)
-17. Capacitor wrappers
-18. Production deployment prep
-19. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
-20. A verified EGID or EGXAPI adapter, or another zero-cost EGX-specific data source (deferred from Phase 13 — see [DECISIONS.md](./DECISIONS.md), requires network access and human-obtained API documentation this environment could not get)
-21. Live Telegram verification (deferred from Phase 14 — see [DECISIONS.md](./DECISIONS.md), `api.telegram.org` confirmed blocked by this environment's egress policy) and a "send test message" admin action (explicitly deferred by Phase 14's own approval)
-22. TRANSFER transaction semantics, Egypt-local (Africa/Cairo) EOD trading-day boundary, and analytics coverage for pre-Phase-15 snapshot history (deferred from Phase 15 — see [DECISIONS.md](./DECISIONS.md))
+15. Historical Snapshots & Wealth Analytics Engine (DEPOSIT/WITHDRAWAL cash-flow semantics, EOD + post-transaction snapshot lifecycle, Time-Weighted Return isolating market performance from cash flow, real snapshot-driven dashboard chart with 1W/1M/3M/YTD/ALL ranges) — done
+16. Financial Core & Cash Logic, P0 (separated Portfolio Value / Investable Value / Available Cash / Reserved Cash so a stock-only holding can never show as spendable cash; missing-price fallback to a stale price or same-currency average cost, exposed as a simple LIVE/PENDING_SYNC signal with unrealized P/L always 0 when not live; user-facing quantity/currency formatting; accessible P/L presentation with explicit arrow + direction wording, not color alone; deterministic newest-first transaction ordering) — done *(current)*
+17. PWA (installable, offline-capable)
+18. Capacitor wrappers
+19. Production deployment prep
+20. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
+21. A verified EGID or EGXAPI adapter, or another zero-cost EGX-specific data source (deferred from Phase 13 — see [DECISIONS.md](./DECISIONS.md), requires network access and human-obtained API documentation this environment could not get)
+22. Live Telegram verification (deferred from Phase 14 — see [DECISIONS.md](./DECISIONS.md), `api.telegram.org` confirmed blocked by this environment's egress policy) and a "send test message" admin action (explicitly deferred by Phase 14's own approval)
+23. TRANSFER transaction semantics, Egypt-local (Africa/Cairo) EOD trading-day boundary, and analytics coverage for pre-Phase-15 snapshot history (deferred from Phase 15 — see [DECISIONS.md](./DECISIONS.md))
+24. A fully-integrated cash ledger where BUY/SELL automatically debit/credit a cash balance (Phase 16 confirmed no such link exists or was ever approved — see [DECISIONS.md](./DECISIONS.md), "Phase 16 — Financial Core & Cash Logic"; only an explicit DEPOSIT/WITHDRAWAL moves `available_cash` today)
 
 ## Local Development
 
