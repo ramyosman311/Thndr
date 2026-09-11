@@ -64,13 +64,14 @@ duplicated. `POST`/`PATCH` remain unimplemented.
 
 ```
 GET /api/portfolio
-GET /api/portfolio/summary       (implemented, Phase 5)
-GET /api/portfolio/allocation    (implemented, Phase 5)
-GET /api/portfolio/rebalancing   (implemented, Phase 17)
+GET /api/portfolio/summary          (implemented, Phase 5)
+GET /api/portfolio/allocation       (implemented, Phase 5)
+GET /api/portfolio/rebalancing      (implemented, Phase 17)
+GET /api/portfolio/recommendations  (implemented, Phase 18)
 ```
 All computed values (total value, P/L, allocation %) are calculated by the
 backend domain layer — see [ARCHITECTURE.md](./ARCHITECTURE.md). All
-three endpoints are read-only: calling them never modifies holdings,
+endpoints below are read-only: calling them never modifies holdings,
 transactions, snapshots, or configuration.
 
 **`GET /api/portfolio/summary`** — `404` with a `detail` message if no
@@ -591,6 +592,63 @@ is never also considered for a BUY.
 never writes to `transactions`, `holdings`, `allocation_targets`,
 `strategy_buckets`, `portfolio_configs`, or any cash balance. Calling it
 any number of times, in any order, changes nothing.
+
+### Smart Recommendations (implemented, Phase 18)
+
+```
+GET /api/portfolio/recommendations
+```
+
+`404` with a `detail` message if no `portfolio_configs` row exists yet
+(same as `/rebalancing`, whose loader this endpoint reuses directly).
+Otherwise:
+
+```jsonc
+{
+  "is_complete": true,
+  "recommendations": [
+    {
+      "id": "CASH_DEPLOYMENT:2b1e...",  // deterministic — f"{type}:{bucket_id or 'portfolio'}", never a random UUID
+      "type": "CASH_DEPLOYMENT",
+      "severity": "INFO",
+      "title": "Growth: فرصة لنشر السيولة المتاحة",
+      "message": "Growth أقل من نسبتها المستهدفة. يمكن استخدام حوالي 500.00 من النقد المتاح لتقريبها من الهدف.",
+      "suggested_action": "BUY",
+      "target_category": "Growth",
+      "amount": "500.00",   // sourced directly from the matching /rebalancing recommendation's recommended_value — never recomputed
+      "evaluated_at": "2026-01-01T00:00:00Z"
+    }
+  ]
+}
+```
+
+`type` is one unified vocabulary — `BREACH_RESOLUTION` / `CASH_DEPLOYMENT`
+/ `REBALANCING_OPPORTUNITY` / `RESTRICTED_ACTION` / `PORTFOLIO_HEALTHY`.
+`severity` is `CRITICAL` / `WARNING` / `INFO` / `SUCCESS`. `suggested_action`
+is `BUY` / `REDUCE` / `HOLD` / `NO_ACTION`. `title`/`message` are natural,
+user-facing Arabic composed by the backend — render verbatim, never
+re-derive or translate client-side. `amount`, when present, is always the
+exact same number as the corresponding `/rebalancing` recommendation's
+`recommended_value` (see FINANCIAL_RULES.md, "Smart Recommendations
+Engine Rules" — this endpoint never recalculates a BUY/REDUCE amount).
+When no category needs attention, the response is a single
+`PORTFOLIO_HEALTHY`/`SUCCESS` recommendation rather than an empty array.
+
+**Reuses the Phase 17 Rebalancing Engine's output directly — this is
+not a second rebalancing engine.** `services/recommendation_service.py`
+calls `rebalancing_service.load_rebalancing_result()` (the same loader
+`/rebalancing` itself calls) and passes its raw domain output into
+`domain/recommendation_engine.build_recommendations()`, which only
+classifies and composes Arabic text — every target/maximum/allow_new_buy/
+priority value and every BUY/REDUCE amount is Phase 17's own, unchanged.
+
+**Recommendation only — this endpoint never executes anything.** Same
+read-only guarantee as `/rebalancing`: no transaction, holding,
+allocation target, strategy bucket, portfolio configuration, or cash
+balance is ever written. Deterministic for a given DB state (excluding
+`evaluated_at`, which reflects when the calculation ran) — calling it
+repeatedly with no state change returns identical `id`/`type`/`amount`
+values every time.
 
 ### Cash Flow / Smart Inflow
 

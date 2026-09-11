@@ -4,25 +4,34 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 17 — Smart Rebalancing (P1). `GET /api/portfolio/
-> rebalancing` now returns a per-category BUY/REDUCE/HOLD/NO_CAPACITY/
-> NO_TARGET recommendation, deliberately reusing two already-approved
-> engines rather than inventing new math: the BUY side is the Phase 7
-> Smart Inflow Allocator itself (`domain/inflow_allocator.
-> calculate_inflow_allocation`), fed Phase 16's `available_cash` instead
-> of newly-deposited cash — the same target-gap/maximum-capping/
-> priority-ordered distribution, so the same cash is never handed to two
-> categories at once. The one new calculation is the REDUCE amount for a
-> category already over its configured maximum
-> (`required_reduction = actual_value - maximum_value`), read from the
-> unchanged Phase 5/6 allocation engine's own `MAXIMUM_BREACHED` status
-> — a breach always takes priority over a target, so an overweight-but-
-> within-maximum category is never forced to sell. Recommendations are
-> surfaced contextually on the Distribution screen, each with an
-> explicit reason; nothing in this phase executes a trade, moves cash,
-> or changes strategy configuration — see [DECISIONS.md](./DECISIONS.md),
-> "Phase 17 — Smart Rebalancing" for the full design rationale. No
-> database/migration change was needed.
+> **Status:** Phase 18 — Smart Recommendations (P1). `GET /api/portfolio/
+> recommendations` synthesizes Phase 17's per-category rebalancing output
+> into prioritized, Arabic, user-facing guidance answering "what should I
+> do with my portfolio today, and why?" It is presentation only — every
+> BUY/REDUCE amount and every target/maximum/allow_new_buy/priority value
+> is read verbatim from `domain/rebalancing_engine.py`'s own output via a
+> new shared loader (`rebalancing_service.load_rebalancing_result()`),
+> never recomputed. A maximum breach becomes a `CRITICAL` `BREACH_
+> RESOLUTION` recommendation; a fundable BUY becomes `CASH_DEPLOYMENT`;
+> an underweight category with no fundable cash or with buying disabled
+> becomes an informational `RESTRICTED_ACTION` — never a false BUY; a
+> category drifted above target but still within its maximum becomes a
+> `REBALANCING_OPPORTUNITY`; a portfolio with nothing to report gets a
+> single all-clear `PORTFOLIO_HEALTHY` recommendation. Recommendation
+> `id`s are deterministic (never a random UUID) and Emergency Cash/Free
+> Cash/No-Target semantics are all inherited unchanged from Phase 16/17.
+> Surfaced as a new card on the Dashboard; nothing in this phase executes
+> a trade, moves cash, or changes strategy configuration — see
+> [DECISIONS.md](./DECISIONS.md), "Phase 18 — Smart Recommendations" for
+> the full design rationale. No database/migration change was needed.
+>
+> Phase 17 (Smart Rebalancing, P1) added `GET /api/portfolio/rebalancing`,
+> a per-category BUY/REDUCE/HOLD/NO_CAPACITY/NO_TARGET recommendation
+> deliberately reusing two already-approved engines rather than inventing
+> new math: the BUY side is the Phase 7 Smart Inflow Allocator itself,
+> fed Phase 16's `available_cash`; the one new calculation is the REDUCE
+> amount for a category already over its configured maximum. See
+> [DECISIONS.md](./DECISIONS.md), "Phase 17 — Smart Rebalancing".
 >
 > Phase 16 (Financial Core & Cash Logic, P0) fixed a confirmed bug: the
 > dashboard previously labeled `investable_value` (an allocation-
@@ -163,16 +172,18 @@ before the next begins.
 14. Telegram Notifications (real delivery, out-of-band worker, strict AND-gated enablement, mock-tested) — done
 15. Historical Snapshots & Wealth Analytics Engine (DEPOSIT/WITHDRAWAL cash-flow semantics, EOD + post-transaction snapshot lifecycle, Time-Weighted Return isolating market performance from cash flow, real snapshot-driven dashboard chart with 1W/1M/3M/YTD/ALL ranges) — done
 16. Financial Core & Cash Logic, P0 (separated Portfolio Value / Investable Value / Available Cash / Reserved Cash so a stock-only holding can never show as spendable cash; missing-price fallback to a stale price or same-currency average cost, exposed as a simple LIVE/PENDING_SYNC signal with unrealized P/L always 0 when not live; user-facing quantity/currency formatting; accessible P/L presentation with explicit arrow + direction wording, not color alone; deterministic newest-first transaction ordering) — done
-17. Smart Rebalancing, P1 (per-category BUY/REDUCE/HOLD/NO_CAPACITY/NO_TARGET recommendations reusing the Phase 7 Smart Inflow Allocator for BUY distribution funded only by Phase 16's `available_cash`, plus a new maximum-breach REDUCE calculation; maximum always takes priority over target; recommendation-only, surfaced contextually on the Distribution screen — never an executed trade) — done *(current)*
-18. PWA (installable, offline-capable)
-19. Capacitor wrappers
-20. Production deployment prep
-21. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
-22. A verified EGID or EGXAPI adapter, or another zero-cost EGX-specific data source (deferred from Phase 13 — see [DECISIONS.md](./DECISIONS.md), requires network access and human-obtained API documentation this environment could not get)
-23. Live Telegram verification (deferred from Phase 14 — see [DECISIONS.md](./DECISIONS.md), `api.telegram.org` confirmed blocked by this environment's egress policy) and a "send test message" admin action (explicitly deferred by Phase 14's own approval)
-24. TRANSFER transaction semantics, Egypt-local (Africa/Cairo) EOD trading-day boundary, and analytics coverage for pre-Phase-15 snapshot history (deferred from Phase 15 — see [DECISIONS.md](./DECISIONS.md))
-25. A fully-integrated cash ledger where BUY/SELL automatically debit/credit a cash balance (Phase 16 confirmed no such link exists or was ever approved — see [DECISIONS.md](./DECISIONS.md), "Phase 16 — Financial Core & Cash Logic"; only an explicit DEPOSIT/WITHDRAWAL moves `available_cash` today)
-26. Asset-level SELL selection within an overweight category, and an actual "execute this rebalancing recommendation" action (Phase 17 explicitly recommendation-only — see [DECISIONS.md](./DECISIONS.md), "Phase 17 — Smart Rebalancing")
+17. Smart Rebalancing, P1 (per-category BUY/REDUCE/HOLD/NO_CAPACITY/NO_TARGET recommendations reusing the Phase 7 Smart Inflow Allocator for BUY distribution funded only by Phase 16's `available_cash`, plus a new maximum-breach REDUCE calculation; maximum always takes priority over target; recommendation-only, surfaced contextually on the Distribution screen — never an executed trade) — done
+18. Smart Recommendations, P1 (prioritized, Arabic, user-facing guidance synthesized from Phase 17's own rebalancing output — never a second rebalancing engine — classifying each category into BREACH_RESOLUTION/CASH_DEPLOYMENT/REBALANCING_OPPORTUNITY/RESTRICTED_ACTION/PORTFOLIO_HEALTHY with deterministic IDs and priority ordering; surfaced as a Dashboard card; recommendation-only, no automatic trade execution) — done *(current)*
+19. PWA (installable, offline-capable)
+20. Capacitor wrappers
+21. Production deployment prep
+22. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
+23. A verified EGID or EGXAPI adapter, or another zero-cost EGX-specific data source (deferred from Phase 13 — see [DECISIONS.md](./DECISIONS.md), requires network access and human-obtained API documentation this environment could not get)
+24. Live Telegram verification (deferred from Phase 14 — see [DECISIONS.md](./DECISIONS.md), `api.telegram.org` confirmed blocked by this environment's egress policy) and a "send test message" admin action (explicitly deferred by Phase 14's own approval)
+25. TRANSFER transaction semantics, Egypt-local (Africa/Cairo) EOD trading-day boundary, and analytics coverage for pre-Phase-15 snapshot history (deferred from Phase 15 — see [DECISIONS.md](./DECISIONS.md))
+26. A fully-integrated cash ledger where BUY/SELL automatically debit/credit a cash balance (Phase 16 confirmed no such link exists or was ever approved — see [DECISIONS.md](./DECISIONS.md), "Phase 16 — Financial Core & Cash Logic"; only an explicit DEPOSIT/WITHDRAWAL moves `available_cash` today)
+27. Asset-level SELL selection within an overweight category, and an actual "execute this rebalancing recommendation" action (Phase 17 explicitly recommendation-only — see [DECISIONS.md](./DECISIONS.md), "Phase 17 — Smart Rebalancing")
+28. An asset-selection algorithm for which specific holding(s) to BUY/REDUCE within a category, and an actual "execute this recommendation" action (Phase 18 explicitly category-level and recommendation-only — see [DECISIONS.md](./DECISIONS.md), "Phase 18 — Smart Recommendations")
 
 ## Local Development
 

@@ -6,6 +6,7 @@ import { QueryBoundary, EmptyBlock } from "@/components/ui/query-boundary";
 import {
   AllocationHealthCard,
   InflowCtaCard,
+  RecommendationsCard,
   StrategyBanner,
   TotalValueCard,
   ValueSplitCard,
@@ -22,6 +23,7 @@ export default function DashboardPage() {
   const allocationQuery = useApiQuery(() => api.portfolioAllocation());
   const strategyQuery = useApiQuery(() => api.strategyValidation());
   const watchlistQuery = useApiQuery(() => api.listWatchlist());
+  const recommendationsQuery = useApiQuery(() => api.portfolioRecommendations());
 
   return (
     <div className="flex flex-col gap-4">
@@ -31,6 +33,15 @@ export default function DashboardPage() {
             <TotalValueCard summary={summary} />
             <ValueSplitCard summary={summary} />
             {summary.holdings_pnl.length > 0 ? <HoldingsPreview holdings={summary.holdings_pnl} /> : null}
+            <QueryBoundary
+              state={recommendationsQuery}
+              onRetry={recommendationsQuery.refetch}
+              loadingLabel="جارٍ تحميل التوصيات..."
+            >
+              {(recommendations) => (
+                <RecommendationsCard recommendations={recommendations} currency={summary.base_currency} />
+              )}
+            </QueryBoundary>
           </>
         )}
       </QueryBoundary>

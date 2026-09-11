@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.models import AssetType, Holding, PortfolioSnapshot, StrategyBucket
 from app.repositories.snapshot_repository import get_eod_snapshot_for_utc_date
@@ -80,7 +81,9 @@ async def test_post_transaction_snapshot_reflects_multiple_assets(db_session):
 
     snapshot = (
         await db_session.execute(
-            select(PortfolioSnapshot).where(PortfolioSnapshot.source_transaction_id == result.transaction.id)
+            select(PortfolioSnapshot)
+            .options(selectinload(PortfolioSnapshot.items))
+            .where(PortfolioSnapshot.source_transaction_id == result.transaction.id)
         )
     ).scalar_one()
     # total_cost_basis = (10 * 50) [stock] + (1000 * 1) [cash] = 1500
@@ -124,7 +127,9 @@ async def test_post_transaction_snapshot_uses_average_cost_fallback_for_a_held_b
 
     snapshot = (
         await db_session.execute(
-            select(PortfolioSnapshot).where(PortfolioSnapshot.source_transaction_id == result.transaction.id)
+            select(PortfolioSnapshot)
+            .options(selectinload(PortfolioSnapshot.items))
+            .where(PortfolioSnapshot.source_transaction_id == result.transaction.id)
         )
     ).scalar_one()
     # (5*20) + (3*0, no holding cost recorded) + (200*1)
@@ -162,7 +167,9 @@ async def test_realized_pnl_cumulative_reflects_prior_sells_not_just_the_trigger
 
     snapshot = (
         await db_session.execute(
-            select(PortfolioSnapshot).where(PortfolioSnapshot.source_transaction_id == result.transaction.id)
+            select(PortfolioSnapshot)
+            .options(selectinload(PortfolioSnapshot.items))
+            .where(PortfolioSnapshot.source_transaction_id == result.transaction.id)
         )
     ).scalar_one()
     assert snapshot.realized_pnl_cumulative == Decimal("80")

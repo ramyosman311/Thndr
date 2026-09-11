@@ -950,3 +950,151 @@ mutation guarantee) — 560 total. Frontend: 88 pre-existing tests green,
 plus the existing `allocation-page.test.tsx` fixture extended to mock
 the new endpoint and assert the recommendation renders contextually on
 the bucket card.
+
+## Phase 18 — Smart Recommendations (P1)
+
+### Inspection findings before implementation
+
+Per this phase's explicit "do not duplicate rebalancing mathematics"
+instruction, `domain/rebalancing_engine.py` and
+`services/rebalancing_service.py` (Phase 17) were inspected before
+writing any new code. Two gaps were found that made direct reuse
+incomplete, both resolved with minimal, additive changes rather than by
+inventing a workaround inside the new engine:
+
+1. **No existing field reliably signals "this category is the emergency
+   reserve"** on a `RebalancingRecommendation`. `target_percent=None`
+   combined with `allow_new_buy=None` looked at first like it could
+   substitute for it, but that same combination also describes an
+   ordinary, simply-unconfigured bucket with no target — the two cases
+   are indistinguishable from the existing output alone. Fix: added
+   `is_emergency_excluded: bool` to the domain `RebalancingRecommendation`
+   dataclass (populated from the already-computed
+   `RebalancingCandidate.is_emergency_excluded`, threaded through both
+   `_reduction_recommendation` and `_buy_side_recommendation`). This is
+   NOT added to the Pydantic `RebalancingRecommendationOut` API schema —
+   Phase 18 consumes the domain layer directly, so no API contract
+   change was needed or made.
+2. **`rebalancing_service.get_rebalancing_recommendations` did the
+   DB-fetch, candidate-building, and `calculate_rebalancing()` call all
+   inline**, with no way for another service to get the same raw domain
+   `RebalancingResult` without either duplicating that logic or making
+   an internal HTTP call to its own endpoint. Fix: extracted that body,
+   unchanged, into a new public `load_rebalancing_result()` function
+   (mirroring the `services/portfolio_shared.load_priced_positions`
+   naming precedent); `get_rebalancing_recommendations` is now a thin
+   wrapper that rounds and shapes its output into `RebalancingOut`. This
+   is a pure extraction — verified via the full pre-existing Phase 17
+   test suite (`test_domain_rebalancing_engine.py`,
+   `test_rebalancing_service.py`) staying green, unchanged, byte-for-byte
+   assertion-for-assertion.
+
+### Design decisions (why, not just what)
+
+- **One decision table, applied once, in `domain/recommendation_engine.
+  build_recommendations`.** Every `RebalancingAction`/`status`/
+  `allow_new_buy`/`is_emergency_excluded` combination maps to at most one
+  `RecommendationType`, or is silently skipped (`NO_TARGET`, emergency-
+  excluded, and `ON_TARGET` all produce no recommendation — see
+  FINANCIAL_RULES.md, "Smart Recommendations Engine Rules" for the full
+  table). No amount, percent, or status is recomputed anywhere in this
+  module — every one is read verbatim off the Phase 17
+  `RebalancingRecommendation` it was given.
+- **`OVERWEIGHT`-but-not-breached is `REBALANCING_OPPORTUNITY`, not
+  `RESTRICTED_ACTION` or silence.** This is the one place this phase
+  had to decide which *existing* signal counts as "drift beyond the
+  existing configured tolerance semantics" (spec section 3). No new
+  tolerance threshold was invented: `TargetStatus.OVERWEIGHT` already
+  means "outside the existing `ON_TARGET_TOLERANCE_PERCENT` band,
+  configured allocation_engine-side" — reusing it here rather than
+  picking an arbitrary new percentage was the only choice consistent
+  with "do not invent a new tolerance threshold."
+- **`PORTFOLIO_HEALTHY` is a fallback, not a category-by-category
+  label.** If every category resolves to a skip (`ON_TARGET`,
+  `NO_TARGET`, or emergency-excluded), the *portfolio* is healthy and a
+  single all-clear recommendation is returned instead of an empty list —
+  but if even one category is `NO_CAPACITY` (underweight with no
+  fundable cash), the result is `RESTRICTED_ACTION`, never
+  `PORTFOLIO_HEALTHY`, exactly per spec section 12's explicit warning
+  not to call a portfolio healthy merely because a BUY can't currently
+  be funded.
+- **Deterministic `id` = `f"{type.value}:{bucket_id or 'portfolio'}"`,
+  explicitly excluding `evaluated_at`.** `evaluated_at` is the one field
+  on `PortfolioRecommendation` that is expected to differ between two
+  calls made moments apart; the "verify deterministic output" test
+  requirement (Phase 18 Test J) is scoped to exclude it by design, the
+  same way a timestamp column on an otherwise-idempotent record is
+  routinely excluded from an equality check elsewhere in this codebase.
+  `evaluated_at` itself is threaded in as an explicit parameter to
+  `build_recommendations` (never `datetime.now()` called inside the pure
+  domain function), following the same testable-time-injection
+  precedent as `portfolio_analytics_service.get_portfolio_analytics_history`'s
+  `now` parameter (Phase 15).
+- **Arabic `title`/`message` are new, additive fields — never a
+  translation of Phase 17's `reason`.** Phase 17's `reason` is
+  deliberately English prose (matching `strategy_validation.py`'s
+  existing `explanation` precedent). Rather than translate that string
+  or repurpose it, Phase 18 composes its own natural Arabic copy
+  straight from the same underlying numbers (`bucket_name`,
+  `recommended_value`, target/maximum context) — the two fields serve
+  different audiences (English reasoning trace vs. Arabic user-facing
+  guidance) and are allowed to diverge in wording without either one
+  being wrong.
+- **No currency literal is hardcoded into the Arabic message text**
+  (e.g. never "... 500 جنيه" baked into the backend string) — the amount
+  is returned as a plain number in the `amount` field and the frontend
+  formats it with the portfolio's actual `base_currency` via the
+  existing `formatCurrency` helper, consistent with how every other
+  amount in this app is presented. This is a minor, non-financial
+  formatting choice, noted here rather than silently made without
+  comment.
+
+### No new financial semantics
+
+No new target/maximum/tolerance/priority/cash/allocation/trading rule
+was introduced. Every number and status this phase presents is read,
+unchanged, from Phase 17's own output; the only genuinely new backend
+logic is classification (Phase-17-state → user-facing type/severity) and
+Arabic text composition, both pure presentation concerns.
+
+### Database / migration
+
+None. `is_emergency_excluded` is an addition to a domain (in-memory)
+dataclass, not a database column — nothing new is persisted, and no
+existing table changed shape. `alembic check` confirms no new upgrade
+operations are needed.
+
+### Regression note: pre-existing flaky test made deterministic, not
+
+### caused, by this phase
+
+Adding the two new Phase 18 test files shifted pytest's collection
+order enough that a **pre-existing** latent bug in
+`test_snapshot_service.py` (present since Phase 16, previously observed
+only as a rare one-off `MissingGreenlet` failure and dismissed at the
+time as transient) began failing on every run instead of occasionally.
+Root cause, confirmed by bisection (`git stash -u` back to the Phase 17
+baseline, deselecting the new test file, and reading the actual
+traceback): two tests fetched a `PortfolioSnapshot` via a plain
+`select(PortfolioSnapshot)...` and then accessed the lazily-loaded
+`.items` relationship synchronously — safe only when SQLAlchemy's
+identity map happens to still hold the same, already-populated Python
+object from its creation earlier in the same test; unsafe (a genuine
+`MissingGreenlet` under async SQLAlchemy) whenever a fresh instance is
+constructed instead, which is exactly the kind of thing GC/allocation-
+order timing can flip either way. The real repository code
+(`snapshot_repository.py`) already avoids this by eager-loading via
+`selectinload(PortfolioSnapshot.items)`; the two affected test queries
+did not, and were fixed to match that same, already-established
+pattern. This is a test-infrastructure fix only — no production code,
+financial rule, or existing assertion changed.
+
+### Regression
+
+Full backend suite: 573 passed (560 Phase-17 baseline + 3 new Phase-18
+service/integration tests + 10 new Phase-18 domain tests), confirmed
+green across three consecutive full-suite runs after the
+`test_snapshot_service.py` eager-load fix above. Frontend: 88 tests
+green (one dashboard test extended to mock and assert the new
+recommendations card), lint clean, `tsc --noEmit` clean, production
+build clean. `alembic check`: no new upgrade operations detected.

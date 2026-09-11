@@ -10,6 +10,7 @@ from app.schemas.portfolio import (
     PortfolioSummaryOut,
 )
 from app.schemas.rebalancing import RebalancingOut
+from app.schemas.recommendations import RecommendationsOut
 from app.services import portfolio_config_service
 from app.services.portfolio_config_service import (
     BaseCurrencyChangeNotAllowedError,
@@ -23,6 +24,7 @@ from app.services.portfolio_service import (
     get_portfolio_summary,
 )
 from app.services.rebalancing_service import RebalancingNotConfiguredError, get_rebalancing_recommendations
+from app.services.recommendation_service import get_portfolio_recommendations
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
@@ -86,5 +88,18 @@ async def portfolio_rebalancing(session: AsyncSession = Depends(get_db_session))
     "Rebalancing Engine Rules")."""
     try:
         return await get_rebalancing_recommendations(session)
+    except RebalancingNotConfiguredError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get("/recommendations", response_model=RecommendationsOut)
+async def portfolio_recommendations(session: AsyncSession = Depends(get_db_session)) -> RecommendationsOut:
+    """Phase 18: read-only, deterministic guidance synthesized from the
+    Smart Rebalancing Engine's (Phase 17) own output — never recomputes a
+    BUY/REDUCE amount or category status, and never executes a trade or
+    mutates any financial state (see FINANCIAL_RULES.md, "Rebalancing
+    Engine Rules", which applies equally to this endpoint)."""
+    try:
+        return await get_portfolio_recommendations(session)
     except RebalancingNotConfiguredError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

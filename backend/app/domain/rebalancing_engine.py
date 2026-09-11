@@ -118,6 +118,15 @@ class RebalancingRecommendation:
     # target status whenever it applies, since maximum has priority).
     status: str
     reason: str
+    # Phase 18: carried through verbatim from RebalancingCandidate so a
+    # downstream consumer (the Smart Recommendations engine) can detect
+    # the emergency-reserve case reliably. No existing field combination
+    # can substitute for this — target_percent=None + allow_new_buy=None
+    # describes both an emergency bucket AND an ordinary unconfigured
+    # bucket. Not exposed on RebalancingRecommendationOut: only the
+    # domain layer needs it, since Phase 18 consumes this dataclass
+    # directly rather than the API schema.
+    is_emergency_excluded: bool
 
 
 @dataclass(frozen=True)
@@ -183,6 +192,7 @@ def _reduction_recommendation(
         allow_new_buy=candidate.allow_new_buy,
         status=MaximumStatus.MAXIMUM_BREACHED.value,
         reason=reason,
+        is_emergency_excluded=candidate.is_emergency_excluded,
     )
 
 
@@ -295,6 +305,7 @@ def _buy_side_recommendation(
         allow_new_buy=candidate.allow_new_buy,
         status=status,
         reason=reason,
+        is_emergency_excluded=candidate.is_emergency_excluded,
     )
 
 

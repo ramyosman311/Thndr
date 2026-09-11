@@ -517,6 +517,67 @@ still requires the user to separately record the resulting
 transaction(s) (and, for a BUY, a DEPOSIT if new cash needs to be
 reflected) exactly as before this phase.
 
+## Smart Recommendations Engine Rules
+
+Implemented in `backend/app/domain/recommendation_engine.py` (Phase 18).
+Synthesizes the Smart Rebalancing Engine's (Phase 17) own output into
+prioritized, Arabic, user-facing guidance answering "what should I do
+with my portfolio today, and why?" **Read-only, advisory only — never
+executes a trade** (same non-negotiable rule as "Rebalancing Engine
+Rules" above).
+
+**Rebalancing is the single source of truth.** This engine never
+recomputes a BUY/REDUCE amount, a target/maximum percent, or a category
+status — every number and state it presents is read verbatim from a
+`domain.rebalancing_engine.RebalancingRecommendation`. It only classifies
+each one into a user-facing type/severity and composes natural Arabic
+copy from those already-computed numbers. There is exactly one
+vocabulary for "what kind of guidance this is" — `RecommendationType`
+(`BREACH_RESOLUTION` / `CASH_DEPLOYMENT` / `REBALANCING_OPPORTUNITY` /
+`RESTRICTED_ACTION` / `PORTFOLIO_HEALTHY`) — never a second one
+overlapping `RebalancingAction`.
+
+**Decision table** (a `RebalancingRecommendation` maps to at most one
+recommendation, or none):
+
+| Phase 17 input | Phase 18 output |
+|---|---|
+| `action == REDUCE` (a maximum breach) | `BREACH_RESOLUTION` / `CRITICAL` / `REDUCE` |
+| `is_emergency_excluded` | *(skipped — Emergency Cash is never something to act on)* |
+| `action == NO_TARGET` | *(skipped — a constraint-only category, never an implicit 0% target)* |
+| `action == BUY` | `CASH_DEPLOYMENT` / `INFO` / `BUY`, using the Phase 17 amount verbatim |
+| `action == HOLD`, status `ON_TARGET` | *(skipped — nothing to report)* |
+| `action == HOLD`, `allow_new_buy is False` | `RESTRICTED_ACTION` / `WARNING` / `HOLD` |
+| `action == HOLD`, status `OVERWEIGHT` | `REBALANCING_OPPORTUNITY` / `INFO` / `HOLD` |
+| `action == NO_CAPACITY` (either cause) | `RESTRICTED_ACTION` / `WARNING` / `HOLD` — never a false BUY |
+
+If, after this pass, no category produced a `BREACH_RESOLUTION` /
+`RESTRICTED_ACTION` / `CASH_DEPLOYMENT` / `REBALANCING_OPPORTUNITY`
+recommendation, the portfolio is genuinely healthy and a single
+`PORTFOLIO_HEALTHY` / `SUCCESS` / `NO_ACTION` recommendation is returned
+instead of an empty list. A portfolio is never called healthy merely
+because a BUY currently has no fundable cash — that case is
+`RESTRICTED_ACTION`, not `PORTFOLIO_HEALTHY`.
+
+**Deterministic priority.** Recommendations are sorted by a fixed tier
+(maximum breaches first, then restricted/blocked opportunities, then
+fundable cash deployment, then rebalancing opportunities, then the
+healthy state), then by the category's own configured priority — the
+same priority `inflow_allocator`/`rebalancing_engine` already use, never
+a new financial priority model.
+
+**Deterministic identity.** Each recommendation's `id` is
+`f"{type}:{bucket_id or 'portfolio'}"` — stable for identical
+portfolio/strategy state, never a random UUID, and never derived from
+`evaluated_at` (which is expected to differ between calls and is
+excluded from the identity/equality contract by design).
+
+**Emergency Cash and Free Cash semantics are carried forward
+unchanged** — this engine never recommends using, selling, or otherwise
+acting on the configured emergency reserve, and never fabricates an
+asset-level BUY for a category-only bucket like Free Cash; both
+protections are inherited directly from Phase 17/16, not reimplemented.
+
 ## Snapshot ≠ Transaction
 
 `portfolio_snapshots` / `portfolio_snapshot_items` records are **point-in-time

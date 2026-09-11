@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   strategyValidation: vi.fn(),
   listWatchlist: vi.fn(),
   portfolioAnalyticsHistory: vi.fn(),
+  portfolioRecommendations: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async () => {
@@ -20,6 +21,7 @@ vi.mock("@/lib/api", async () => {
       strategyValidation: mocks.strategyValidation,
       listWatchlist: mocks.listWatchlist,
       portfolioAnalyticsHistory: mocks.portfolioAnalyticsHistory,
+      portfolioRecommendations: mocks.portfolioRecommendations,
     },
   };
 });
@@ -33,6 +35,9 @@ describe("DashboardPage", () => {
     mocks.strategyValidation.mockRejectedValue(new ApiError("not_configured", 404, "No portfolio configuration exists yet."));
     mocks.listWatchlist.mockResolvedValue([]);
     mocks.portfolioAnalyticsHistory.mockRejectedValue(
+      new ApiError("not_configured", 404, "No portfolio configuration exists yet.")
+    );
+    mocks.portfolioRecommendations.mockRejectedValue(
       new ApiError("not_configured", 404, "No portfolio configuration exists yet.")
     );
 
@@ -96,6 +101,22 @@ describe("DashboardPage", () => {
       insufficient_history: true,
       message: "Insufficient historical data for this range.",
     });
+    mocks.portfolioRecommendations.mockResolvedValue({
+      is_complete: true,
+      recommendations: [
+        {
+          id: "PORTFOLIO_HEALTHY:portfolio",
+          type: "PORTFOLIO_HEALTHY",
+          severity: "SUCCESS",
+          title: "المحفظة ضمن الحدود المستهدفة",
+          message: "المحفظة ضمن نسب التخصيص المحددة. لا يوجد تجاوز للحد الأقصى في أي فئة. لا حاجة لإجراء إعادة توازن فوري.",
+          suggested_action: "NO_ACTION",
+          target_category: null,
+          amount: null,
+          evaluated_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
 
     render(<DashboardPage />);
 
@@ -104,5 +125,6 @@ describe("DashboardPage", () => {
     });
     expect(screen.getByText(/بتنبيهات مفعّلة/)).toBeInTheDocument();
     expect(screen.getAllByText("1").length).toBeGreaterThan(0);
+    expect(screen.getByText("المحفظة ضمن الحدود المستهدفة")).toBeInTheDocument();
   });
 });

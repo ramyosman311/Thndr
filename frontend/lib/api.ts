@@ -30,6 +30,7 @@ import type {
   PriceObservationOut,
   PriceOut,
   RebalancingOut,
+  RecommendationsOut,
   StrategyBucketCreateRequest,
   StrategyBucketOut,
   StrategyBucketUpdateRequest,
@@ -126,6 +127,7 @@ export const api = {
   portfolioSummary: () => request<PortfolioSummaryOut>("/portfolio/summary"),
   portfolioAllocation: () => request<PortfolioAllocationOut>("/portfolio/allocation"),
   portfolioRebalancing: () => request<RebalancingOut>("/portfolio/rebalancing"),
+  portfolioRecommendations: () => request<RecommendationsOut>("/portfolio/recommendations"),
   strategyValidation: () => request<StrategyValidationOut>("/portfolio/strategy/validation"),
 
   portfolioAnalyticsHistory: (range: AnalyticsRange) =>

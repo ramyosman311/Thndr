@@ -7,16 +7,25 @@ import { MetricCard } from "@/components/ui/metric-card";
 import { PnLBadge } from "@/components/ui/pnl-badge";
 import { StatusPill } from "@/components/ui/status-pill";
 import { EmptyBlock, QueryBoundary } from "@/components/ui/query-boundary";
-import { ForwardChevronIcon, BellIcon, CashIcon, CheckCircleIcon, WalletIcon } from "@/components/icons";
+import {
+  ForwardChevronIcon,
+  AlertTriangleIcon,
+  BellIcon,
+  CashIcon,
+  CheckCircleIcon,
+  WalletIcon,
+} from "@/components/icons";
 import { useApiQuery } from "@/hooks/use-api-query";
 import { api } from "@/lib/api";
 import { formatCurrency, formatPercent, isNegative, isZero } from "@/lib/format";
-import { strategyStatusMeta } from "@/lib/status-labels";
+import { recommendationSeverityTone, strategyStatusMeta } from "@/lib/status-labels";
 import type {
   AnalyticsRange,
   PortfolioAllocationOut,
   PortfolioAnalyticsHistoryOut,
+  PortfolioRecommendationOut,
   PortfolioSummaryOut,
+  RecommendationsOut,
   StrategyValidationOut,
   WatchlistOut,
 } from "@/types/api";
@@ -422,5 +431,70 @@ export function InflowCtaCard() {
         <ForwardChevronIcon />
       </span>
     </Link>
+  );
+}
+
+// Phase 18: Smart Recommendations. This card only renders what the
+// backend (domain/recommendation_engine.py) already computed and
+// prioritized — no client-side recomputation of amounts, severity, or
+// ordering (see ARCHITECTURE.md, "Frontend Layering").
+const _RECOMMENDATION_CARD_TONE_CLASSES: Record<string, string> = {
+  danger: "border-danger/40 bg-danger-muted",
+  warning: "border-warning/40 bg-warning-muted",
+  info: "border-primary/30 bg-accent",
+  success: "border-success/40 bg-success-muted",
+  neutral: "border-border bg-muted/50",
+};
+
+function RecommendationItem({ recommendation, currency }: { recommendation: PortfolioRecommendationOut; currency?: string }) {
+  const tone = recommendationSeverityTone(recommendation.severity);
+  return (
+    <div className={`rounded-xl border p-3 ${_RECOMMENDATION_CARD_TONE_CLASSES[tone]}`}>
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-sm font-bold text-foreground">{recommendation.title}</p>
+        <StatusPill label={recommendation.severity} tone={tone} />
+      </div>
+      <p className="mt-1 text-xs leading-relaxed text-foreground/80">{recommendation.message}</p>
+      {recommendation.amount !== null ? (
+        <p className="tabular-nums mt-2 text-sm font-semibold text-foreground">
+          {formatCurrency(recommendation.amount, currency)}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+export function RecommendationsCard({
+  recommendations,
+  currency,
+}: {
+  recommendations: RecommendationsOut;
+  currency?: string;
+}) {
+  const items = recommendations.recommendations;
+  if (items.length === 0) {
+    return <EmptyBlock title="لا توجد توصيات حاليًا" />;
+  }
+  const criticalCount = items.filter((r) => r.severity === "CRITICAL").length;
+  return (
+    <Card>
+      <CardHeader
+        title="توصيات ذكية"
+        subtitle={criticalCount > 0 ? `${criticalCount} توصية تحتاج انتباهك الآن` : "ما الذي يجب فعله بمحفظتك اليوم؟"}
+        action={
+          criticalCount > 0 ? <AlertTriangleIcon className="text-danger" /> : <CheckCircleIcon className="text-success" />
+        }
+      />
+      <CardBody className="flex flex-col gap-2">
+        {items.map((r) => (
+          <RecommendationItem key={r.id} recommendation={r} currency={currency} />
+        ))}
+        {!recommendations.is_complete ? (
+          <p className="text-[11px] text-muted-foreground">
+            بعض المراكز بدون سعر محدّث بعد — قد تتغير هذه التوصيات عند اكتمال الأسعار.
+          </p>
+        ) : null}
+      </CardBody>
+    </Card>
   );
 }

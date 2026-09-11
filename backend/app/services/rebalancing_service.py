@@ -15,13 +15,14 @@ presentation rounding happens only here, same convention as
 portfolio_service.py/inflow_service.py.
 """
 
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.allocation_engine import evaluate_bucket_allocation
 from app.domain.portfolio_engine import calculate_portfolio_totals
-from app.domain.rebalancing_engine import RebalancingCandidate, calculate_rebalancing
+from app.domain.rebalancing_engine import RebalancingCandidate, RebalancingResult, calculate_rebalancing
 from app.repositories.portfolio_repository import (
     get_active_allocation_targets,
     get_active_assets,
@@ -51,7 +52,25 @@ def _round_or_none(value: Decimal | None) -> Decimal | None:
     return None if value is None else _round(value)
 
 
-async def get_rebalancing_recommendations(session: AsyncSession) -> RebalancingOut:
+@dataclass(frozen=True)
+class LoadedRebalancingResult:
+    """The raw, full-precision domain output plus the one piece of
+    portfolio-level context (`is_complete`) a caller needs alongside it —
+    returned as-is, before any presentation rounding."""
+
+    result: RebalancingResult
+    is_complete: bool
+
+
+async def load_rebalancing_result(session: AsyncSession) -> LoadedRebalancingResult:
+    """Fetches current portfolio/strategy/allocation state and runs the
+    pure `domain/rebalancing_engine.calculate_rebalancing` — the single
+    place this happens. Extracted out of `get_rebalancing_recommendations`
+    (Phase 17) so Phase 18's Smart Recommendations engine can reuse the
+    exact same DB-fetch/candidate-building/calculation path instead of
+    duplicating it (see FINANCIAL_RULES.md, "Rebalancing Is The Single
+    Source Of Truth" — recommendations must consume Phase 17's numbers,
+    never recompute them)."""
     config = await get_portfolio_config(session)
     if config is None:
         raise RebalancingNotConfiguredError("No portfolio configuration exists yet.")
@@ -110,6 +129,13 @@ async def get_rebalancing_recommendations(session: AsyncSession) -> RebalancingO
         investable_portfolio_value=totals.denominator_value,
     )
 
+    return LoadedRebalancingResult(result=result, is_complete=totals.is_complete)
+
+
+async def get_rebalancing_recommendations(session: AsyncSession) -> RebalancingOut:
+    loaded = await load_rebalancing_result(session)
+    result = loaded.result
+
     recommendation_outs = [
         RebalancingRecommendationOut(
             strategy_bucket_id=r.strategy_bucket_id,
@@ -135,6 +161,6 @@ async def get_rebalancing_recommendations(session: AsyncSession) -> RebalancingO
         available_cash=_round(result.available_cash),
         total_recommended_buy=_round(result.total_recommended_buy),
         total_recommended_reduce=_round(result.total_recommended_reduce),
-        is_complete=totals.is_complete,
+        is_complete=loaded.is_complete,
         recommendations=recommendation_outs,
     )

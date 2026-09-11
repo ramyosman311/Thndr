@@ -110,3 +110,18 @@ export function priceStatusMeta(status: string): StatusMeta {
 export function rebalancingActionMeta(action: string): StatusMeta {
   return REBALANCING_ACTION[action] ?? fallback(action);
 }
+
+// Phase 18: Smart Recommendations severity -> visual tone only. The
+// title/message text itself is already natural Arabic returned by the
+// backend (domain/recommendation_engine.py) — this map never supplies
+// display text, only color.
+export const RECOMMENDATION_SEVERITY_TONE: Record<string, Tone> = {
+  CRITICAL: "danger",
+  WARNING: "warning",
+  INFO: "info",
+  SUCCESS: "success",
+};
+
+export function recommendationSeverityTone(severity: string): Tone {
+  return RECOMMENDATION_SEVERITY_TONE[severity] ?? "neutral";
+}

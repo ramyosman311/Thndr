@@ -159,6 +159,44 @@ export interface RebalancingOut {
   recommendations: RebalancingRecommendationOut[];
 }
 
+// --- Smart Recommendations (Phase 18) -------------------------------------
+
+/** Matches domain/recommendation_engine.py's RecommendationType exactly —
+ * a single, unified vocabulary for what kind of guidance a card is. */
+export type RecommendationType =
+  | "BREACH_RESOLUTION"
+  | "CASH_DEPLOYMENT"
+  | "REBALANCING_OPPORTUNITY"
+  | "RESTRICTED_ACTION"
+  | "PORTFOLIO_HEALTHY";
+
+export type RecommendationSeverity = "CRITICAL" | "WARNING" | "INFO" | "SUCCESS";
+
+export type SuggestedAction = "BUY" | "REDUCE" | "HOLD" | "NO_ACTION";
+
+export interface PortfolioRecommendationOut {
+  /** Deterministic — stable for identical portfolio/strategy state,
+   * never a random UUID. Safe to use as a React list key. */
+  id: string;
+  type: RecommendationType;
+  severity: RecommendationSeverity;
+  /** Natural, user-facing Arabic copy — render verbatim, never re-derive
+   * or translate client-side. */
+  title: string;
+  message: string;
+  suggested_action: SuggestedAction;
+  target_category: string | null;
+  /** Present only when directly sourced from a Phase 17 BUY/REDUCE
+   * amount — never independently computed on the client. */
+  amount: DecimalStr | null;
+  evaluated_at: string;
+}
+
+export interface RecommendationsOut {
+  is_complete: boolean;
+  recommendations: PortfolioRecommendationOut[];
+}
+
 // --- Portfolio Configuration administration (Phase 12) -------------------
 
 export interface PortfolioConfigOut {
