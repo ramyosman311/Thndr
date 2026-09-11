@@ -359,6 +359,72 @@ on-demand API route — see ARCHITECTURE.md, "Workers" and DECISIONS.md,
   pure domain check functions above), plus the asset symbol and the
   notification's own send timestamp.
 
+## Notification Layer Rules (Phase 19)
+
+Implemented in `backend/app/domain/notification_engine.py`
+(classification/composition, pure) and `backend/app/services/
+notification_service.py` (persistence orchestration). Builds the in-app
+Notification Center on top of the two existing, unmodified sources of
+"something needs attention" — never a third financial engine:
+
+- **No new financial computation.** `notification_service.py` calls
+  `alert_service.evaluate_alerts()` (Phase 8, unchanged) and
+  `recommendation_service.get_portfolio_recommendations()` (Phase 18,
+  unchanged) and persists what they already computed. No allocation
+  percent, price condition, or BUY/REDUCE amount is recalculated here.
+- **In-app visibility is independent of the Telegram opt-in.** Phase 14's
+  strict three-condition AND-gate (see "Telegram Delivery" above) governs
+  ONLY whether a Telegram message is sent; it is never consulted here.
+  `notification_service.py` calls `evaluate_alerts()` with no notifier
+  (so `NullNotificationDispatcher` remains the default, exactly as
+  `POST /api/alerts/evaluate` already does) and reads `is_new_trigger`/
+  `should_clear` directly off the returned results — a user who has never
+  configured Telegram still sees in-app notifications for the exact same
+  conditions.
+- **Two sources, two different "is this new" mechanisms — never a third,
+  invented one.** Alert-engine checks are already stateful
+  (`alert_rules.last_triggered_at`'s edge-triggered latch, Phase 8); this
+  phase mirrors that same `is_new_trigger`/`should_clear` transition into
+  a `Notification` row (source_id `f"ALERT:{alert_rule_id}:{alert_type}"`),
+  never re-deriving the dedup decision itself. Phase 18 recommendations
+  are pure/stateless (recomputed fresh every call), so "is this new" is
+  instead derived by diffing the current notify-worthy recommendation ids
+  against which `RECOMMENDATION_ALERT` notifications are currently active
+  in the notifications table (source_id `f"RECOMMENDATION:{recommendation_id}"`,
+  reusing Phase 18's own deterministic id) — the identical edge-triggered
+  idea, applied at the notification-persistence layer since the
+  recommendation engine itself has no persisted state to latch onto.
+- **Duplicate protection is enforced at the database level.** `notifications`
+  has a partial unique index on `source_id` WHERE `resolved_at IS NULL` —
+  at most one active (unresolved) row per source_id can ever exist,
+  regardless of how many times the same condition is evaluated.
+- **Only genuinely notification-worthy severities create a row.** Of
+  Phase 18's five recommendation types, only `BREACH_RESOLUTION`
+  (CRITICAL) and `RESTRICTED_ACTION` (WARNING) ever produce a
+  `RECOMMENDATION_ALERT` — `CASH_DEPLOYMENT`/`REBALANCING_OPPORTUNITY`
+  (INFO) and `PORTFOLIO_HEALTHY` (SUCCESS) are already visible on the
+  Dashboard's Recommendations card and are deliberately not duplicated
+  into the Notification Center (see the Phase 19 objective: "without
+  creating noise"). Emergency Cash and NO_TARGET categories are already
+  excluded upstream by `recommendation_engine.py` (Phase 18) and
+  therefore never reach this layer at all — no separate exclusion logic
+  was added here.
+- **Read-only w.r.t. financial state.** The only writes performed by
+  `sync_notifications`/`list_notifications` are to the new `notifications`
+  table (non-financial, user-facing metadata) plus whatever
+  `evaluate_alerts()` itself already writes (`alert_rules.last_triggered_at`
+  — pre-existing, Phase 8-approved). Marking a notification read or all
+  notifications read writes only `notifications.read_at` — verified
+  directly (row counts for `transactions`/`holdings`/`allocation_targets`/
+  `strategy_buckets`/`portfolio_configs` before/after are identical).
+- **The two-level alert activation hierarchy is unchanged, only made
+  visible.** "Only an active, enabled watchlist entry with an enabled
+  alert rule is ever evaluated" (see "Alert Engine Rules" above) predates
+  this phase and is not touched by it — Phase 19 only makes the combined,
+  effective state explicit in the Watchlist UI (which layer, if any, is
+  currently the reason alerts are off for a given asset), never changes
+  which flag controls what.
+
 ## Transaction Accounting (Phase 10)
 
 Implemented in `backend/app/domain/transaction_engine.py`, orchestrated by

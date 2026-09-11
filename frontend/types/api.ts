@@ -197,6 +197,40 @@ export interface RecommendationsOut {
   recommendations: PortfolioRecommendationOut[];
 }
 
+// --- Notification Center (Phase 19) ---------------------------------------
+
+/** Matches models/enums.py's NotificationCategory exactly — the
+ * top-level grouping shown in the Notification Center, distinct from
+ * (never overlapping) AlertType/RecommendationType. */
+export type NotificationCategory =
+  | "PRICE_ALERT"
+  | "ALLOCATION_ALERT"
+  | "RECOMMENDATION_ALERT"
+  | "PORTFOLIO_HEALTH_ALERT";
+
+export type NotificationSeverity = "CRITICAL" | "WARNING" | "INFO";
+
+/** Navigation-only hints — never an execution action. */
+export type NotificationAction = "REVIEW_DISTRIBUTION" | "REVIEW_RECOMMENDATIONS" | "OPEN_ASSET";
+
+export interface NotificationOut {
+  id: string;
+  category: NotificationCategory;
+  severity: NotificationSeverity;
+  title: string;
+  message: string;
+  target_category: string | null;
+  target_asset: string | null;
+  action: NotificationAction | null;
+  read: boolean;
+  created_at: string;
+}
+
+export interface NotificationsOut {
+  unread_count: number;
+  notifications: NotificationOut[];
+}
+
 // --- Portfolio Configuration administration (Phase 12) -------------------
 
 export interface PortfolioConfigOut {

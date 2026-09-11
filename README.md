@@ -4,26 +4,40 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 18 — Smart Recommendations (P1). `GET /api/portfolio/
-> recommendations` synthesizes Phase 17's per-category rebalancing output
-> into prioritized, Arabic, user-facing guidance answering "what should I
-> do with my portfolio today, and why?" It is presentation only — every
-> BUY/REDUCE amount and every target/maximum/allow_new_buy/priority value
-> is read verbatim from `domain/rebalancing_engine.py`'s own output via a
-> new shared loader (`rebalancing_service.load_rebalancing_result()`),
-> never recomputed. A maximum breach becomes a `CRITICAL` `BREACH_
-> RESOLUTION` recommendation; a fundable BUY becomes `CASH_DEPLOYMENT`;
-> an underweight category with no fundable cash or with buying disabled
-> becomes an informational `RESTRICTED_ACTION` — never a false BUY; a
-> category drifted above target but still within its maximum becomes a
-> `REBALANCING_OPPORTUNITY`; a portfolio with nothing to report gets a
-> single all-clear `PORTFOLIO_HEALTHY` recommendation. Recommendation
-> `id`s are deterministic (never a random UUID) and Emergency Cash/Free
-> Cash/No-Target semantics are all inherited unchanged from Phase 16/17.
-> Surfaced as a new card on the Dashboard; nothing in this phase executes
-> a trade, moves cash, or changes strategy configuration — see
-> [DECISIONS.md](./DECISIONS.md), "Phase 18 — Smart Recommendations" for
-> the full design rationale. No database/migration change was needed.
+> **Status:** Phase 19 — Alerts & Notifications (P1). A new in-app
+> Notification Center (`GET/PATCH/POST /api/portfolio/notifications*`)
+> sits on top of the existing, unmodified Phase 8 alert engine and
+> Phase 17/18 rebalancing/recommendation outputs — never a third
+> financial engine. Every newly-triggered allocation/price/dip-buy check
+> (`alert_service.evaluate_alerts`) and every CRITICAL/WARNING Phase 18
+> recommendation becomes a persisted, deduplicated `Notification` row
+> (`PRICE_ALERT`/`ALLOCATION_ALERT`/`RECOMMENDATION_ALERT`, severity
+> `CRITICAL`/`WARNING`/`INFO`) with a contextual navigation action
+> (review Distribution/Recommendations/Watchlist) — never an executed
+> trade. A database-level partial unique index on `source_id` guarantees
+> repeated evaluation never spams duplicate notifications, and the same
+> edge-triggered "new vs. still active vs. cleared" idea Phase 8 already
+> uses is mirrored for Phase 18's otherwise-stateless recommendations.
+> The pre-existing "an asset must be both watched AND have its alert rule
+> enabled" activation hierarchy was investigated and found correct and
+> deliberate — left completely unchanged, only made visible in the
+> Watchlist UI (which layer, if either, is currently the reason alerts
+> are off for a given asset). Telegram delivery is explicitly untouched
+> and deferred to Phase 20 — in-app visibility never depends on it. See
+> [DECISIONS.md](./DECISIONS.md), "Phase 19 — Alerts & Notifications"
+> for the full design rationale. One new table (`notifications`); no
+> existing table's shape changed.
+>
+> Phase 18 (Smart Recommendations, P1) added `GET /api/portfolio/
+> recommendations`, synthesizing Phase 17's per-category rebalancing
+> output into prioritized, Arabic, user-facing guidance — a maximum
+> breach becomes `CRITICAL`/`BREACH_RESOLUTION`, a fundable BUY becomes
+> `CASH_DEPLOYMENT`, an underweight category with no fundable cash or
+> disabled buying becomes an informational `RESTRICTED_ACTION` (never a
+> false BUY), and a healthy portfolio gets a single all-clear
+> `PORTFOLIO_HEALTHY` recommendation — presentation only, every number
+> read verbatim from Phase 17. See [DECISIONS.md](./DECISIONS.md),
+> "Phase 18 — Smart Recommendations".
 >
 > Phase 17 (Smart Rebalancing, P1) added `GET /api/portfolio/rebalancing`,
 > a per-category BUY/REDUCE/HOLD/NO_CAPACITY/NO_TARGET recommendation
@@ -173,17 +187,20 @@ before the next begins.
 15. Historical Snapshots & Wealth Analytics Engine (DEPOSIT/WITHDRAWAL cash-flow semantics, EOD + post-transaction snapshot lifecycle, Time-Weighted Return isolating market performance from cash flow, real snapshot-driven dashboard chart with 1W/1M/3M/YTD/ALL ranges) — done
 16. Financial Core & Cash Logic, P0 (separated Portfolio Value / Investable Value / Available Cash / Reserved Cash so a stock-only holding can never show as spendable cash; missing-price fallback to a stale price or same-currency average cost, exposed as a simple LIVE/PENDING_SYNC signal with unrealized P/L always 0 when not live; user-facing quantity/currency formatting; accessible P/L presentation with explicit arrow + direction wording, not color alone; deterministic newest-first transaction ordering) — done
 17. Smart Rebalancing, P1 (per-category BUY/REDUCE/HOLD/NO_CAPACITY/NO_TARGET recommendations reusing the Phase 7 Smart Inflow Allocator for BUY distribution funded only by Phase 16's `available_cash`, plus a new maximum-breach REDUCE calculation; maximum always takes priority over target; recommendation-only, surfaced contextually on the Distribution screen — never an executed trade) — done
-18. Smart Recommendations, P1 (prioritized, Arabic, user-facing guidance synthesized from Phase 17's own rebalancing output — never a second rebalancing engine — classifying each category into BREACH_RESOLUTION/CASH_DEPLOYMENT/REBALANCING_OPPORTUNITY/RESTRICTED_ACTION/PORTFOLIO_HEALTHY with deterministic IDs and priority ordering; surfaced as a Dashboard card; recommendation-only, no automatic trade execution) — done *(current)*
-19. PWA (installable, offline-capable)
-20. Capacitor wrappers
-21. Production deployment prep
-22. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
-23. A verified EGID or EGXAPI adapter, or another zero-cost EGX-specific data source (deferred from Phase 13 — see [DECISIONS.md](./DECISIONS.md), requires network access and human-obtained API documentation this environment could not get)
-24. Live Telegram verification (deferred from Phase 14 — see [DECISIONS.md](./DECISIONS.md), `api.telegram.org` confirmed blocked by this environment's egress policy) and a "send test message" admin action (explicitly deferred by Phase 14's own approval)
-25. TRANSFER transaction semantics, Egypt-local (Africa/Cairo) EOD trading-day boundary, and analytics coverage for pre-Phase-15 snapshot history (deferred from Phase 15 — see [DECISIONS.md](./DECISIONS.md))
-26. A fully-integrated cash ledger where BUY/SELL automatically debit/credit a cash balance (Phase 16 confirmed no such link exists or was ever approved — see [DECISIONS.md](./DECISIONS.md), "Phase 16 — Financial Core & Cash Logic"; only an explicit DEPOSIT/WITHDRAWAL moves `available_cash` today)
-27. Asset-level SELL selection within an overweight category, and an actual "execute this rebalancing recommendation" action (Phase 17 explicitly recommendation-only — see [DECISIONS.md](./DECISIONS.md), "Phase 17 — Smart Rebalancing")
-28. An asset-selection algorithm for which specific holding(s) to BUY/REDUCE within a category, and an actual "execute this recommendation" action (Phase 18 explicitly category-level and recommendation-only — see [DECISIONS.md](./DECISIONS.md), "Phase 18 — Smart Recommendations")
+18. Smart Recommendations, P1 (prioritized, Arabic, user-facing guidance synthesized from Phase 17's own rebalancing output — never a second rebalancing engine — classifying each category into BREACH_RESOLUTION/CASH_DEPLOYMENT/REBALANCING_OPPORTUNITY/RESTRICTED_ACTION/PORTFOLIO_HEALTHY with deterministic IDs and priority ordering; surfaced as a Dashboard card; recommendation-only, no automatic trade execution) — done
+19. Alerts & Notifications, P1 (in-app Notification Center built on the existing, unmodified Phase 8 alert engine and Phase 17/18 rebalancing/recommendation outputs — never a third financial engine; deduplicated via a database-level partial unique index so repeated evaluation never spams; PRICE_ALERT/ALLOCATION_ALERT/RECOMMENDATION_ALERT categories with CRITICAL/WARNING/INFO severity; unread/read state; contextual navigation to Distribution/Recommendations/Watchlist; the existing two-level watchlist-entry + alert-rule activation hierarchy made visible, not changed; no automatic trade execution; Telegram delivery intentionally untouched, deferred to Phase 20) — done *(current)*
+20. Telegram push delivery for the Notification Center (Phase 19 explicitly deferred external delivery — see [DECISIONS.md](./DECISIONS.md), "Phase 19 — Alerts & Notifications")
+21. PWA (installable, offline-capable)
+22. Capacitor wrappers
+23. Production deployment prep
+24. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
+25. A verified EGID or EGXAPI adapter, or another zero-cost EGX-specific data source (deferred from Phase 13 — see [DECISIONS.md](./DECISIONS.md), requires network access and human-obtained API documentation this environment could not get)
+26. Live Telegram verification (deferred from Phase 14 — see [DECISIONS.md](./DECISIONS.md), `api.telegram.org` confirmed blocked by this environment's egress policy) and a "send test message" admin action (explicitly deferred by Phase 14's own approval)
+27. TRANSFER transaction semantics, Egypt-local (Africa/Cairo) EOD trading-day boundary, and analytics coverage for pre-Phase-15 snapshot history (deferred from Phase 15 — see [DECISIONS.md](./DECISIONS.md))
+28. A fully-integrated cash ledger where BUY/SELL automatically debit/credit a cash balance (Phase 16 confirmed no such link exists or was ever approved — see [DECISIONS.md](./DECISIONS.md), "Phase 16 — Financial Core & Cash Logic"; only an explicit DEPOSIT/WITHDRAWAL moves `available_cash` today)
+29. Asset-level SELL selection within an overweight category, and an actual "execute this rebalancing recommendation" action (Phase 17 explicitly recommendation-only — see [DECISIONS.md](./DECISIONS.md), "Phase 17 — Smart Rebalancing")
+30. An asset-selection algorithm for which specific holding(s) to BUY/REDUCE within a category, and an actual "execute this recommendation" action (Phase 18 explicitly category-level and recommendation-only — see [DECISIONS.md](./DECISIONS.md), "Phase 18 — Smart Recommendations")
+31. A dedicated `alert_events` table giving independent per-condition-type dedup (deferred since Phase 8 — see DATABASE.md, "Known Schema Limitations (Phase 8)"; Phase 19's `notifications` table solves a different problem and does not fix this)
 
 ## Local Development
 

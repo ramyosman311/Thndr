@@ -282,6 +282,7 @@ async def evaluate_alerts(
                     reason=check.reason,
                     current_value=check.current_value,
                     threshold_value=check.threshold_value,
+                    bucket_name=bucket.bucket_name if bucket else None,
                 )
             )
             if check.is_new_trigger:

@@ -56,7 +56,10 @@ export function WatchlistEntryCard({
           <p className="mt-0.5 text-[11px] text-muted-foreground">أُضيف في {formatDateTime(entry.added_at)}</p>
         </div>
         <div className="flex items-center gap-2">
-          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <label
+            className="flex items-center gap-1.5 text-xs text-muted-foreground"
+            title="يجب تفعيل المتابعة هنا مع تفعيل قاعدة التنبيه أدناه معًا لتصل التنبيهات"
+          >
             <input type="checkbox" checked={entry.enabled} disabled={busy} onChange={toggleEnabled} />
             مفعّل
           </label>
@@ -79,7 +82,11 @@ export function WatchlistEntryCard({
       ) : null}
 
       <div className="mt-3 border-t border-border pt-3">
-        {rule ? <AlertRuleSummary rule={rule} /> : <p className="text-xs text-muted-foreground">لا توجد قاعدة تنبيه بعد.</p>}
+        {rule ? (
+          <AlertRuleSummary rule={rule} assetEnabled={entry.enabled} />
+        ) : (
+          <p className="text-xs text-muted-foreground">لا توجد قاعدة تنبيه بعد.</p>
+        )}
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
@@ -104,7 +111,22 @@ export function WatchlistEntryCard({
   );
 }
 
-function AlertRuleSummary({ rule }: { rule: NonNullable<WatchlistOut["alert_rule"]> }) {
+/** Phase 19 UX fix: alerts only actually fire when BOTH the asset is
+ * watched (`Watchlist.enabled`, the "مفعّل" checkbox above) AND its own
+ * rule is enabled (`AlertRule.enabled`) — a deliberate two-level
+ * hierarchy in the backend (see FINANCIAL_RULES.md, "Alert Engine
+ * Rules") that was previously invisible here: the two checkboxes live
+ * in different parts of the card with no indication they combine. This
+ * never changes which flag controls what — it only makes the COMBINED,
+ * effective state explicit and states which layer is the reason when
+ * alerts are off. */
+function AlertRuleSummary({
+  rule,
+  assetEnabled,
+}: {
+  rule: NonNullable<WatchlistOut["alert_rule"]>;
+  assetEnabled: boolean;
+}) {
   const parts: string[] = [];
   if (rule.allocation_alert_enabled && rule.allocation_max_percent) {
     parts.push(`تخصيص ≥ ${rule.allocation_max_percent}%`);
@@ -115,21 +137,46 @@ function AlertRuleSummary({ rule }: { rule: NonNullable<WatchlistOut["alert_rule
   if (rule.dip_buy_enabled && rule.dip_buy_price) {
     parts.push(`انخفاض ≤ ${formatCurrency(rule.dip_buy_price)}`);
   }
+
+  const effectiveActive = assetEnabled && rule.enabled;
+  let effectiveReason: string | null = null;
+  if (!effectiveActive) {
+    if (!assetEnabled && !rule.enabled) {
+      effectiveReason = "الأصل غير مفعّل في المتابعة وقاعدة التنبيه موقوفة";
+    } else if (!assetEnabled) {
+      effectiveReason = "الأصل غير مفعّل في المتابعة أعلاه";
+    } else {
+      effectiveReason = "قاعدة التنبيه موقوفة";
+    }
+  }
+
   return (
-    <div className="flex flex-wrap items-center gap-1.5 text-xs">
-      <span className={`font-semibold ${rule.enabled ? "text-primary" : "text-muted-foreground"}`}>
-        {rule.enabled ? "مفعّلة" : "موقوفة"}
-      </span>
-      {parts.length > 0 ? (
-        <span className="text-muted-foreground">{parts.join(" · ")}</span>
-      ) : (
-        <span className="text-muted-foreground">بدون شروط مُفعّلة</span>
-      )}
-      {rule.last_triggered_at ? (
-        <span className="rounded-full bg-warning-muted px-2 py-0.5 text-[10px] text-warning">
-          آخر تنبيه: {formatDateTime(rule.last_triggered_at)}
+    <div className="flex flex-col gap-1.5 text-xs">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span
+          className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+            effectiveActive ? "bg-success-muted text-success" : "bg-muted text-muted-foreground"
+          }`}
+        >
+          {effectiveActive ? "التنبيهات نشطة" : "التنبيهات متوقفة"}
         </span>
-      ) : null}
+        <span className={`font-semibold ${rule.enabled ? "text-primary" : "text-muted-foreground"}`}>
+          قاعدة التنبيه: {rule.enabled ? "مفعّلة" : "موقوفة"}
+        </span>
+      </div>
+      {effectiveReason ? <p className="text-[11px] text-muted-foreground">السبب: {effectiveReason}</p> : null}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {parts.length > 0 ? (
+          <span className="text-muted-foreground">{parts.join(" · ")}</span>
+        ) : (
+          <span className="text-muted-foreground">بدون شروط مُفعّلة</span>
+        )}
+        {rule.last_triggered_at ? (
+          <span className="rounded-full bg-warning-muted px-2 py-0.5 text-[10px] text-warning">
+            آخر تنبيه: {formatDateTime(rule.last_triggered_at)}
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 }

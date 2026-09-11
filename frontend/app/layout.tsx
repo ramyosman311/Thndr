@@ -4,6 +4,7 @@ import Link from "next/link";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { NotificationBell } from "@/components/notification-bell";
 import { BottomNav, TopNav } from "@/components/nav";
 
 const cairo = Cairo({
@@ -47,6 +48,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </Link>
                 <div className="flex items-center gap-2">
                   <TopNav />
+                  <NotificationBell />
                   <ThemeToggle />
                 </div>
               </div>

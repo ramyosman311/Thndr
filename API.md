@@ -486,7 +486,8 @@ Response (one entry per check actually performed, not just new triggers):
       "is_new_trigger": true,   // true only the first evaluation where condition_met flips to true
       "should_clear": false,    // true the first evaluation where a previously-met condition becomes false
       "reason": "allocation 20.00% >= watch threshold 15.00%",
-      "current_value": "20.00", "threshold_value": "15.00"
+      "current_value": "20.00", "threshold_value": "15.00",
+      "bucket_name": "Individual Stocks"  // Phase 19: additive, null when unknown/no bucket
     }
   ]
 }
@@ -529,6 +530,68 @@ condition type), a rule with more than one check type enabled
 simultaneously shares one latch across all of them — see DATABASE.md for
 the disclosed limitation and the minimal schema addition that would make
 dedup fully independent per condition type.
+
+### Notification Center (implemented, Phase 19)
+
+```
+GET   /api/portfolio/notifications
+PATCH /api/portfolio/notifications/{id}/read
+POST  /api/portfolio/notifications/read-all
+```
+
+`GET /api/portfolio/notifications` evaluates the existing alert engine
+(`alert_service.evaluate_alerts`, Phase 8) and Smart Recommendations
+(`recommendation_service.get_portfolio_recommendations`, Phase 18) —
+never recomputing either — persists any newly-triggered/newly-critical
+condition as a `Notification` row (deduplicated; see FINANCIAL_RULES.md,
+"Notification Layer Rules"), and returns the full, ordered
+(newest-first) inbox. Never 404s for an unconfigured portfolio — with
+nothing to notify, the list is simply empty.
+
+```jsonc
+{
+  "unread_count": 2,
+  "notifications": [
+    {
+      "id": "...",
+      "category": "RECOMMENDATION_ALERT",  // | ALLOCATION_ALERT | PRICE_ALERT | PORTFOLIO_HEALTH_ALERT (reserved, never emitted)
+      "severity": "CRITICAL",              // | WARNING | INFO
+      "title": "الأسهم الفردية: تجاوز الحد الأقصى المسموح به",
+      "message": "الأسهم الفردية تجاوزت الحد الأقصى المسموح به. يوصى بتقليل الاستثمار بحوالي 500.00.",
+      "target_category": "الأسهم الفردية",
+      "target_asset": null,
+      "action": "REVIEW_RECOMMENDATIONS",  // | REVIEW_DISTRIBUTION | OPEN_ASSET — navigation only, never an execution
+      "read": false,
+      "created_at": "2026-01-01T10:00:00Z"
+    }
+  ]
+}
+```
+
+A `RECOMMENDATION_ALERT` notification's `title`/`message`/`target_category`
+are the exact strings/values from the matching `/portfolio/recommendations`
+entry (Phase 18) — never reworded. An `ALLOCATION_ALERT`/`PRICE_ALERT`
+notification's `title`/`message` are new, additive Arabic copy built from
+the matching `/alerts/evaluate` check's own `current_value`/
+`threshold_value` (never a new calculation).
+
+**Deduplication is enforced at the database level.** A given underlying
+condition (one alert-rule/alert-type pair, or one Phase 18 recommendation
+id) can have at most one active (unresolved) notification row at a time —
+calling this endpoint any number of times without a real state change
+returns the identical set of notifications, never duplicates. Once a
+condition clears, a later re-trigger creates a fresh notification (the
+same edge-triggered idea `alert_rules.last_triggered_at` already uses).
+
+**`PATCH /api/portfolio/notifications/{id}/read`** marks one notification
+read (`404` if the id doesn't exist) — mutates only `notifications.read_at`.
+**`POST /api/portfolio/notifications/read-all`** marks every currently
+unread notification read and returns the refreshed list
+(`unread_count: 0`). Neither endpoint ever creates a transaction, moves
+cash, or modifies any holding/allocation-target/strategy-bucket/
+portfolio-configuration row — the only mutation, in both cases, is
+notification metadata (see FINANCIAL_RULES.md, "Notification Layer
+Rules"). No automatic trade execution exists anywhere in this feature.
 
 ### Rebalancing (implemented, Phase 17)
 

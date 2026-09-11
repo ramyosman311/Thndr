@@ -58,6 +58,12 @@ class AlertEvaluationEntryOut(BaseModel):
     reason: str
     current_value: DecimalStr | None
     threshold_value: DecimalStr | None
+    # Phase 19: additive — the asset's strategy bucket name, when known,
+    # so the Notification Center can reference it directly instead of
+    # only the asset symbol for an allocation-related check. `None` when
+    # the asset has no bucket or no allocation data was available (never
+    # fabricated).
+    bucket_name: str | None = None
 
 
 class AlertEvaluationOut(BaseModel):

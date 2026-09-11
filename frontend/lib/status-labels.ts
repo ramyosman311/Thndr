@@ -125,3 +125,40 @@ export const RECOMMENDATION_SEVERITY_TONE: Record<string, Tone> = {
 export function recommendationSeverityTone(severity: string): Tone {
   return RECOMMENDATION_SEVERITY_TONE[severity] ?? "neutral";
 }
+
+// Phase 19: Notification Center — category is presentation grouping
+// only (see models/enums.py's NotificationCategory), severity reuses
+// the exact same tone map as Phase 18 recommendations above (both
+// vocabularies share CRITICAL/WARNING/INFO by design).
+export const NOTIFICATION_CATEGORY_LABEL: Record<string, string> = {
+  PRICE_ALERT: "تنبيه سعر",
+  ALLOCATION_ALERT: "تنبيه تخصيص",
+  RECOMMENDATION_ALERT: "توصية ذكية",
+  PORTFOLIO_HEALTH_ALERT: "صحة المحفظة",
+};
+
+export function notificationCategoryLabel(category: string): string {
+  return NOTIFICATION_CATEGORY_LABEL[category] ?? category;
+}
+
+export const NOTIFICATION_ACTION_LABEL: Record<string, string> = {
+  REVIEW_DISTRIBUTION: "مراجعة التوزيع",
+  REVIEW_RECOMMENDATIONS: "مراجعة التوصيات",
+  OPEN_ASSET: "فتح المتابعة",
+};
+
+export function notificationActionLabel(action: string): string {
+  return NOTIFICATION_ACTION_LABEL[action] ?? action;
+}
+
+// Navigation-only destinations — never an execution action.
+export const NOTIFICATION_ACTION_HREF: Record<string, string> = {
+  REVIEW_DISTRIBUTION: "/allocation",
+  REVIEW_RECOMMENDATIONS: "/",
+  OPEN_ASSET: "/watchlist",
+};
+
+export function notificationActionHref(action: string | null): string | null {
+  if (!action) return null;
+  return NOTIFICATION_ACTION_HREF[action] ?? null;
+}

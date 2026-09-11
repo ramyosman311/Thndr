@@ -1,7 +1,10 @@
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
+from app.schemas.notification import NotificationOut, NotificationsOut
 from app.schemas.portfolio import (
     PortfolioAllocationOut,
     PortfolioConfigCreateRequest,
@@ -12,6 +15,12 @@ from app.schemas.portfolio import (
 from app.schemas.rebalancing import RebalancingOut
 from app.schemas.recommendations import RecommendationsOut
 from app.services import portfolio_config_service
+from app.services.notification_service import (
+    NotificationNotFoundError,
+    list_notifications,
+    mark_all_notifications_read,
+    mark_notification_read,
+)
 from app.services.portfolio_config_service import (
     BaseCurrencyChangeNotAllowedError,
     InvalidEmergencyAssetError,
@@ -103,3 +112,33 @@ async def portfolio_recommendations(session: AsyncSession = Depends(get_db_sessi
         return await get_portfolio_recommendations(session)
     except RebalancingNotConfiguredError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get("/notifications", response_model=NotificationsOut)
+async def portfolio_notifications(session: AsyncSession = Depends(get_db_session)) -> NotificationsOut:
+    """Phase 19: the in-app Notification Center. Evaluates the existing
+    alert engine (Phase 8) and Smart Recommendations (Phase 18) — never
+    recomputing either — and returns the persisted, deduplicated
+    notification inbox. Never unconfigured-404s: with no portfolio
+    configured yet there is simply nothing to notify, an empty list.
+    Read-only w.r.t. financial state; only notification rows are
+    written (see FINANCIAL_RULES.md, "Notification Layer Rules")."""
+    return await list_notifications(session)
+
+
+@router.patch("/notifications/{notification_id}/read", response_model=NotificationOut)
+async def mark_notification_read_route(
+    notification_id: UUID, session: AsyncSession = Depends(get_db_session)
+) -> NotificationOut:
+    """Mutates only `notifications.read_at` — never financial state."""
+    try:
+        return await mark_notification_read(session, notification_id)
+    except NotificationNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.post("/notifications/read-all", response_model=NotificationsOut)
+async def mark_all_notifications_read_route(session: AsyncSession = Depends(get_db_session)) -> NotificationsOut:
+    """Mutates only `notifications.read_at` for every currently-unread
+    row — never financial state."""
+    return await mark_all_notifications_read(session)

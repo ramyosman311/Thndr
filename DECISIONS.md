@@ -1098,3 +1098,156 @@ green across three consecutive full-suite runs after the
 green (one dashboard test extended to mock and assert the new
 recommendations card), lint clean, `tsc --noEmit` clean, production
 build clean. `alembic check`: no new upgrade operations detected.
+
+## Phase 19 — Alerts & Notifications (P1)
+
+### Inspection findings before implementation
+
+Per this phase's explicit "inspect first, do not silently change the
+activation hierarchy" instruction, the existing alert/watchlist/
+notification code was read in full before writing anything new:
+
+- `domain/alert_engine.py` (Phase 8) already implements five alert
+  types (`ALLOCATION_BREACH`, `PRICE_TARGET`, `DIP_BUY`,
+  `REBALANCE_SUGGESTED`, `INCOME_MATURITY`) with a pure, already-tested
+  edge-triggered dedup mechanism (`is_new_trigger`/`should_clear`,
+  latched on `alert_rules.last_triggered_at`) — a fully-built alert
+  engine already existed. Phase 19 needed a persistence/inbox layer on
+  top of it, not a second alert engine.
+- The "both an individual asset-level activation and a main rule
+  activation" behavior the task flagged is real and deliberate:
+  `watchlist_service.list_evaluation_candidates` only returns entries
+  where `Watchlist.enabled=True` AND `asset.is_active=True`, and
+  `alert_service.evaluate_alerts` additionally skips any row where
+  `rule is None or not rule.enabled`. This is confirmed, tested,
+  pre-existing behavior (`test_evaluate_skips_disabled_watchlist_entries`,
+  `test_evaluate_skips_disabled_alert_rules`) — not a bug. **This
+  hierarchy was left completely unchanged.** The only change made was a
+  frontend one: `components/watchlist/entry-card.tsx`'s
+  `AlertRuleSummary` now shows one explicit, combined "التنبيهات
+  نشطة/متوقفة" line plus, when off, WHICH layer is the reason (asset not
+  watched, rule disabled, or both) — never altering which flag controls
+  what.
+- No persisted, user-facing notification/event table existed anywhere.
+  `POST /api/alerts/evaluate` recomputes and returns its check results
+  fresh every call — nothing is stored, so there was no way to build an
+  unread/read inbox without new persistence. `alert_engine.py`'s own
+  docstring already anticipated a *different* deferred table for a
+  *different* problem (`alert_events`, to fix the "one shared
+  `last_triggered_at` column per rule, not per condition type"
+  limitation — see DATABASE.md, "Known Schema Limitations (Phase 8)").
+  That is a distinct, still-unfixed, still-disclosed limitation this
+  phase did not touch — the new `notifications` table serves a
+  different purpose (a read/unread user inbox with severity, title,
+  message, and a navigation action) and was not shaped to double as a
+  fix for the shared-latch problem.
+- Phase 18's `recommendation_engine.py`/`recommendation_service.py`
+  were reused exactly as Phase 18 built them — `get_portfolio_recommendations`
+  is called unmodified; nothing about its decision table, severities, or
+  Arabic copy was touched.
+
+### Design decisions (why, not just what)
+
+- **A new `notifications` table was the only genuinely-required schema
+  addition.** No existing table could represent "read/unread, with a
+  severity/title/message/action, deduplicated across repeated
+  evaluation" — see "Database / migration" below for the minimal shape
+  chosen.
+- **Two different sources, two different "is this new" mechanisms, by
+  necessity — not by choice of elegance.** Alert-engine checks already
+  carry persisted trigger state (`alert_rules.last_triggered_at`); Phase
+  18 recommendations are deliberately pure/stateless (never persisted,
+  recomputed fresh on every call — a Phase 18 design choice this phase
+  respects rather than retrofits). Rather than adding new persisted
+  state to the recommendation engine itself (which would have meant
+  Phase 18's pure functions gaining a database dependency, violating its
+  own "no I/O" contract), the notification layer derives "new vs. still
+  active" by diffing the current notify-worthy recommendation ids
+  against which `RECOMMENDATION_ALERT` notifications are already active
+  in the `notifications` table. This keeps `recommendation_engine.py`
+  untouched and pure, at the cost of the dedup logic living one layer
+  higher than the alert-engine case — an explicit, deliberate asymmetry,
+  not an oversight.
+- **A partial unique index (`source_id` WHERE `resolved_at IS NULL`)
+  enforces duplicate protection at the database level**, not only in
+  application code — the same category of guarantee `uq_alert_rules_watchlist_id`
+  already provides elsewhere in this schema, applied to a new problem.
+- **Only `BREACH_RESOLUTION` (CRITICAL) and `RESTRICTED_ACTION`
+  (WARNING) recommendations become notifications.** The Phase 19
+  objective itself says "tell the user when something important
+  happens — without creating noise." `CASH_DEPLOYMENT`/
+  `REBALANCING_OPPORTUNITY` (INFO) and `PORTFOLIO_HEALTHY` (SUCCESS) are
+  already visible on the Dashboard's Recommendations card (Phase 18);
+  duplicating every INFO-level recommendation into the Notification
+  Center as well would be exactly the noise the objective warns against.
+  This is a scope decision, documented here rather than silently made.
+- **`PORTFOLIO_HEALTH_ALERT` (`NotificationCategory`) is defined but
+  never emitted.** The task's spec asked for four conceptual categories;
+  inspection found no existing signal that distinctly means "portfolio
+  health" without already being covered by `RECOMMENDATION_ALERT` or
+  `ALLOCATION_ALERT`. Rather than inventing a synthetic "portfolio health
+  score" with no upstream financial basis, the category is reserved in
+  the enum (so a real future signal has somewhere to go) but the current
+  engine never produces one — a documented decision boundary per this
+  phase's own "if ambiguous, STOP and document" instruction, not a
+  silently-invented financial concept.
+- **In-app visibility is deliberately never gated by the Phase 14
+  Telegram AND-gate.** That gate answers "should an external Telegram
+  message be sent" — a question about a specific delivery channel a user
+  may never configure. In-app notifications answer a different question
+  ("does the user see this at all"), which should not depend on whether
+  they've set up Telegram. `notification_service.py` calls
+  `evaluate_alerts()` with no notifier, exactly as the existing
+  `POST /api/alerts/evaluate` route already does, so the AND-gate is
+  never even evaluated on this path.
+- **Evaluation happens synchronously on `GET /api/portfolio/notifications`**,
+  not via a new background worker. The task explicitly said "prefer the
+  simplest architecture... do not introduce Celery, Redis, queues, cron
+  infrastructure... unless genuinely required and already supported."
+  This project's only existing scheduled mechanism
+  (`app/workers/alert_notify.py`, Phase 14) is a standalone external-cron
+  script solely for Telegram delivery — extending its scope to also
+  populate the Notification Center would have coupled two independent
+  concerns (external delivery timing vs. in-app data freshness) for no
+  real benefit, since a synchronous evaluate-then-list on read is exactly
+  as simple and already the established pattern for
+  `POST /api/alerts/evaluate`. The new worker script was not touched.
+- **No new API surface beyond what was actually needed.** Three
+  endpoints only: `GET /api/portfolio/notifications` (evaluate + list),
+  `PATCH /api/portfolio/notifications/{id}/read`, and
+  `POST /api/portfolio/notifications/read-all`. No separate
+  `GET /api/portfolio/alerts` was added — the existing
+  `POST /api/alerts/evaluate` already serves the raw, ephemeral
+  diagnostic listing; adding a second read-only alerts endpoint would
+  have duplicated it for no new capability.
+- **`AlertEvaluationEntryOut.bucket_name` was added as one additive,
+  nullable field** so an allocation-related notification can reference
+  the actual bucket name instead of only the asset symbol — the smallest
+  change that let the new Arabic copy read naturally
+  ("Individual Stocks: تجاوز نسبة التنبيه المحددة" rather than always
+  falling back to the ticker). Every existing test against this schema
+  remained green unchanged, confirming the field is genuinely additive.
+
+### Database / migration
+
+One new table, `notifications` (migration `c49911658945_phase_19_notifications`):
+`id` (UUID PK), `source_id` (indexed, dedup key), `category`/`severity`/
+`action` (native Postgres enums — `notification_category`/
+`notification_severity`/`notification_action`, matching this schema's
+existing convention for `asset_type`/`transaction_type`), `title`,
+`message`, `target_category`, `target_asset`, `read_at` (nullable —
+`NULL` = unread, avoiding a redundant separate boolean), `resolved_at`
+(nullable — `NULL` = the underlying condition is still active), and
+`created_at`. A partial unique index enforces at most one active row per
+`source_id`. No existing table's shape changed. `alembic check` confirms
+no further upgrade operations are needed after this migration.
+
+### Regression
+
+Full backend suite: 586 passed (573 Phase-18 baseline + 13 new Phase-19
+tests: 10 domain-adjacent/service-level scenarios A–J plus 3 read-state
+tests), confirmed green across three consecutive full-suite runs.
+Frontend: 98 tests passed (88 Phase-18 baseline + 10 new: the
+Notification Center page and the header bell), lint clean, `tsc --noEmit`
+clean, production build clean (new `/notifications` route generated).
+`alembic check`: no unexpected migration after `c49911658945`.

@@ -22,6 +22,8 @@ import type {
   InflowAllocationOut,
   PortfolioAnalyticsHistoryOut,
   ManualPriceCreateRequest,
+  NotificationOut,
+  NotificationsOut,
   PortfolioAllocationOut,
   PortfolioConfigCreateRequest,
   PortfolioConfigOut,
@@ -188,6 +190,12 @@ export const api = {
     request<AlertRuleOut>(`/alerts/${alertRuleId}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteAlertRule: (alertRuleId: string) => request<void>(`/alerts/${alertRuleId}`, { method: "DELETE" }),
   evaluateAlerts: () => request<AlertEvaluationOut>("/alerts/evaluate", { method: "POST" }),
+
+  listNotifications: () => request<NotificationsOut>("/portfolio/notifications"),
+  markNotificationRead: (id: string) =>
+    request<NotificationOut>(`/portfolio/notifications/${id}/read`, { method: "PATCH" }),
+  markAllNotificationsRead: () =>
+    request<NotificationsOut>("/portfolio/notifications/read-all", { method: "POST" }),
 
   getAssetPrice: (assetId: string) => request<PriceOut>(`/assets/${assetId}/price`),
   listAssetPrices: (assetId: string) => request<PriceObservationOut[]>(`/assets/${assetId}/prices`),

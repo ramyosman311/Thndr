@@ -3,9 +3,16 @@ from app.models.allocation_target import AllocationTarget
 from app.models.asset import Asset
 from app.models.asset_price import AssetPrice
 from app.models.asset_price_config import AssetPriceConfig
-from app.models.enums import AssetType, TransactionType
+from app.models.enums import (
+    AssetType,
+    NotificationAction,
+    NotificationCategory,
+    NotificationSeverity,
+    TransactionType,
+)
 from app.models.fx_rate import FxRate
 from app.models.holding import Holding
+from app.models.notification import Notification
 from app.models.portfolio_config import PortfolioConfig
 from app.models.snapshot import PortfolioSnapshot, PortfolioSnapshotItem
 from app.models.strategy_bucket import StrategyBucket
@@ -21,6 +28,10 @@ __all__ = [
     "AssetType",
     "FxRate",
     "Holding",
+    "Notification",
+    "NotificationAction",
+    "NotificationCategory",
+    "NotificationSeverity",
     "PortfolioConfig",
     "PortfolioSnapshot",
     "PortfolioSnapshotItem",
