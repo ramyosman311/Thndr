@@ -99,11 +99,20 @@ def _percent_of(value: Decimal, denominator: Decimal) -> Decimal:
     return (value / denominator) * Decimal("100")
 
 
-def _capacity_and_status(
+def capacity_and_status(
     candidate: InflowCandidate, investable_portfolio_value: Decimal
 ) -> tuple[Decimal, InflowStatus]:
     """How much this bucket could theoretically absorb right now, and why
-    (or why not) — before the greedy cash-distribution pass runs."""
+    (or why not) — before the greedy cash-distribution pass runs.
+
+    Public (not `_`-prefixed) so a second caller can classify a bucket's
+    eligibility/status independent of any actual cash amount to
+    distribute — specifically `domain/rebalancing_engine.py`, which
+    needs this exact classification even when there is currently zero
+    available cash (a case `calculate_inflow_allocation` itself refuses
+    via its `new_cash_amount > 0` guard, see below). Reused, not
+    duplicated: this is the one place the gap/capacity formula is
+    computed either way."""
     if candidate.is_emergency_excluded:
         return Decimal("0"), InflowStatus.EMERGENCY_EXCLUDED
     if investable_portfolio_value <= 0:
@@ -151,7 +160,7 @@ def calculate_inflow_allocation(
 
     evaluated = []
     for candidate in candidates:
-        capacity, status = _capacity_and_status(candidate, investable_portfolio_value)
+        capacity, status = capacity_and_status(candidate, investable_portfolio_value)
 
         # Diagnostic fields are computed independently of eligibility so a
         # future UI can explain *why* a disabled/excluded bucket still has

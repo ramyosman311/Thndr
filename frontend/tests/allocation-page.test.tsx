@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   portfolioAllocation: vi.fn(),
   strategyValidation: vi.fn(),
   portfolioSummary: vi.fn(),
+  portfolioRebalancing: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async () => {
@@ -15,6 +16,7 @@ vi.mock("@/lib/api", async () => {
       portfolioAllocation: mocks.portfolioAllocation,
       strategyValidation: mocks.strategyValidation,
       portfolioSummary: mocks.portfolioSummary,
+      portfolioRebalancing: mocks.portfolioRebalancing,
     },
   };
 });
@@ -71,6 +73,31 @@ describe("AllocationPage", () => {
         },
       ],
     });
+    mocks.portfolioRebalancing.mockResolvedValue({
+      available_cash: "0.00",
+      total_recommended_buy: "0.00",
+      total_recommended_reduce: "0.00",
+      is_complete: true,
+      recommendations: [
+        {
+          strategy_bucket_id: "b1",
+          bucket_name: "Individual Stocks",
+          actual_value: "1000.00",
+          current_percent: "10.00",
+          target_percent: null,
+          maximum_percent: "15.00",
+          difference_percent: null,
+          target_value: null,
+          difference_value: null,
+          action: "NO_TARGET",
+          recommended_value: null,
+          priority: 0,
+          allow_new_buy: true,
+          status: "NO_TARGET",
+          reason: "Individual Stocks has no configured target.",
+        },
+      ],
+    });
 
     render(<AllocationPage />);
 
@@ -82,6 +109,12 @@ describe("AllocationPage", () => {
     expect(screen.getByText("ضمن الحد الأقصى")).toBeInTheDocument();
     // A maximum-only bucket must never be shown with an invented target.
     expect(screen.getByText("بدون هدف محدد")).toBeInTheDocument();
+
+    // Phase 17: the rebalancing recommendation surfaces contextually on
+    // this same card, not only in a separate Settings screen.
+    await waitFor(() => {
+      expect(screen.getByText("Individual Stocks has no configured target.")).toBeInTheDocument();
+    });
   });
 
   it("shows an empty state instead of a fabricated bucket when none are configured", async () => {
@@ -104,6 +137,13 @@ describe("AllocationPage", () => {
       risk_denominator_value: "0.00",
       emergency_excluded: false,
       buckets: [],
+    });
+    mocks.portfolioRebalancing.mockResolvedValue({
+      available_cash: "0.00",
+      total_recommended_buy: "0.00",
+      total_recommended_reduce: "0.00",
+      is_complete: true,
+      recommendations: [],
     });
 
     render(<AllocationPage />);

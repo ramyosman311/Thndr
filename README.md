@@ -4,33 +4,40 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 16 — Financial Core & Cash Logic (P0). A confirmed
-> bug is fixed: the dashboard previously labeled `investable_value`
-> (total value minus emergency value — an allocation-percentage
-> denominator that INCLUDES invested market value) as "Investable Cash,"
-> so a user holding only stocks could see a large nonzero "cash" figure
-> with none actually available. `GET /api/portfolio/summary` now exposes
-> a genuinely separate `available_cash` (non-emergency CASH/SAVINGS
-> holdings only — the real spendable-cash figure) and
-> `invested_market_value`, alongside the unchanged `total_value`/
-> `emergency_value`/`investable_value`. A held asset with no live price
-> now falls back to a real stale price or its own same-currency average
-> cost (`services/portfolio_shared.resolve_valuation_price`) instead of
-> being silently excluded, exposed via a simple `price_status`:
-> `"LIVE"`/`"PENDING_SYNC"` — `unrealized_pnl` is always exactly 0 when
-> not live, never a fabricated profit. The frontend shows quantities/
-> prices with sane precision (no more `50.00000000`), P/L with an
-> explicit arrow and direction wording rather than color alone, and
-> transactions strictly newest-first. BUY/SELL were confirmed to have no
-> automatic link to `available_cash` (only DEPOSIT/WITHDRAWAL move it) —
-> a disclosed, pre-existing scope boundary, not a new limitation — see
+> **Status:** Phase 17 — Smart Rebalancing (P1). `GET /api/portfolio/
+> rebalancing` now returns a per-category BUY/REDUCE/HOLD/NO_CAPACITY/
+> NO_TARGET recommendation, deliberately reusing two already-approved
+> engines rather than inventing new math: the BUY side is the Phase 7
+> Smart Inflow Allocator itself (`domain/inflow_allocator.
+> calculate_inflow_allocation`), fed Phase 16's `available_cash` instead
+> of newly-deposited cash — the same target-gap/maximum-capping/
+> priority-ordered distribution, so the same cash is never handed to two
+> categories at once. The one new calculation is the REDUCE amount for a
+> category already over its configured maximum
+> (`required_reduction = actual_value - maximum_value`), read from the
+> unchanged Phase 5/6 allocation engine's own `MAXIMUM_BREACHED` status
+> — a breach always takes priority over a target, so an overweight-but-
+> within-maximum category is never forced to sell. Recommendations are
+> surfaced contextually on the Distribution screen, each with an
+> explicit reason; nothing in this phase executes a trade, moves cash,
+> or changes strategy configuration — see [DECISIONS.md](./DECISIONS.md),
+> "Phase 17 — Smart Rebalancing" for the full design rationale. No
+> database/migration change was needed.
+>
+> Phase 16 (Financial Core & Cash Logic, P0) fixed a confirmed bug: the
+> dashboard previously labeled `investable_value` (an allocation-
+> percentage denominator that INCLUDES invested market value) as
+> "Investable Cash." `available_cash`/`invested_market_value` are now
+> genuinely separate fields, a missing live price falls back to a real
+> stale price or same-currency average cost (`price_status`:
+> `"LIVE"`/`"PENDING_SYNC"`, unrealized P/L always 0 when not live), and
+> the frontend shows sane quantity/currency precision, accessible P/L
+> direction wording, and strictly newest-first transactions — see
 > [DECISIONS.md](./DECISIONS.md), "Phase 16 — Financial Core & Cash
-> Logic" for the full design rationale and open scope question. No
-> database/migration change was needed. `TRANSFER` transaction semantics
-> and an Egypt-local EOD boundary remain unimplemented (Phase 15,
-> disclosed). No broker integration, automatic trading, authentication,
-> or full multi-user/multi-portfolio system exist yet. See
-> [Phase Plan](#phase-plan) below.
+> Logic". `TRANSFER` transaction semantics and an Egypt-local EOD
+> boundary remain unimplemented (Phase 15, disclosed). No broker
+> integration, automatic trading, authentication, or full multi-user/
+> multi-portfolio system exist yet. See [Phase Plan](#phase-plan) below.
 
 ## What this project does (target scope)
 
@@ -155,15 +162,17 @@ before the next begins.
 13. EGX Market Data Provider Integration & Verification (EGID/EGXAPI investigated and rejected; Mubasher Egypt implemented as primary, mock-tested, with Yahoo Finance retained as secondary fallback for the real EGX equities) — done
 14. Telegram Notifications (real delivery, out-of-band worker, strict AND-gated enablement, mock-tested) — done
 15. Historical Snapshots & Wealth Analytics Engine (DEPOSIT/WITHDRAWAL cash-flow semantics, EOD + post-transaction snapshot lifecycle, Time-Weighted Return isolating market performance from cash flow, real snapshot-driven dashboard chart with 1W/1M/3M/YTD/ALL ranges) — done
-16. Financial Core & Cash Logic, P0 (separated Portfolio Value / Investable Value / Available Cash / Reserved Cash so a stock-only holding can never show as spendable cash; missing-price fallback to a stale price or same-currency average cost, exposed as a simple LIVE/PENDING_SYNC signal with unrealized P/L always 0 when not live; user-facing quantity/currency formatting; accessible P/L presentation with explicit arrow + direction wording, not color alone; deterministic newest-first transaction ordering) — done *(current)*
-17. PWA (installable, offline-capable)
-18. Capacitor wrappers
-19. Production deployment prep
-20. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
-21. A verified EGID or EGXAPI adapter, or another zero-cost EGX-specific data source (deferred from Phase 13 — see [DECISIONS.md](./DECISIONS.md), requires network access and human-obtained API documentation this environment could not get)
-22. Live Telegram verification (deferred from Phase 14 — see [DECISIONS.md](./DECISIONS.md), `api.telegram.org` confirmed blocked by this environment's egress policy) and a "send test message" admin action (explicitly deferred by Phase 14's own approval)
-23. TRANSFER transaction semantics, Egypt-local (Africa/Cairo) EOD trading-day boundary, and analytics coverage for pre-Phase-15 snapshot history (deferred from Phase 15 — see [DECISIONS.md](./DECISIONS.md))
-24. A fully-integrated cash ledger where BUY/SELL automatically debit/credit a cash balance (Phase 16 confirmed no such link exists or was ever approved — see [DECISIONS.md](./DECISIONS.md), "Phase 16 — Financial Core & Cash Logic"; only an explicit DEPOSIT/WITHDRAWAL moves `available_cash` today)
+16. Financial Core & Cash Logic, P0 (separated Portfolio Value / Investable Value / Available Cash / Reserved Cash so a stock-only holding can never show as spendable cash; missing-price fallback to a stale price or same-currency average cost, exposed as a simple LIVE/PENDING_SYNC signal with unrealized P/L always 0 when not live; user-facing quantity/currency formatting; accessible P/L presentation with explicit arrow + direction wording, not color alone; deterministic newest-first transaction ordering) — done
+17. Smart Rebalancing, P1 (per-category BUY/REDUCE/HOLD/NO_CAPACITY/NO_TARGET recommendations reusing the Phase 7 Smart Inflow Allocator for BUY distribution funded only by Phase 16's `available_cash`, plus a new maximum-breach REDUCE calculation; maximum always takes priority over target; recommendation-only, surfaced contextually on the Distribution screen — never an executed trade) — done *(current)*
+18. PWA (installable, offline-capable)
+19. Capacitor wrappers
+20. Production deployment prep
+21. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
+22. A verified EGID or EGXAPI adapter, or another zero-cost EGX-specific data source (deferred from Phase 13 — see [DECISIONS.md](./DECISIONS.md), requires network access and human-obtained API documentation this environment could not get)
+23. Live Telegram verification (deferred from Phase 14 — see [DECISIONS.md](./DECISIONS.md), `api.telegram.org` confirmed blocked by this environment's egress policy) and a "send test message" admin action (explicitly deferred by Phase 14's own approval)
+24. TRANSFER transaction semantics, Egypt-local (Africa/Cairo) EOD trading-day boundary, and analytics coverage for pre-Phase-15 snapshot history (deferred from Phase 15 — see [DECISIONS.md](./DECISIONS.md))
+25. A fully-integrated cash ledger where BUY/SELL automatically debit/credit a cash balance (Phase 16 confirmed no such link exists or was ever approved — see [DECISIONS.md](./DECISIONS.md), "Phase 16 — Financial Core & Cash Logic"; only an explicit DEPOSIT/WITHDRAWAL moves `available_cash` today)
+26. Asset-level SELL selection within an overweight category, and an actual "execute this rebalancing recommendation" action (Phase 17 explicitly recommendation-only — see [DECISIONS.md](./DECISIONS.md), "Phase 17 — Smart Rebalancing")
 
 ## Local Development
 

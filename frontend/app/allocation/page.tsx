@@ -9,8 +9,19 @@ export default function AllocationPage() {
   const allocationQuery = useApiQuery(() => api.portfolioAllocation());
   const strategyQuery = useApiQuery(() => api.strategyValidation());
   const summaryQuery = useApiQuery(() => api.portfolioSummary());
+  // Phase 17: best-effort — a rebalancing recommendation is a helpful
+  // addition to each bucket card, never a requirement for the
+  // Distribution screen to render (see QueryBoundary usage below: no
+  // loading/error state is shown for this query on its own, and a
+  // bucket simply renders without its RebalancingHint until this
+  // resolves or if it fails).
+  const rebalancingQuery = useApiQuery(() => api.portfolioRebalancing());
 
   const currency = summaryQuery.status === "success" ? summaryQuery.data.base_currency : "";
+  const recommendationByBucketId =
+    rebalancingQuery.status === "success"
+      ? Object.fromEntries(rebalancingQuery.data.recommendations.map((r) => [r.strategy_bucket_id, r]))
+      : {};
 
   return (
     <div className="flex flex-col gap-4">
@@ -27,7 +38,12 @@ export default function AllocationPage() {
           ) : (
             <div className="flex flex-col gap-3">
               {allocation.buckets.map((bucket) => (
-                <BucketCard key={bucket.strategy_bucket_id} bucket={bucket} currency={currency} />
+                <BucketCard
+                  key={bucket.strategy_bucket_id}
+                  bucket={bucket}
+                  currency={currency}
+                  recommendation={recommendationByBucketId[bucket.strategy_bucket_id]}
+                />
               ))}
             </div>
           )

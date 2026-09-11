@@ -1,10 +1,32 @@
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { StatusPill } from "@/components/ui/status-pill";
 import { formatPercent, formatCurrency } from "@/lib/format";
-import { maximumStatusMeta, minimumStatusMeta, strategyStatusMeta, targetStatusMeta } from "@/lib/status-labels";
-import type { AllocationRuleOut, BucketAllocationOut, StrategyValidationOut } from "@/types/api";
+import {
+  maximumStatusMeta,
+  minimumStatusMeta,
+  rebalancingActionMeta,
+  strategyStatusMeta,
+  targetStatusMeta,
+} from "@/lib/status-labels";
+import type {
+  AllocationRuleOut,
+  BucketAllocationOut,
+  RebalancingRecommendationOut,
+  StrategyValidationOut,
+} from "@/types/api";
 
-export function BucketCard({ bucket, currency }: { bucket: BucketAllocationOut; currency: string }) {
+export function BucketCard({
+  bucket,
+  currency,
+  recommendation,
+}: {
+  bucket: BucketAllocationOut;
+  currency: string;
+  /** Phase 17: this bucket's rebalancing recommendation, when the
+   * Smart Rebalancing Engine could compute one — shown contextually
+   * inline here rather than only in a separate Settings screen. */
+  recommendation?: RebalancingRecommendationOut;
+}) {
   return (
     <Card>
       <CardHeader
@@ -52,8 +74,35 @@ export function BucketCard({ bucket, currency }: { bucket: BucketAllocationOut; 
             );
           })()}
         </div>
+        {recommendation ? <RebalancingHint recommendation={recommendation} currency={currency} /> : null}
       </CardBody>
     </Card>
+  );
+}
+
+/** Phase 17: recommendation only — reviewing this never executes a
+ * trade. Any future "apply" action requires a separate, explicit user
+ * step (see FINANCIAL_RULES.md, "Rebalancing Engine Rules"). */
+function RebalancingHint({
+  recommendation,
+  currency,
+}: {
+  recommendation: RebalancingRecommendationOut;
+  currency: string;
+}) {
+  const meta = rebalancingActionMeta(recommendation.action);
+  return (
+    <div className="rounded-xl bg-muted/60 p-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <StatusPill label={meta.label} tone={meta.tone} />
+        {recommendation.recommended_value !== null ? (
+          <span className="tabular-nums text-xs font-semibold text-foreground">
+            {formatCurrency(recommendation.recommended_value, currency)}
+          </span>
+        ) : null}
+      </div>
+      <p className="mt-1.5 text-[11px] text-muted-foreground">{recommendation.reason}</p>
+    </div>
   );
 }
 

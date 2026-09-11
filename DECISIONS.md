@@ -841,3 +841,112 @@ added (`test_phase16_financial_core.py`, cases A–H from the approved
 spec) — 543 total. Frontend: 79 pre-existing tests green, 9 new
 (`pnl-badge.test.tsx` x5, `transaction-history.test.tsx` x1, plus 3 new
 `format.test.ts` cases) — 88 total.
+
+## Phase 17 — Smart Rebalancing (P1)
+
+### Inspection findings before implementation
+
+Per this phase's explicit "do not invent new financial semantics"
+instruction, `domain/rebalancing_engine.py` was checked first — it did
+not exist yet, but FINANCIAL_RULES.md already had a "Rebalancing Engine
+Rules" section written back in Phase 5/6 as a forward-looking
+placeholder naming that exact file path and describing exactly this
+phase's shape ("recommend, never execute"). Inspecting
+`domain/allocation_engine.py` and `domain/inflow_allocator.py` (Phase
+7's Smart Inflow Allocator) found that inflow_allocator ALREADY
+implements almost the entire BUY side this phase asks for: target-gap
+calculation, maximum-capped capacity, `allow_new_buy` gating,
+emergency-bucket exclusion, `NO_TARGET`/`NO_CAPACITY`/`AT_TARGET`/
+`OVER_TARGET` classification, and priority-ordered greedy distribution
+across competing categories so the same cash is never double-spent —
+its own module docstring already draws the line "Smart Inflow Allocator
+!= Rebalancing Engine: this only answers 'if I receive X cash, where
+should it go' — never 'how should existing holdings be sold to reach
+target'." Given the approved spec's own BUY-side requirements (sections
+7, 8, 10, 11) are word-for-word that same question — "if I have X
+available cash right now, where should it go" — reusing
+`calculate_inflow_allocation` directly, rather than reimplementing its
+math a second time under a new name, was the only choice consistent
+with "reuse existing financial rules wherever they already exist."
+
+### Design decisions (why, not just what)
+
+- **The REDUCE side is the one genuinely new calculation.** Nothing
+  before this phase computed "how much to sell to return to maximum."
+  It reads `MaximumStatus.MAXIMUM_BREACHED` directly from
+  `allocation_engine.evaluate_bucket_allocation` (never re-derived) and
+  applies exactly the formula the approved spec itself gives in section
+  9: `required_reduction = actual_value - maximum_value`.
+- **`available_cash` (Phase 16), never `investable_value` or
+  `total_value`, funds the BUY side.** This was the single most
+  important constraint given Phase 16 existed specifically to stop
+  invested market value from being mistaken for spendable cash — the
+  rebalancing engine would have silently reintroduced that exact bug if
+  it funded BUYs from `denominator_value`/`investable_value` instead of
+  `available_cash`.
+- **`domain/inflow_allocator._capacity_and_status` was renamed to public
+  `capacity_and_status`** (a pure rename, zero behavior change, existing
+  call site updated, existing 25 inflow tests re-verified green) so the
+  rebalancing engine could classify a category's structural eligibility
+  (is there a gap, is buying permitted, is there room under the maximum)
+  independent of any actual cash amount — needed specifically for the
+  zero-available-cash case (Test B/I), since `calculate_inflow_allocation`
+  itself refuses `new_cash_amount <= 0` (an existing, deliberately
+  unchanged guard — `test_domain_inflow_allocator.py` already asserts
+  `0` and negative amounts both raise `ValueError`, so that guard was
+  never relaxed; the zero-cash case is instead handled by calling
+  `capacity_and_status` directly and skipping the distribution pass
+  entirely, since there is nothing to distribute).
+- **A maximum-breached category and a BUY-eligible category are two
+  disjoint lists, decided once, up front** (`breached`/`buyable` in
+  `calculate_rebalancing`) — never a single list with an extra
+  "unless breached" condition sprinkled into the BUY logic. This makes
+  "maximum has priority over target" structurally guaranteed rather
+  than a rule that could be accidentally bypassed by a future edit.
+- **`RebalancingAction` (BUY/REDUCE/HOLD/NO_CAPACITY/NO_TARGET) is one
+  new, small enum** — the `status` field on each recommendation reuses
+  `TargetStatus`/`MaximumStatus` values verbatim instead of inventing a
+  competing vocabulary for the same underlying category state (section
+  15's own instruction: "do not duplicate existing enums where
+  equivalent ones already exist").
+- **`reason` is a full English sentence generated in the backend**,
+  matching the exact precedent already set by
+  `domain/strategy_validation.py`'s `explanation` field (itself English
+  prose in an otherwise-Arabic-UI product) — not a new inconsistency
+  introduced by this phase. The `action`/`status` badges shown in the
+  UI are still translated to Arabic client-side via
+  `lib/status-labels.ts`, consistent with every other enum in the app.
+- **No asset-level SELL selection was built** (section 12's fallback
+  explicitly allowed this): a REDUCE recommendation is category-level
+  only, matching what the rest of the allocation/strategy system already
+  operates on. Building "which specific asset(s) within an overweight
+  category to sell" would require a new asset-selection algorithm this
+  phase's own instructions forbid inventing without a product decision.
+
+### No open scope question this phase
+
+Unlike Phase 16 (which flagged an ambiguous BUY/SELL-vs-cash-ledger
+question), Phase 17 required no new financial policy decision — every
+rule it needed (target/maximum/priority/emergency/cash semantics) was
+already established and simply reused.
+
+### Database / migration
+
+None. Every input this phase reads (`AllocationTarget.priority`/
+`target_percent`/`maximum_percent`/`allow_new_buy`, `Holding`,
+`AssetPosition.asset_type`) already existed; the recommendation itself
+is a pure, stateless calculation — nothing is persisted.
+
+### Regression
+
+Full backend suite: 543 Phase-16 tests, all still green (only the
+existing inflow-allocator/allocation-engine test files needed a
+mechanical import-path fix from the `capacity_and_status` rename — no
+assertion changed). 17 new tests (13 domain-level in
+`test_domain_rebalancing_engine.py` covering scenarios A–K, 4
+service/API-level in `test_rebalancing_service.py` covering real
+`available_cash`-funded BUYs, REDUCE end-to-end, and Test L's no-
+mutation guarantee) — 560 total. Frontend: 88 pre-existing tests green,
+plus the existing `allocation-page.test.tsx` fixture extended to mock
+the new endpoint and assert the recommendation renders contextually on
+the bucket card.

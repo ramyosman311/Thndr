@@ -67,6 +67,17 @@ export const PRICE_STATUS: Record<string, StatusMeta> = {
   PENDING_SYNC: { label: "بانتظار مزامنة السعر", tone: "warning" },
 };
 
+// Phase 17: Smart Rebalancing Engine's action verb — a NEW, small
+// vocabulary distinct from TARGET_STATUS/MAXIMUM_STATUS above (which are
+// shown separately as the underlying category state).
+export const REBALANCING_ACTION: Record<string, StatusMeta> = {
+  BUY: { label: "شراء موصى به", tone: "success" },
+  REDUCE: { label: "تخفيض موصى به", tone: "danger" },
+  HOLD: { label: "لا إجراء", tone: "neutral" },
+  NO_CAPACITY: { label: "لا سيولة متاحة", tone: "warning" },
+  NO_TARGET: { label: "قيد فقط، بدون توصية", tone: "neutral" },
+};
+
 export const ALERT_TYPE_LABEL: Record<string, string> = {
   ALLOCATION_BREACH: "تجاوز نسبة التخصيص",
   PRICE_TARGET: "سعر مستهدف",
@@ -95,4 +106,7 @@ export function alertTypeLabel(alertType: string): string {
 }
 export function priceStatusMeta(status: string): StatusMeta {
   return PRICE_STATUS[status] ?? fallback(status);
+}
+export function rebalancingActionMeta(action: string): StatusMeta {
+  return REBALANCING_ACTION[action] ?? fallback(action);
 }

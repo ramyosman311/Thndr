@@ -477,7 +477,7 @@ a subsequent read would show.
 
 ## Rebalancing Engine Rules
 
-Implemented in `backend/app/domain/rebalancing_engine.py`.
+Implemented in `backend/app/domain/rebalancing_engine.py` (Phase 17).
 
 Calculates, per category: current allocation %, target allocation %,
 deviation, required contribution to reach target, overweight/underweight
@@ -486,6 +486,36 @@ status, and whether new buying should be frozen (e.g. at or above maximum).
 **The rebalancing engine never executes trades.** It produces
 recommendations only; the user decides and acts manually (or via a future,
 explicitly separate execution feature outside this engine's scope).
+
+**Deliberately reuses, rather than reimplements, two already-approved
+engines** (see DECISIONS.md, "Phase 17 — Smart Rebalancing", for the
+full rationale):
+
+- **BUY side = the Smart Inflow Allocator, unchanged**
+  (`domain/inflow_allocator.calculate_inflow_allocation`), fed the
+  portfolio's own idle `available_cash` (Phase 16) instead of newly
+  deposited cash. "If I have X cash right now, where should it go" is
+  the exact same question the Smart Inflow Allocator already answers —
+  target gap, maximum-capped capacity, `allow_new_buy`, emergency
+  exclusion, and priority-ordered greedy distribution (so the same cash
+  is never handed to two categories) all come from that one, single
+  existing implementation.
+- **REDUCE side is genuinely new**: for a category already in
+  `MAXIMUM_BREACHED` (read directly from `allocation_engine`'s own,
+  unchanged status classification — never re-derived), `required_
+  reduction = actual_value - maximum_value`. A breached category is
+  NEVER also considered for a BUY in the same pass — maximum has
+  priority over target, and the two paths (BUY-eligible vs.
+  breached-and-reducing) are mutually exclusive by construction, not by
+  an extra check.
+
+**Cash-accounting boundary carried forward from Phase 16, unchanged**:
+BUY/SELL transactions still never move `available_cash` automatically —
+a REDUCE recommendation here is a suggestion to sell, never an automatic
+debit/credit of any cash balance. Executing a recommended BUY or REDUCE
+still requires the user to separately record the resulting
+transaction(s) (and, for a BUY, a DEPOSIT if new cash needs to be
+reflected) exactly as before this phase.
 
 ## Snapshot ≠ Transaction
 
@@ -1005,6 +1035,8 @@ used unchanged everywhere else — see schemas/portfolio.py).
 - **Reserved Cash ≠ Available Cash** (Phase 16 — a CASH/SAVINGS holding that is the configured emergency asset counts toward `emergency_value`, never `available_cash`; the two are mutually exclusive by definition)
 - **PENDING_SYNC ≠ LIVE, and Never Implies Profit** (Phase 16 — a stale or cost-basis-fallback price is a real number safe to display as a holding's estimated value, but its implied `unrealized_pnl` is always forced to exactly 0, never a computed delta presented as confirmed profit/loss)
 - **A BUY/SELL Never Touches Cash** (Phase 16 clarification of a pre-existing Phase 10 design — no transaction type automatically debits or credits `available_cash`; only an explicit DEPOSIT/WITHDRAWAL does)
+- **Maximum Breach ≠ Target Overweight** (Phase 17 — a category above its target but still within its maximum gets HOLD, never a forced REDUCE; only an actual `MAXIMUM_BREACHED` status produces a REDUCE recommendation)
+- **A Rebalancing Recommendation ≠ An Executed Trade** (Phase 17 — `GET /api/portfolio/rebalancing` only ever reads state and computes; it never writes to transactions, holdings, cash, or strategy configuration, and nothing in this phase auto-executes a BUY/REDUCE)
 
 These distinctions must be preserved end-to-end: in the database schema
 (DATABASE.md), the domain logic (this document), the API contract

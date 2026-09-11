@@ -120,6 +120,45 @@ export interface PortfolioAllocationOut {
   buckets: BucketAllocationOut[];
 }
 
+// --- Smart Rebalancing (Phase 17) ----------------------------------------
+
+/** Matches domain/rebalancing_engine.py's RebalancingAction exactly —
+ * recommendation/calculation only, never an executed trade. */
+export type RebalancingAction = "BUY" | "REDUCE" | "HOLD" | "NO_CAPACITY" | "NO_TARGET";
+
+export interface RebalancingRecommendationOut {
+  strategy_bucket_id: string;
+  bucket_name: string;
+  actual_value: DecimalStr;
+  current_percent: DecimalStr | null;
+  target_percent: DecimalStr | null;
+  maximum_percent: DecimalStr | null;
+  difference_percent: DecimalStr | null;
+  target_value: DecimalStr | null;
+  difference_value: DecimalStr | null;
+  action: RebalancingAction;
+  /** The BUY or REDUCE amount actually recommended — null for HOLD/
+   * NO_CAPACITY/NO_TARGET. Never both a BUY and a REDUCE for the same
+   * category. */
+  recommended_value: DecimalStr | null;
+  priority: number;
+  allow_new_buy: boolean | null;
+  /** The underlying category state — one of TargetStatus's values, or
+   * "MAXIMUM_BREACHED" when the maximum takes priority over the target
+   * (see FINANCIAL_RULES.md, "Target Allocation vs. Maximum
+   * Allocation"). */
+  status: string;
+  reason: string;
+}
+
+export interface RebalancingOut {
+  available_cash: DecimalStr;
+  total_recommended_buy: DecimalStr;
+  total_recommended_reduce: DecimalStr;
+  is_complete: boolean;
+  recommendations: RebalancingRecommendationOut[];
+}
+
 // --- Portfolio Configuration administration (Phase 12) -------------------
 
 export interface PortfolioConfigOut {
