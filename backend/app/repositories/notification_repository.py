@@ -1,7 +1,4 @@
-"""Data access for the Notification Center (Phase 19). All SQLAlchemy
-queries for this feature live here (see ARCHITECTURE.md, "Backend
-Layering").
-"""
+"""Data access for the Notification Center and Telegram delivery (Phase 19/20)."""
 
 from uuid import UUID
 
@@ -13,8 +10,7 @@ from app.models.enums import NotificationCategory
 
 
 async def get_active_notification_by_source_id(session: AsyncSession, source_id: str) -> Notification | None:
-    """The at-most-one currently-unresolved row for this source_id — see
-    `Notification`'s partial unique index."""
+    """The at-most-one currently-unresolved row for this source_id."""
     result = await session.execute(
         select(Notification).where(Notification.source_id == source_id, Notification.resolved_at.is_(None))
     )
@@ -42,4 +38,19 @@ async def get_notification_by_id(session: AsyncSession, notification_id: UUID) -
 
 async def list_unread_notifications(session: AsyncSession) -> list[Notification]:
     result = await session.execute(select(Notification).where(Notification.read_at.is_(None)))
+    return list(result.scalars().all())
+
+
+async def list_pending_telegram_notifications(session: AsyncSession) -> list[Notification]:
+    """Return unresolved notifications that have not been sent successfully.
+
+    Ordering is oldest-first so a burst is delivered chronologically. A
+    successful send is marked by the worker with `telegram_sent_at`; failed
+    sends remain pending and are retried on the next external run.
+    """
+    result = await session.execute(
+        select(Notification)
+        .where(Notification.resolved_at.is_(None), Notification.telegram_sent_at.is_(None))
+        .order_by(Notification.created_at.asc(), Notification.id.asc())
+    )
     return list(result.scalars().all())
