@@ -1,35 +1,13 @@
-"""Pure Telegram alert-message formatting (Phase 14).
+"""Pure Telegram message formatting for alert checks and Phase 19 notifications.
 
-No I/O, no HTTP, no domain calculation of its own -- exactly the same
-"pure function, no side effects" contract as `domain/alert_engine.py`,
-kept in a separate module so transport concerns (services/
-telegram_dispatcher.py) never need to know how a message is worded, and
-so a future localization pass only ever touches this one file.
-
-Uses ONLY fields that genuinely exist on `AlertCheckResult` today:
-`alert_type` and `reason` (already a complete, human-readable sentence
-produced by the pure domain check functions -- e.g. "price 58.50 >=
-target 55.00"), plus `asset_symbol` (already passed to
-`NotificationDispatcher.dispatch`) and the notification's own send
-timestamp.
-
-Deliberately NOT included: a "Change" / "Change %" line. No such data
-exists anywhere in this pipeline -- `AlertCheckResult` carries only
-`current_value`/`threshold_value` (unitless Decimals whose meaning is a
-percent for ALLOCATION_BREACH/REBALANCE_SUGGESTED but a native-currency
-price for PRICE_TARGET/DIP_BUY, and `reason` already states them in
-context), and no prior/previous-close price is computed or stored
-anywhere in the Price Service or alert engine. Fabricating one here
-would violate the "do not invent market data, do not introduce a new
-financial calculation layer just for notifications" rule this phase was
-built under -- see DECISIONS.md, "Telegram Delivery Decision" for the
-full rationale. `reason` already IS the "human-readable alert condition"
-the message needs.
+No I/O and no financial calculation. Transport classes only receive the
+already-computed presentation content from this module.
 """
 
 from datetime import datetime, timezone
 
 from app.domain.alert_engine import AlertCheckResult, AlertType
+from app.models.notification import Notification
 
 _ALERT_TYPE_LABELS: dict[AlertType, str] = {
     AlertType.ALLOCATION_BREACH: "Allocation Breach",
@@ -43,9 +21,7 @@ _ALERT_TYPE_LABELS: dict[AlertType, str] = {
 def format_telegram_alert_message(
     check: AlertCheckResult, *, asset_symbol: str, sent_at: datetime | None = None
 ) -> str:
-    """Renders one Telegram message for a single newly-triggered check.
-    `sent_at` defaults to now (UTC) -- the notification's own send time,
-    not a market-data timestamp, so it is never fabricated market data."""
+    """Renders one Telegram message for a raw alert check (Phase 14)."""
     sent_at = sent_at or datetime.now(timezone.utc)
     label = _ALERT_TYPE_LABELS.get(check.alert_type, check.alert_type.value)
     timestamp = sent_at.strftime("%Y-%m-%d %H:%M UTC")
@@ -55,6 +31,31 @@ def format_telegram_alert_message(
         "\n"
         f"{asset_symbol}\n"
         f"Alert: {label} — {check.reason}\n"
+        "\n"
+        f"Time: {timestamp}"
+    )
+
+
+def format_telegram_notification_message(
+    notification: Notification, *, sent_at: datetime | None = None
+) -> str:
+    """Renders one persisted Notification Center item for Telegram.
+
+    Title/message are already Phase 19 user-facing content. No condition,
+    severity, allocation, price, or recommendation value is recomputed here.
+    """
+    sent_at = sent_at or datetime.now(timezone.utc)
+    timestamp = sent_at.strftime("%Y-%m-%d %H:%M UTC")
+    severity = notification.severity.value
+    target = notification.target_category or notification.target_asset
+    target_line = f"\n{target}" if target else ""
+
+    return (
+        "🔔 MIZAN Notification\n"
+        "\n"
+        f"{notification.title}{target_line}\n"
+        f"{notification.message}\n"
+        f"Severity: {severity}\n"
         "\n"
         f"Time: {timestamp}"
     )
