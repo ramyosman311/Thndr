@@ -16,6 +16,19 @@ def _at(hours_ago: float, *, now: datetime | None = None) -> datetime:
     return now - timedelta(hours=hours_ago)
 
 
+# A fixed weekday anchor (Tuesday) for tests whose "beyond threshold"
+# window must not accidentally overlap a Saturday/Sunday -- the domain
+# layer's weekend-aware staleness policy (domain/stale_policy.py, Phase
+# 11) deliberately excludes weekend hours from an observation's age, so
+# using the real `datetime.now()` here would make these specific
+# assertions flaky depending on which day of the week the suite happens
+# to run on (verified: they fail when run on an actual Saturday).
+# Thursday -- chosen so windows up to 72 hours before it (back to Monday)
+# never touch a Saturday/Sunday, keeping every test below unambiguous
+# regardless of which real day the suite happens to run on.
+_WEEKDAY_NOW = datetime(2026, 1, 8, 12, 0, tzinfo=timezone.utc)
+
+
 async def _make_asset(session, symbol="PRC1", **kwargs):
     asset = make_asset(symbol, **kwargs)
     session.add(asset)
@@ -61,12 +74,12 @@ async def test_get_asset_price_is_last_known_when_beyond_threshold(db_session):
         price=Decimal("10.50"),
         currency="EGP",
         provider="yahoo",
-        recorded_at=_at(3),  # 3 hours ago, beyond STOCK's 60-min default
+        recorded_at=_at(3, now=_WEEKDAY_NOW),  # 3 hours ago, beyond STOCK's 60-min default
         is_manual=False,
     )
     await db_session.commit()
 
-    result = await price_service.get_asset_price(db_session, asset)
+    result = await price_service.get_asset_price(db_session, asset, reference_time=_WEEKDAY_NOW)
     assert result.status == PriceStatus.LAST_KNOWN
     assert result.is_stale is True
     assert result.price == Decimal("10.50")  # last known price is still returned, never zero
@@ -85,12 +98,12 @@ async def test_get_asset_price_uses_asset_level_stale_override(db_session):
         price=Decimal("10.50"),
         currency="EGP",
         provider="yahoo",
-        recorded_at=_at(0.5),  # 30 minutes ago -- within the STOCK default, beyond a 5-min override
+        recorded_at=_at(0.5, now=_WEEKDAY_NOW),  # 30 minutes ago -- within the STOCK default, beyond a 5-min override
         is_manual=False,
     )
     await db_session.commit()
 
-    result = await price_service.get_asset_price(db_session, asset)
+    result = await price_service.get_asset_price(db_session, asset, reference_time=_WEEKDAY_NOW)
     assert result.status == PriceStatus.LAST_KNOWN
     assert result.is_stale is True
 
@@ -199,7 +212,7 @@ async def test_stale_fx_rate_is_still_used_but_marks_the_result_last_known(db_se
         price=Decimal("10"),
         currency="USD",
         provider="yahoo",
-        recorded_at=_at(0.1),  # fresh asset price
+        recorded_at=_at(0.1, now=_WEEKDAY_NOW),  # fresh asset price
         is_manual=False,
     )
     await price_repository.insert_fx_rate(
@@ -208,11 +221,13 @@ async def test_stale_fx_rate_is_still_used_but_marks_the_result_last_known(db_se
         quote_currency="EGP",
         rate=Decimal("49.50"),
         provider="manual",
-        recorded_at=_at(72),  # 3 days ago -- beyond the FX default 24h threshold
+        recorded_at=_at(72, now=_WEEKDAY_NOW),  # 3 days ago -- beyond the FX default 24h threshold
     )
     await db_session.commit()
 
-    result = await price_service.get_asset_price_in_base_currency(db_session, asset, "EGP")
+    result = await price_service.get_asset_price_in_base_currency(
+        db_session, asset, "EGP", reference_time=_WEEKDAY_NOW
+    )
     assert result.status == PriceStatus.LAST_KNOWN
     assert result.is_stale is True
     assert result.price == Decimal("495.00")  # still converted and usable, just flagged stale

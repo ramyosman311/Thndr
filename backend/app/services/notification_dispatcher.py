@@ -20,9 +20,11 @@ class NotificationDispatcher(Protocol):
 
 
 class NotificationCenterDispatcher(Protocol):
-    """Delivery interface for persisted Phase 19 Notification rows."""
+    """Delivery interface for persisted Phase 19 Notification rows. Returns
+    whether Telegram actually accepted the message, so the caller (the
+    Phase 20 worker) knows whether it may set `telegram_sent_at`."""
 
-    async def dispatch_notification(self, notification: Notification) -> None: ...
+    async def dispatch_notification(self, notification: Notification) -> bool: ...
 
 
 class NullNotificationDispatcher:
@@ -31,5 +33,5 @@ class NullNotificationDispatcher:
     async def dispatch(self, event: AlertCheckResult, *, asset_symbol: str, watchlist_id: str) -> None:
         return None
 
-    async def dispatch_notification(self, notification: Notification) -> None:
-        return None
+    async def dispatch_notification(self, notification: Notification) -> bool:
+        return False
