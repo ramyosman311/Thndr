@@ -6,9 +6,9 @@ requests never make live Telegram calls.
 
 Phase 20 deliberately reuses the existing Phase 19 Notification Center as
 its source of truth: the worker syncs notifications without a live notifier,
-then delivers persisted unresolved rows that have not yet been successfully
-sent. This prevents a second alert/recommendation engine and gives Telegram
-the same notification content the user sees in-app.
+then delivers persisted notification events that have not yet been
+successfully sent. This prevents a second alert/recommendation engine and
+gives Telegram the same notification content the user sees in-app.
 
 Delivery is best-effort and at-least-once: a successful Telegram response is
 persisted in `notifications.telegram_sent_at`; failures remain pending for a
@@ -19,6 +19,7 @@ provider-side idempotency key.
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from uuid import UUID
 
 from app.core.config import get_settings
@@ -27,8 +28,8 @@ from app.models.enums import NotificationCategory
 from app.repositories.notification_repository import list_pending_telegram_notifications
 from app.repositories.portfolio_repository import get_portfolio_config
 from app.repositories.watchlist_repository import get_alert_rule_by_id
-from app.services.notification_service import sync_notifications
 from app.services.notification_dispatcher import NotificationCenterDispatcher, NullNotificationDispatcher
+from app.services.notification_service import sync_notifications
 from app.services.telegram_dispatcher import TelegramNotificationDispatcher
 
 logger = logging.getLogger(__name__)
@@ -113,8 +114,6 @@ async def run_alert_notify() -> None:
             delivered = await notifier.dispatch_notification(notification)
             if delivered:
                 # Mark only after Telegram returned {"ok": true}.
-                from datetime import datetime, timezone
-
                 notification.telegram_sent_at = datetime.now(timezone.utc)
                 await session.commit()
                 sent += 1
