@@ -42,15 +42,17 @@ async def list_unread_notifications(session: AsyncSession) -> list[Notification]
 
 
 async def list_pending_telegram_notifications(session: AsyncSession) -> list[Notification]:
-    """Return unresolved notifications that have not been sent successfully.
+    """Return notification events that have not been successfully sent.
 
-    Ordering is oldest-first so a burst is delivered chronologically. A
-    successful send is marked by the worker with `telegram_sent_at`; failed
-    sends remain pending and are retried on the next external run.
+    Resolution is intentionally NOT a delivery filter. `resolved_at` answers
+    whether the underlying condition is still active; Telegram delivery
+    answers whether the user was informed about the notification event. Once
+    Phase 19 creates a notification, Phase 20 should deliver that event even
+    if the condition clears before the next external worker run.
     """
     result = await session.execute(
         select(Notification)
-        .where(Notification.resolved_at.is_(None), Notification.telegram_sent_at.is_(None))
+        .where(Notification.telegram_sent_at.is_(None))
         .order_by(Notification.created_at.asc(), Notification.id.asc())
     )
     return list(result.scalars().all())
