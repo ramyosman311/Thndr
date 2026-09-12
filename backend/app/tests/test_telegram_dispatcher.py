@@ -1,17 +1,15 @@
-"""Telegram dispatcher tests (Phase 14): successful send, HTTP error,
-timeout, network exception, Telegram API error response, and a direct
-proof that the bot token never appears in any log record -- all via
-mocked HTTP transport (no live network access; see
-services/telegram_dispatcher.py's module docstring for why -- this
-sandbox's outbound network blocks api.telegram.org, the same
-default-deny policy that also blocks Yahoo Finance, EGID, EGXAPI, and
-Mubasher)."""
+"""Telegram dispatcher tests (Phase 14 + Phase 20).
+
+All HTTP is mocked; live api.telegram.org reachability remains an explicit
+Phase 26 verification task.
+"""
 
 import logging
 
 import httpx
 
 from app.domain.alert_engine import AlertCheckResult, AlertType
+from app.models import Notification
 from app.services.telegram_dispatcher import TelegramNotificationDispatcher
 
 _BOT_TOKEN = "123456:SUPER-SECRET-TOKEN"
@@ -48,14 +46,12 @@ def _dispatcher_with_transport(handler: httpx.MockTransport) -> TelegramNotifica
     return dispatcher
 
 
-# --- Successful send ---------------------------------------------------------
-
+# --- Phase 14 regression coverage --------------------------------------------
 
 async def test_successful_send_does_not_raise():
     transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"ok": True, "result": {}}))
     dispatcher = _dispatcher_with_transport(transport)
-
-    await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")  # must not raise
+    await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")
 
 
 async def test_successful_send_posts_correct_chat_id_and_url():
@@ -66,9 +62,7 @@ async def test_successful_send_posts_correct_chat_id_and_url():
         captured["body"] = request.content
         return httpx.Response(200, json={"ok": True})
 
-    transport = httpx.MockTransport(handler)
-    dispatcher = _dispatcher_with_transport(transport)
-
+    dispatcher = _dispatcher_with_transport(httpx.MockTransport(handler))
     await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")
 
     assert captured["url"] == _URL_TEMPLATE.format(token=_BOT_TOKEN)
@@ -76,33 +70,19 @@ async def test_successful_send_posts_correct_chat_id_and_url():
     assert b"TMGH" in captured["body"]
 
 
-# --- HTTP error ----------------------------------------------------------------
-
-
 async def test_http_403_does_not_raise():
-    transport = httpx.MockTransport(lambda request: httpx.Response(403, text="Forbidden"))
-    dispatcher = _dispatcher_with_transport(transport)
-
-    await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")  # must not raise
+    dispatcher = _dispatcher_with_transport(httpx.MockTransport(lambda request: httpx.Response(403, text="Forbidden")))
+    await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")
 
 
 async def test_http_500_does_not_raise():
-    transport = httpx.MockTransport(lambda request: httpx.Response(500, text="Internal Server Error"))
-    dispatcher = _dispatcher_with_transport(transport)
-
-    await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")  # must not raise
-
-
-# --- Timeout ---------------------------------------------------------------------
+    dispatcher = _dispatcher_with_transport(httpx.MockTransport(lambda request: httpx.Response(500, text="Internal Server Error")))
+    await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")
 
 
 async def test_timeout_does_not_raise():
+    transport = httpx.MockTransport(lambda request: (_ for _ in ()).throw(httpx.TimeoutException("timed out")))
     dispatcher = TelegramNotificationDispatcher(bot_token=_BOT_TOKEN, chat_id=_CHAT_ID, timeout_seconds=0.01)
-
-    def raise_timeout(request: httpx.Request) -> httpx.Response:
-        raise httpx.TimeoutException("timed out")
-
-    transport = httpx.MockTransport(raise_timeout)
 
     async def dispatch(event, *, asset_symbol, watchlist_id, sent_at=None):
         try:
@@ -112,17 +92,11 @@ async def test_timeout_does_not_raise():
             return
 
     dispatcher.dispatch = dispatch  # type: ignore[method-assign]
-    await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")  # must not raise
-
-
-# --- Network exception (non-timeout) ------------------------------------------------
+    await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")
 
 
 async def test_generic_network_exception_does_not_raise():
-    def raise_connect_error(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("connection refused")
-
-    transport = httpx.MockTransport(raise_connect_error)
+    transport = httpx.MockTransport(lambda request: (_ for _ in ()).throw(httpx.ConnectError("connection refused")))
     dispatcher = TelegramNotificationDispatcher(bot_token=_BOT_TOKEN, chat_id=_CHAT_ID)
 
     async def dispatch(event, *, asset_symbol, watchlist_id, sent_at=None):
@@ -133,10 +107,7 @@ async def test_generic_network_exception_does_not_raise():
             return
 
     dispatcher.dispatch = dispatch  # type: ignore[method-assign]
-    await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")  # must not raise
-
-
-# --- Telegram API error response (HTTP 200, ok: false) --------------------------------
+    await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")
 
 
 async def test_telegram_api_error_response_does_not_raise():
@@ -144,45 +115,76 @@ async def test_telegram_api_error_response_does_not_raise():
         lambda request: httpx.Response(200, json={"ok": False, "error_code": 400, "description": "chat not found"})
     )
     dispatcher = _dispatcher_with_transport(transport)
-
-    await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")  # must not raise
+    await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")
 
 
 async def test_malformed_json_response_does_not_raise():
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, text="not json at all"))
-    dispatcher = _dispatcher_with_transport(transport)
-
-    await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")  # must not raise
-
-
-# --- Security: bot token is never logged --------------------------------------------
+    dispatcher = _dispatcher_with_transport(httpx.MockTransport(lambda request: httpx.Response(200, text="not json at all")))
+    await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")
 
 
 async def test_bot_token_never_appears_in_logs_on_any_failure_path(caplog):
     caplog.set_level(logging.WARNING)
-    transport = httpx.MockTransport(
-        lambda request: httpx.Response(200, json={"ok": False, "description": "unauthorized"})
+    dispatcher = _dispatcher_with_transport(
+        httpx.MockTransport(lambda request: httpx.Response(200, json={"ok": False, "description": "unauthorized"}))
     )
-    dispatcher = _dispatcher_with_transport(transport)
-
     await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")
-
     for record in caplog.records:
         assert _BOT_TOKEN not in record.getMessage()
 
 
 async def test_bot_token_never_appears_in_logs_on_http_error(caplog):
     caplog.set_level(logging.WARNING)
-    transport = httpx.MockTransport(lambda request: httpx.Response(403, text="Forbidden"))
-    dispatcher = _dispatcher_with_transport(transport)
-
+    dispatcher = _dispatcher_with_transport(httpx.MockTransport(lambda request: httpx.Response(403, text="Forbidden")))
     await dispatcher.dispatch(_check(), asset_symbol="TMGH", watchlist_id="w1")
-
     for record in caplog.records:
         assert _BOT_TOKEN not in record.getMessage()
 
 
-# --- _build_notifier (worker-level configuration behavior) ---------------------------
+# --- Phase 20: persisted Notification Center delivery -----------------------
+
+
+def _notification() -> Notification:
+    return Notification(
+        source_id="RECOMMENDATION:BREACH:NOTOVER",
+        category="RECOMMENDATION_ALERT",
+        severity="CRITICAL",
+        title="تجاوز الحد الأقصى",
+        message="راجع توزيع المحفظة.",
+        target_category="Growth",
+    )
+
+
+async def test_notification_center_delivery_returns_true_and_formats_existing_content():
+    dispatcher = TelegramNotificationDispatcher(bot_token=_BOT_TOKEN, chat_id=_CHAT_ID)
+    captured = {}
+
+    async def fake_send(text: str, *, context: str) -> bool:
+        captured["text"] = text
+        captured["context"] = context
+        return True
+
+    dispatcher._send = fake_send  # type: ignore[method-assign]
+    notification = _notification()
+
+    assert await dispatcher.dispatch_notification(notification) is True
+    assert "تجاوز الحد الأقصى" in captured["text"]
+    assert "راجع توزيع المحفظة." in captured["text"]
+    assert "Growth" in captured["text"]
+    assert captured["context"] == str(notification.id)
+
+
+async def test_notification_center_delivery_failure_returns_false_without_raising():
+    dispatcher = TelegramNotificationDispatcher(bot_token=_BOT_TOKEN, chat_id=_CHAT_ID)
+
+    async def fake_send(text: str, *, context: str) -> bool:
+        return False
+
+    dispatcher._send = fake_send  # type: ignore[method-assign]
+    assert await dispatcher.dispatch_notification(_notification()) is False
+
+
+# --- Worker configuration regression ---------------------------------------
 
 
 def test_build_notifier_returns_null_when_not_configured(monkeypatch):
