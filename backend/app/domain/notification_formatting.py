@@ -1,13 +1,12 @@
-"""Pure Telegram message formatting for alert checks and Phase 19 notifications.
+"""Pure Telegram message formatting for alert checks and persisted notifications.
 
-No I/O and no financial calculation. Transport classes only receive the
-already-computed presentation content from this module.
+No I/O, ORM dependency, or financial calculation. Transport classes provide
+already-computed presentation fields to these functions.
 """
 
 from datetime import datetime, timezone
 
 from app.domain.alert_engine import AlertCheckResult, AlertType
-from app.models.notification import Notification
 
 _ALERT_TYPE_LABELS: dict[AlertType, str] = {
     AlertType.ALLOCATION_BREACH: "Allocation Breach",
@@ -37,24 +36,25 @@ def format_telegram_alert_message(
 
 
 def format_telegram_notification_message(
-    notification: Notification, *, sent_at: datetime | None = None
+    *,
+    title: str,
+    message: str,
+    severity: str,
+    target_category: str | None,
+    target_asset: str | None,
+    sent_at: datetime | None = None,
 ) -> str:
-    """Renders one persisted Notification Center item for Telegram.
-
-    Title/message are already Phase 19 user-facing content. No condition,
-    severity, allocation, price, or recommendation value is recomputed here.
-    """
+    """Renders existing Phase 19 Notification content without recomputing it."""
     sent_at = sent_at or datetime.now(timezone.utc)
     timestamp = sent_at.strftime("%Y-%m-%d %H:%M UTC")
-    severity = notification.severity.value
-    target = notification.target_category or notification.target_asset
+    target = target_category or target_asset
     target_line = f"\n{target}" if target else ""
 
     return (
         "🔔 MIZAN Notification\n"
         "\n"
-        f"{notification.title}{target_line}\n"
-        f"{notification.message}\n"
+        f"{title}{target_line}\n"
+        f"{message}\n"
         f"Severity: {severity}\n"
         "\n"
         f"Time: {timestamp}"
