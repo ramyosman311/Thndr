@@ -10,17 +10,12 @@ from app.models.mixins import CreatedAtMixin, UUIDPrimaryKeyMixin
 
 
 class Notification(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
-    """Phase 19: one persisted, user-facing notification for the
-    in-app Notification Center. Does not replace or duplicate any
-    existing alert/recommendation computation -- see
-    `services/notification_service.py`. `source_id` identifies the
-    underlying condition instance (an alert-rule/alert-type pair, or a
-    Phase 18 recommendation id) so a still-true condition is never
-    re-notified while already active: a *partial* unique index enforces
-    "at most one active (unresolved) row per source_id" at the database
-    level, mirroring the same edge-triggered latch pattern
-    `alert_rules.last_triggered_at` already uses, generalized to any
-    notification source.
+    """Phase 19/20: persisted user-facing notification and delivery state.
+
+    Phase 19 owns notification creation, resolution, and read/unread state.
+    Phase 20 adds only the non-financial Telegram delivery timestamp so an
+    external worker can deliver each notification at most once after a
+    successful send while safely retrying failed sends.
     """
 
     __tablename__ = "notifications"
@@ -48,12 +43,12 @@ class Notification(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         Enum(NotificationAction, name="notification_action", native_enum=True), nullable=True
     )
     # NULL = unread. A separate boolean would be redundant state that
-    # could drift from this timestamp -- the API layer derives
-    # `read: bool` from `read_at is not None`.
+    # could drift from this timestamp -- the API layer derives `read: bool`
+    # from `read_at is not None`.
     read_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
-    # NULL = the underlying condition is still active. Set when the
-    # source condition clears (mirrors AlertCheckResult.should_clear /
-    # a recommendation no longer appearing in current output), so the
-    # SAME source_id can produce a fresh notification if it re-triggers
-    # later -- never a permanent "never again" state.
+    # NULL = the underlying condition is still active. Set when the source
+    # condition clears so the same source_id can produce a fresh row later.
     resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    # Phase 20: NULL means Telegram delivery has not successfully completed.
+    # Failed sends deliberately leave this NULL so the worker can retry.
+    telegram_sent_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
