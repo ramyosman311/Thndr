@@ -106,6 +106,10 @@ body {
 .safe-bottom {
   padding-bottom: env(safe-area-inset-bottom);
 }
+.safe-x {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
 
 /* Numbers (currency/percent) render as tabular figures so columns of
    financial values align, and stay LTR even inside an RTL document. */

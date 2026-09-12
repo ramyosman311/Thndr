@@ -1251,3 +1251,172 @@ Frontend: 98 tests passed (88 Phase-18 baseline + 10 new: the
 Notification Center page and the header bell), lint clean, `tsc --noEmit`
 clean, production build clean (new `/notifications` route generated).
 `alembic check`: no unexpected migration after `c49911658945`.
+
+## Phase 20 — Telegram Push Delivery for the Notification Center
+
+Implemented and merged in a prior session (`0cd4366`..`d760347`); this
+entry documents it retroactively since it was not recorded here at the
+time.
+
+Phase 19 deliberately deferred external delivery: the Notification
+Center's in-app visibility never depended on Telegram. Phase 20 closed
+that gap by teaching the existing Phase 14 `TelegramNotificationDispatcher`
+a second method, `dispatch_notification(notification: Notification) -> bool`,
+alongside its original `dispatch()` (still used by the raw Phase 8
+alert-check path) — one dispatcher, two message shapes, not a second
+delivery system. `format_telegram_notification_message` formats a
+persisted `Notification` row's own title/message/severity/target
+verbatim; nothing is recomputed from the alert or recommendation engines.
+
+The out-of-band `alert_notify` worker queries `notifications WHERE
+telegram_sent_at IS NULL` (a new nullable column, not `resolved_at` —
+a resolved-but-undelivered notification must still be delivered once),
+and gates delivery as: global Telegram config → portfolio's Telegram
+switch → per-alert-rule opt-in, for alert-origin (`PRICE_ALERT`/
+`ALLOCATION_ALERT`) notifications; global config → portfolio switch
+alone for recommendation-origin (`RECOMMENDATION_ALERT`) notifications,
+since a recommendation has no per-rule opt-in to check. `telegram_sent_at`
+is set only when the dispatcher reports the send succeeded, so a
+transient Telegram failure leaves the row eligible for retry on the next
+worker run rather than being silently marked delivered.
+
+### Regression
+
+Full backend suite: 601 passed (588 baseline + a new
+`test_alert_notify_worker.py` covering the full pending/delivered/
+failed/resolved-but-undelivered/already-delivered matrix, all four gate
+combinations, and confirmation the worker never calls the legacy
+`dispatch()` method on Notification Center rows). No frontend change.
+
+## Phase 21 — PWA / Mobile App Experience
+
+### Inspection findings before implementation
+
+Per this phase's explicit "inspect before modifying, do not assume the
+README is accurate" instruction:
+
+- Next.js 16.3.4, zero PWA-related packages installed (no `next-pwa`,
+  `serwist`, `workbox-*`) — any PWA behavior would be hand-rolled from
+  scratch, not adapted from an existing library integration.
+- `app/manifest.ts`, `app/icon.tsx` (the canonical MIZAN brand asset: a
+  teal `#0f766e` background, `borderRadius: 96`, bold white "M",
+  `next/og`'s `ImageResponse`) already existed from an earlier phase.
+  `app/layout.tsx` already had `viewportFit: "cover"` and a partial
+  `appleWebApp: { title: "MIZAN" }`; `globals.css` already had
+  `.safe-top`/`.safe-bottom` wired onto the header and bottom nav. No
+  `public/` directory, service worker, `loading.tsx`, or `error.tsx`
+  existed anywhere.
+- **Load-bearing finding:** `lib/api.ts`'s `request()` already sets
+  `cache: "no-store"` on every single API call. The app was already
+  financial-data-cache-safe at the browser HTTP-cache layer; the only
+  risk Phase 21 could introduce is a service worker independently
+  serving stale responses from the Cache Storage API underneath that —
+  a layer `cache: "no-store"` does not protect against, since a service
+  worker's `fetch` handler sits below the browser cache entirely. This
+  directly shaped the service worker's design rule below.
+
+### Design decisions (why, not just what)
+
+- **Hand-rolled service worker, not a library.** Consistent with this
+  codebase's repeated preference for simple hand-rolled patterns over
+  adding a dependency when one isn't required (ARCHITECTURE.md), plus
+  Next.js 16 being too recent for confident third-party PWA-wrapper
+  compatibility, plus the heightened financial-safety bar making full
+  auditability of every line more valuable than a library's convenience.
+- **`public/sw.js` never reads or writes Cache Storage for `/api/*`, and
+  never intercepts non-GET requests at all** (both enforced by an early
+  `return` before any `caches.open`/`caches.match`/`caches.put` call, and
+  covered by a regression test that greps the deployed source for
+  exactly that ordering — see `tests/pwa.test.tsx`, "Service worker
+  source"). Static, content-hashed `/_next/static/*` assets are
+  cache-first (safe forever — the URL changes on every build). Every
+  other same-origin GET (the HTML shell, manifest, icons, fonts) is
+  network-first, falling back to a cached copy only when the network is
+  unreachable, so the network is always authoritative when reachable and
+  offline never means "invisibly stale" for the app shell either.
+- **Manual, opt-in update flow — never an automatic reload.** A new
+  worker installs and waits; the client only calls `skipWaiting()` after
+  the user clicks a small "تحديث" banner
+  (`components/service-worker-registration.tsx`). Reloading
+  automatically the moment a new build is ready risks discarding an
+  in-progress transaction entry, which the task explicitly forbids.
+- **`generate-image-metadata`'s multi-size-in-one-file API was
+  considered and rejected** for the maskable icon in favor of a second,
+  separate icon file — the URL shape it produces for referencing a
+  specific sized variant from a hand-written `manifest.ts` icons array
+  is untested and would have coupled two files' internals together for
+  no real benefit over a second plain file.
+- **`app/icon-maskable.tsx` (an arbitrary filename) was tried first and
+  silently produced no route at all** — Next's icon file convention only
+  recognizes the literal names `icon`/`apple-icon`, optionally with a
+  numeric suffix (`icon1`, `icon2`, ...) for multiple static icons; any
+  other filename is just an unrouted file. This was caught by an actual
+  `next build` + `next start` + `curl` pass, not assumed from reading
+  the docs alone (the build log for the bad filename showed no
+  warning — it simply omitted `/icon-maskable` from the route list).
+  Fixed by renaming to `app/icon1.tsx`; live-verified afterward.
+- **`app/apple-icon.tsx` reuses `icon.tsx`'s exact brand styling but
+  without `borderRadius`** (full-bleed square) — iOS applies its own
+  corner mask to the apple-touch-icon image, so a pre-rounded source
+  would visibly double-round. **The maskable icon
+  (`purpose: "maskable"`) also omits `borderRadius`** for the same
+  reason (the OS/launcher supplies the mask shape) and sizes the glyph
+  well inside the ~80%-diameter safe zone launchers may crop to. Neither
+  is a new visual identity — both are the same teal `#0f766e` background
+  and bold white "M" as the existing `icon.tsx`.
+- **`appleWebApp: { capable: true, statusBarStyle: "black-translucent" }`
+  was added to the existing `title: "MIZAN"`.** Verified via a live
+  `curl` of the rendered `<head>` that Next.js 16 emits the modern,
+  non-deprecated `<meta name="mobile-web-app-capable">` tag for
+  `capable: true` (not only the legacy `apple-mobile-web-app-capable`
+  one), per this phase's "use modern Next.js metadata APIs" instruction.
+- **A new `.safe-x` utility (`padding-left`/`padding-right:
+  env(safe-area-inset-left/right)`)** was added to the header and bottom
+  nav, alongside the pre-existing `.safe-top`/`.safe-bottom` — the one
+  genuine gap found: landscape orientation with a side notch/Dynamic
+  Island was previously unhandled. No modal/sheet/drawer component
+  exists anywhere in the codebase, so no further safe-area work was
+  needed or added.
+- **The global offline banner
+  (`components/offline-banner.tsx`) is additive to, not a replacement
+  for, the existing per-request `ErrorBlock`/`QueryBoundary` handling** —
+  it answers "can financial data be refreshed at all right now," a
+  standing/ambient question `ErrorBlock` (which answers "did this one
+  request just fail") does not cover.
+- **No IndexedDB, no offline transaction queue, no "cache everything"
+  strategy.** The task explicitly discourages a complex offline database
+  "just to claim PWA support," and this app's financial-correctness bar
+  makes an offline write-queue for transactions actively dangerous
+  (a stale average-cost basis computed offline and replayed later could
+  silently corrupt holdings) — entirely out of scope for infrastructure
+  work, and not attempted.
+
+### Files changed
+
+`app/manifest.ts` (maskable icon entry, `purpose` on both icons,
+`orientation`), `app/icon1.tsx` (new — maskable variant), `app/apple-icon.tsx`
+(new), `app/layout.tsx` (Apple web-app metadata, `.safe-x` on the header,
+`OfflineBanner`/`ServiceWorkerRegistration` wired in), `app/globals.css`
+(`.safe-x`), `components/nav.tsx` (`.safe-x` on the bottom nav),
+`components/service-worker-registration.tsx` (new),
+`components/offline-banner.tsx` (new), `public/sw.js` (new),
+`vitest.setup.ts` (a `next/font/google` mock so tests can import
+`app/layout.tsx`'s metadata without Next's build-time font loader —
+verified empirically: importing `app/layout.tsx` under Vitest throws
+`TypeError: Cairo is not a function` without it), `tests/pwa.test.tsx`
+(new). No backend file touched; no migration; no investment-strategy,
+allocation, recommendation, notification, transaction, or Telegram
+logic touched.
+
+### Regression
+
+Full backend suite: 601 passed, unchanged (confirms the backend truly
+was not touched). Frontend: 116 passed (98 baseline + 18 new PWA tests),
+lint clean, `tsc --noEmit` clean, production build clean (new
+`/icon1`/`/apple-icon` routes generated; 13 routes total, up from 12).
+Live-verified against `next build && next start`: `/manifest.webmanifest`,
+`/icon`, `/icon1`, `/apple-icon`, and `/sw.js` all serve with correct
+content types; the rendered `<head>` carries
+`mobile-web-app-capable`/`apple-mobile-web-app-title`/
+`apple-mobile-web-app-status-bar-style` meta tags, the manifest `<link>`,
+and `<html lang="ar" dir="rtl">`.

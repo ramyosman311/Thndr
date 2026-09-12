@@ -1,10 +1,9 @@
 import type { MetadataRoute } from "next";
 
 /**
- * PWA-ready manifest (Phase 9 scope: metadata + icons only). The
- * installable service-worker/offline-cache behavior is explicitly
- * Phase 11 per the README Phase Plan — this file only makes the app
- * PWA-installable-ready without adding offline caching now.
+ * PWA manifest (Phase 21: installable app metadata + icons). Offline/cache
+ * behavior lives in the service worker (public/sw.js), not here — this file
+ * only describes the installed app's identity, display mode, and icon set.
  */
 export default function manifest(): MetadataRoute.Manifest {
   return {
@@ -13,12 +12,14 @@ export default function manifest(): MetadataRoute.Manifest {
     description: "متابعة محفظتك الاستثمارية المصرية بذكاء",
     start_url: "/",
     display: "standalone",
+    orientation: "portrait-primary",
     background_color: "#0b0d12",
     theme_color: "#0f766e",
     lang: "ar",
     dir: "rtl",
     icons: [
-      { src: "/icon", sizes: "512x512", type: "image/png" },
+      { src: "/icon", sizes: "512x512", type: "image/png", purpose: "any" },
+      { src: "/icon1", sizes: "512x512", type: "image/png", purpose: "maskable" },
     ],
   };
 }

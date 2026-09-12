@@ -4,7 +4,49 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 19 — Alerts & Notifications (P1). A new in-app
+> **Status:** Phase 21 — PWA / Mobile App Experience. MIZAN is now
+> installable as a standalone, app-like PWA: `app/manifest.ts` declares a
+> standard (`purpose: "any"`) and a maskable icon (`app/icon1.tsx`, named
+> per Next's numbered-icon convention since `icon-maskable.tsx` is not a
+> recognized file-convention name and silently produced no route at all
+> — caught by a live build/serve check, not assumed), plus
+> `orientation: "portrait-primary"`. iOS gets a dedicated
+> `app/apple-icon.tsx` (iOS ignores the manifest's icon array and reads
+> only `<link rel="apple-touch-icon">`) and `capable`/`statusBarStyle`
+> Apple web-app metadata, which Next.js 16 renders as the modern
+> `mobile-web-app-capable` meta tag rather than the deprecated
+> vendor-prefixed one. The pre-existing `.safe-top`/`.safe-bottom`
+> safe-area handling (notch/Dynamic Island/home indicator) gained a
+> `.safe-x` companion for landscape left/right insets on the header and
+> bottom nav. A new hand-rolled service worker (`public/sw.js`, no
+> third-party PWA library) caches only the static app shell
+> (`/_next/static/*`, cache-first, content-hashed so it's safe forever)
+> and never intercepts `/api/*` or non-GET requests at all — the app's
+> `lib/api.ts` already sends every request with `cache: "no-store"`, so
+> the one remaining risk was a service worker reintroducing staleness at
+> the Cache Storage layer underneath that, which this design structurally
+> avoids rather than merely avoiding by convention. Updates are opt-in: a
+> new service worker installs but waits for an explicit "تحديث" click
+> before `skipWaiting()`, so a reload can never interrupt someone mid-
+> transaction-entry. A new global offline banner
+> (`components/offline-banner.tsx`) makes it explicit when current
+> financial data cannot be refreshed, additive to the existing per-request
+> `ErrorBlock`/`QueryBoundary` handling. See [DECISIONS.md](./DECISIONS.md),
+> "Phase 21 — PWA / Mobile App Experience" for the full design rationale.
+> No backend or database change; no investment-strategy, allocation,
+> recommendation, notification, transaction, or Telegram logic touched.
+>
+> Phase 20 (Telegram push delivery for the Notification Center) taught
+> the existing `TelegramNotificationDispatcher` a second delivery method,
+> `dispatch_notification`, so the out-of-band worker can deliver the
+> persisted Phase 19 Notification Center — its sole source of truth,
+> never recomputed — gated by global config → portfolio switch →
+> per-alert-rule opt-in for alert-origin notifications (portfolio switch
+> alone for recommendation-origin ones). See
+> [DECISIONS.md](./DECISIONS.md), "Phase 19 — Alerts & Notifications" for
+> the delivery design this phase completed.
+>
+> Phase 19 — Alerts & Notifications (P1). A new in-app
 > Notification Center (`GET/PATCH/POST /api/portfolio/notifications*`)
 > sits on top of the existing, unmodified Phase 8 alert engine and
 > Phase 17/18 rebalancing/recommendation outputs — never a third
@@ -188,9 +230,9 @@ before the next begins.
 16. Financial Core & Cash Logic, P0 (separated Portfolio Value / Investable Value / Available Cash / Reserved Cash so a stock-only holding can never show as spendable cash; missing-price fallback to a stale price or same-currency average cost, exposed as a simple LIVE/PENDING_SYNC signal with unrealized P/L always 0 when not live; user-facing quantity/currency formatting; accessible P/L presentation with explicit arrow + direction wording, not color alone; deterministic newest-first transaction ordering) — done
 17. Smart Rebalancing, P1 (per-category BUY/REDUCE/HOLD/NO_CAPACITY/NO_TARGET recommendations reusing the Phase 7 Smart Inflow Allocator for BUY distribution funded only by Phase 16's `available_cash`, plus a new maximum-breach REDUCE calculation; maximum always takes priority over target; recommendation-only, surfaced contextually on the Distribution screen — never an executed trade) — done
 18. Smart Recommendations, P1 (prioritized, Arabic, user-facing guidance synthesized from Phase 17's own rebalancing output — never a second rebalancing engine — classifying each category into BREACH_RESOLUTION/CASH_DEPLOYMENT/REBALANCING_OPPORTUNITY/RESTRICTED_ACTION/PORTFOLIO_HEALTHY with deterministic IDs and priority ordering; surfaced as a Dashboard card; recommendation-only, no automatic trade execution) — done
-19. Alerts & Notifications, P1 (in-app Notification Center built on the existing, unmodified Phase 8 alert engine and Phase 17/18 rebalancing/recommendation outputs — never a third financial engine; deduplicated via a database-level partial unique index so repeated evaluation never spams; PRICE_ALERT/ALLOCATION_ALERT/RECOMMENDATION_ALERT categories with CRITICAL/WARNING/INFO severity; unread/read state; contextual navigation to Distribution/Recommendations/Watchlist; the existing two-level watchlist-entry + alert-rule activation hierarchy made visible, not changed; no automatic trade execution; Telegram delivery intentionally untouched, deferred to Phase 20) — done *(current)*
-20. Telegram push delivery for the Notification Center (Phase 19 explicitly deferred external delivery — see [DECISIONS.md](./DECISIONS.md), "Phase 19 — Alerts & Notifications")
-21. PWA (installable, offline-capable)
+19. Alerts & Notifications, P1 (in-app Notification Center built on the existing, unmodified Phase 8 alert engine and Phase 17/18 rebalancing/recommendation outputs — never a third financial engine; deduplicated via a database-level partial unique index so repeated evaluation never spams; PRICE_ALERT/ALLOCATION_ALERT/RECOMMENDATION_ALERT categories with CRITICAL/WARNING/INFO severity; unread/read state; contextual navigation to Distribution/Recommendations/Watchlist; the existing two-level watchlist-entry + alert-rule activation hierarchy made visible, not changed; no automatic trade execution; Telegram delivery intentionally untouched, deferred to Phase 20) — done
+20. Telegram push delivery for the Notification Center (Phase 19 explicitly deferred external delivery — see [DECISIONS.md](./DECISIONS.md), "Phase 19 — Alerts & Notifications"; delivers the persisted Phase 19 Notification Center as its sole source of truth via the existing Telegram dispatcher, gated by global config → portfolio switch → per-alert-rule opt-in for alert-origin notifications, portfolio switch alone for recommendation-origin notifications; never recomputes an alert or recommendation) — done
+21. PWA / Mobile App Experience (installable manifest with standard + maskable icons, iOS home-screen metadata and safe-area handling for the notch/Dynamic Island/home indicator, a minimal hand-rolled service worker that caches only the static app shell and never touches `/api/*` so financial data is always network-authoritative, an offline banner, and an opt-in update prompt that never reloads mid-transaction — see [DECISIONS.md](./DECISIONS.md), "Phase 21 — PWA / Mobile App Experience") — done *(current)*
 22. Capacitor wrappers
 23. Production deployment prep
 24. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
