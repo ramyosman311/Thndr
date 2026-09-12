@@ -1,34 +1,35 @@
-"""Minimal notification abstraction, decoupled from alert evaluation.
+"""Notification delivery abstractions.
 
-The alert engine's job ends at "this condition is newly triggered." A
-separate dispatcher's job is "deliver that fact somewhere" (Telegram, a
-future in-app inbox, etc.) — the two are never coupled (Phase 8 approval,
-"Telegram").
-
-No Telegram integration exists yet in this codebase (no credentials in
-`core/config.py`, no worker implementation) and none is added here —
-implementing real delivery is out of this phase's scope. This module
-defines only the interface a future Telegram worker would implement, plus
-a no-op default so the alert evaluation service has something concrete to
-call without depending on any delivery mechanism.
+Phase 8 introduced `NotificationDispatcher` for raw alert checks. Phase 20
+adds a separate `NotificationCenterDispatcher` for persisted Phase 19
+notifications so Telegram delivery can cover both alert-derived and
+recommendation-derived notifications without coupling the Notification
+Center back to the alert engine.
 """
 
 from typing import Protocol
 
 from app.domain.alert_engine import AlertCheckResult
+from app.models.notification import Notification
 
 
 class NotificationDispatcher(Protocol):
-    """Implemented by a future delivery mechanism (e.g. a Telegram worker).
-    Must never be called from `domain/` — only from the service layer,
-    after a new trigger has already been decided."""
+    """Delivery interface for newly-triggered alert checks (Phase 8/14)."""
 
     async def dispatch(self, event: AlertCheckResult, *, asset_symbol: str, watchlist_id: str) -> None: ...
 
 
+class NotificationCenterDispatcher(Protocol):
+    """Delivery interface for persisted Phase 19 Notification rows."""
+
+    async def dispatch_notification(self, notification: Notification) -> None: ...
+
+
 class NullNotificationDispatcher:
-    """Default dispatcher: does nothing. Used until a real delivery
-    mechanism (Telegram or otherwise) is implemented in a later phase."""
+    """Default no-op dispatcher used by on-demand alert evaluation."""
 
     async def dispatch(self, event: AlertCheckResult, *, asset_symbol: str, watchlist_id: str) -> None:
+        return None
+
+    async def dispatch_notification(self, notification: Notification) -> None:
         return None
