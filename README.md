@@ -4,7 +4,40 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 21 — PWA / Mobile App Experience. MIZAN is now
+> **Status:** Phase 22 — Capacitor Native Wrappers. MIZAN now ships as a
+> native Android/iOS app shell (`mobile/capacitor/`, app id
+> `com.mizan.app`) alongside the unchanged web/PWA build, from the same
+> `frontend/` codebase — Capacitor bundles a Next.js **static export**
+> (`BUILD_TARGET=capacitor npm run build:capacitor`; the normal
+> `npm run build` is untouched) rather than running a second frontend or
+> packaging FastAPI/PostgreSQL into the app; the native app calls the same
+> FastAPI backend over HTTPS. A build-time guard
+> (`lib/capacitor-build-guard.ts`) refuses to produce a Capacitor build
+> with a missing, non-HTTPS, or ephemeral Codespace/cloud-IDE preview
+> `NEXT_PUBLIC_API_BASE_URL` — no production API exists yet, and this
+> phase does not invent one or hardcode this session's own preview URL.
+> The Phase 21 service worker is disabled inside the native shell
+> (`lib/capacitor-env.ts`'s `isNativeApp()`) since a bundled, on-disk app
+> has no "offline app shell" gap for it to fill and no service-worker-
+> delivered update path (native updates ship through the App/Play Store);
+> the Phase 21 offline banner stays fully active, since a bundled app can
+> still be on a device with no network. MIZAN's existing brand mark (the
+> same teal `#0f766e` background, bold white "M" as `app/icon.tsx`) was
+> used to generate real launcher icons and splash screens for both
+> platforms — never Capacitor's generic default icon. Android and iOS
+> native projects were generated and structurally validated (identifiers,
+> manifests, icons, no cleartext/ATS exceptions); a real Gradle build and
+> a real signed Xcode build were not completed in this sandboxed
+> environment (Android: `dl.google.com` blocked by egress policy,
+> confirmed directly; iOS: no macOS/Xcode toolchain exists here at all) —
+> see [DEPLOYMENT.md](./DEPLOYMENT.md), "Capacitor Native Builds" for
+> exactly what was and wasn't verified, and
+> [DECISIONS.md](./DECISIONS.md), "Phase 22 — Capacitor Native Wrappers"
+> for the full design rationale. No backend or database change; no
+> investment-strategy, allocation, recommendation, notification,
+> transaction, or Telegram logic touched.
+>
+> Phase 21 — PWA / Mobile App Experience. MIZAN is now
 > installable as a standalone, app-like PWA: `app/manifest.ts` declares a
 > standard (`purpose: "any"`) and a maskable icon (`app/icon1.tsx`, named
 > per Next's numbered-icon convention since `icon-maskable.tsx` is not a
@@ -232,8 +265,8 @@ before the next begins.
 18. Smart Recommendations, P1 (prioritized, Arabic, user-facing guidance synthesized from Phase 17's own rebalancing output — never a second rebalancing engine — classifying each category into BREACH_RESOLUTION/CASH_DEPLOYMENT/REBALANCING_OPPORTUNITY/RESTRICTED_ACTION/PORTFOLIO_HEALTHY with deterministic IDs and priority ordering; surfaced as a Dashboard card; recommendation-only, no automatic trade execution) — done
 19. Alerts & Notifications, P1 (in-app Notification Center built on the existing, unmodified Phase 8 alert engine and Phase 17/18 rebalancing/recommendation outputs — never a third financial engine; deduplicated via a database-level partial unique index so repeated evaluation never spams; PRICE_ALERT/ALLOCATION_ALERT/RECOMMENDATION_ALERT categories with CRITICAL/WARNING/INFO severity; unread/read state; contextual navigation to Distribution/Recommendations/Watchlist; the existing two-level watchlist-entry + alert-rule activation hierarchy made visible, not changed; no automatic trade execution; Telegram delivery intentionally untouched, deferred to Phase 20) — done
 20. Telegram push delivery for the Notification Center (Phase 19 explicitly deferred external delivery — see [DECISIONS.md](./DECISIONS.md), "Phase 19 — Alerts & Notifications"; delivers the persisted Phase 19 Notification Center as its sole source of truth via the existing Telegram dispatcher, gated by global config → portfolio switch → per-alert-rule opt-in for alert-origin notifications, portfolio switch alone for recommendation-origin notifications; never recomputes an alert or recommendation) — done
-21. PWA / Mobile App Experience (installable manifest with standard + maskable icons, iOS home-screen metadata and safe-area handling for the notch/Dynamic Island/home indicator, a minimal hand-rolled service worker that caches only the static app shell and never touches `/api/*` so financial data is always network-authoritative, an offline banner, and an opt-in update prompt that never reloads mid-transaction — see [DECISIONS.md](./DECISIONS.md), "Phase 21 — PWA / Mobile App Experience") — done *(current)*
-22. Capacitor wrappers
+21. PWA / Mobile App Experience (installable manifest with standard + maskable icons, iOS home-screen metadata and safe-area handling for the notch/Dynamic Island/home indicator, a minimal hand-rolled service worker that caches only the static app shell and never touches `/api/*` so financial data is always network-authoritative, an offline banner, and an opt-in update prompt that never reloads mid-transaction — see [DECISIONS.md](./DECISIONS.md), "Phase 21 — PWA / Mobile App Experience") — done
+22. Capacitor Native Wrappers (native Android/iOS shell — `mobile/capacitor/`, app id `com.mizan.app` — bundling the frontend's static export, `BUILD_TARGET=capacitor npm run build:capacitor`, alongside the unchanged web/PWA build from the same codebase; a build-time guard rejects a missing, non-HTTPS, or ephemeral-Codespace-preview `NEXT_PUBLIC_API_BASE_URL` rather than ever hardcoding one; the Phase 21 service worker is disabled inside the native shell as redundant there, the offline banner stays active; MIZAN brand icons/splash screens generated for both platforms; Android/iOS native projects generated and structurally validated — a real Gradle build and a real Xcode build were not completed in this sandboxed environment, see [DEPLOYMENT.md](./DEPLOYMENT.md), "Capacitor Native Builds" — see [DECISIONS.md](./DECISIONS.md), "Phase 22 — Capacitor Native Wrappers") — done *(current)*
 23. Production deployment prep
 24. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
 25. A verified EGID or EGXAPI adapter, or another zero-cost EGX-specific data source (deferred from Phase 13 — see [DECISIONS.md](./DECISIONS.md), requires network access and human-obtained API documentation this environment could not get)

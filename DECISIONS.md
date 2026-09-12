@@ -1420,3 +1420,178 @@ content types; the rendered `<head>` carries
 `mobile-web-app-capable`/`apple-mobile-web-app-title`/
 `apple-mobile-web-app-status-bar-style` meta tags, the manifest `<link>`,
 and `<html lang="ar" dir="rtl">`.
+
+## Phase 22 — Capacitor Native Wrappers
+
+### Inspection findings before implementation
+
+Per this phase's explicit "inspect before modifying" instruction:
+
+- `mobile/capacitor/` already existed as an empty, `.gitkeep`-only
+  directory from Phase 1 scaffolding — no partial Capacitor work to
+  avoid duplicating or destroying. `.gitignore` already anticipated the
+  exact structure used here (`mobile/capacitor/ios/`,
+  `mobile/capacitor/android/`, `mobile/capacitor/.gradle/` all
+  pre-listed), and README.md/ARCHITECTURE.md already documented the
+  intended `mobile/capacitor/` location and a "no Capacitor-specific
+  APIs in core application code" constraint this phase did not violate.
+- Every route under `app/` is a `"use client"` page (`page.tsx` in `/`,
+  `/portfolio`, `/allocation`, `/inflow`, `/watchlist`, `/notifications`,
+  `/settings`) with no server components performing data fetching, no
+  `app/api/*` routes, no `middleware.ts`, no dynamic route segments
+  (`[param]`), and no `next/headers`/`cookies()` usage anywhere. `layout.tsx`
+  is the only server component and does no per-request work. This is
+  precisely the shape Next.js's static export (`output: "export"`)
+  supports — confirmed against Next's own bundled static-export docs
+  before committing to this strategy, not assumed.
+- `lib/api.ts` already resolves its base URL from
+  `process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api"` — a mechanism Phase 16B
+  put in place for the web rewrite proxy, but which turns out to be
+  exactly the seam a Capacitor build needs too: override it at build time
+  to an absolute HTTPS FastAPI URL, and every existing `api.*` call
+  (financial and otherwise) is unchanged.
+- No production FastAPI deployment exists anywhere in this repository —
+  confirmed by inspecting DEPLOYMENT.md (a target topology, not yet
+  implemented) and finding no committed production URL anywhere. This
+  directly shaped the "build-time guard, no invented URL" design below.
+
+### Design decisions (why, not just what)
+
+- **Static export (`output: "export"`), gated behind
+  `BUILD_TARGET=capacitor` in `next.config.ts`, not a second Next.js
+  config file.** A conditional branch in the one existing config keeps
+  the web/PWA build (`npm run build`, with its `rewrites()` proxy) and
+  the Capacitor build (`npm run build:capacitor`, static export, no
+  rewrites — Next.js does not support rewrites/redirects/headers with
+  static export, confirmed from its own docs and empirically: the
+  existing `rewrites()` function is simply omitted from the Capacitor
+  branch rather than left in to silently no-op or error) as two modes of
+  one source of truth, not two diverging configs to keep in sync by hand.
+- **A real static-export build was attempted and initially failed** —
+  `app/icon.tsx`, `app/icon1.tsx`, `app/apple-icon.tsx`, and
+  `app/manifest.ts` (all Phase 21 route handlers under the hood) each
+  needed an explicit `export const dynamic = "force-static"` to
+  prerender under `output: "export"`, even though the normal web build
+  already statically optimizes them without it. This was discovered by
+  actually running the build, not inferred from documentation, and fixing
+  it required touching Phase 21 files — a narrow, mechanical addition
+  (one export per file) that changes no visual or functional behavior in
+  the web build (still statically optimized either way, confirmed by an
+  unchanged route list in `next build`'s output).
+- **`lib/capacitor-build-guard.ts` throws at build time** if
+  `NEXT_PUBLIC_API_BASE_URL` is missing, not HTTPS, or matches an
+  ephemeral Codespace/cloud-IDE preview domain
+  (`*.app.github.dev`/`*.githubpreview.dev`/`*.gitpod.io`) for a Capacitor
+  build — verified against all three failure cases plus the success case
+  with real build runs, not just unit tests, before relying on it. This
+  operationalizes the task's explicit "never hardcode a Codespace URL as
+  a production mobile-app dependency" requirement as an enforced build
+  failure rather than a comment someone could miss. An `ALLOW_INSECURE_CAPACITOR_API=1`
+  escape hatch exists only for emulator/device loopback addresses
+  (`localhost`/`127.0.0.1`/`10.0.2.2`) for local development, and cannot
+  bypass HTTPS for a real hostname.
+- **No production API URL was invented.** None exists yet (see Inspection
+  findings), and the task is explicit that pretending otherwise is a
+  disqualifying failure. The Capacitor build is fully wired and tested
+  with a placeholder (`https://api.mizan.example.com/api`, used only for
+  this phase's own structural verification, never committed as a default
+  anywhere) — provisioning the real FastAPI deployment remains
+  DEPLOYMENT.md's existing, still-open Phase 15 item.
+- **App ID `com.mizan.app` is a new, deliberately chosen identifier**, not
+  `com.thndr.*` — README.md is explicit that MIZAN is "an independent,
+  standalone product," inspired by but not affiliated with Thndr, and no
+  prior published listing or reserved identifier exists to preserve.
+  Treat it as stable from first distribution onward (an app's bundle
+  ID/package name cannot change after a store release without becoming a
+  new listing).
+- **`@capacitor/assets` (a dev-tool CLI, not a runtime dependency) was
+  used to generate launcher icons/splash screens from the existing MIZAN
+  brand mark**, not Capacitor's generic default template icon and not a
+  new visual identity. The transparent-background source logo
+  (`mobile/capacitor/assets/logo.png`) was rendered via the same
+  `next/og` `ImageResponse` pipeline Phase 21's `icon.tsx` already uses
+  (same bold white "M" on the same teal `#0f766e`/dark `#0b0d12` brand
+  colors), run standalone outside Next's build — chosen over hand-drawing
+  an SVG glyph after an initial text-based SVG attempt silently rendered
+  nearly blank (a missing-font issue in the SVG rasterizer's own font
+  database, invisible until pixel-sampled, not visible in a plain
+  preview) — caught and fixed by directly sampling rendered pixel values
+  (`sharp`), not assumed correct from the tool's success output. A
+  further gap in `@capacitor/assets`' own output (the legacy pre-Android-8
+  non-adaptive `ic_launcher.png`/`ic_launcher_round.png` were left
+  transparent instead of flattened onto the background layer) was found
+  the same way and fixed by directly compositing the two generated layers
+  — a narrow, contained fix within this phase's own icon-generation step,
+  not a redesign.
+- **No frontend dependency on `@capacitor/core`.** Native-environment
+  detection (`lib/capacitor-env.ts`, `isNativeApp()`) checks for the
+  `window.Capacitor` global Capacitor's native runtime bridge injects at
+  runtime, rather than importing `@capacitor/core` — the frontend package
+  builds independently of the Capacitor project (only its static output
+  is consumed by `mobile/capacitor/`), so adding a Capacitor package
+  dependency there would be backwards and unnecessary for a single
+  boolean check.
+- **The Phase 21 service worker is disabled inside the native shell**
+  (`ServiceWorkerRegistration` returns early when `isNativeApp()`), while
+  the Phase 21 offline banner is left fully active there. These are
+  different questions: the service worker's job (cache the static app
+  shell for offline use, prompt for network-delivered JS updates) is
+  fully redundant in a native app that already bundles its entire static
+  build on-disk and receives updates through the App/Play Store, not a
+  service-worker swap — registering one anyway would add an inconsistent
+  WebView cache layer for no benefit and a real risk of a stale Cache
+  Storage entry surviving a native app update. The offline banner's job
+  (tell the user their device has no network right now, so financial data
+  on screen cannot be current) is exactly as true and necessary inside a
+  native app as on the web — a bundled app shell does not mean a
+  connected device. Both are already covered by regression tests
+  asserting the specific behavior in each environment, not merely
+  "no crash."
+- **Financial-safety architecture is unchanged and re-verified, not
+  re-designed.** `lib/api.ts` still sends every request with
+  `cache: "no-store"` (asserted by a regression test reading its own
+  source, guarding against silent removal) regardless of platform; the
+  native shell adds no second caching layer for API responses (the
+  service worker, the one thing that could have, is disabled there
+  entirely, per above). No investment-strategy, allocation,
+  recommendation, notification, transaction, or Telegram logic was
+  touched — this phase is exclusively native delivery infrastructure.
+
+### Files changed
+
+New: `mobile/capacitor/package.json`, `package-lock.json`,
+`capacitor.config.ts`, `capacitor.config.test.mjs`, `assets/logo.png`
+(source brand mark for icon/splash generation); `frontend/lib/capacitor-build-guard.ts`,
+`frontend/lib/capacitor-env.ts`; `frontend/tests/capacitor.test.tsx`.
+Modified: `frontend/next.config.ts` (conditional static export +
+build-time API URL guard), `frontend/package.json` (`build:capacitor`
+script), `frontend/app/manifest.ts`/`icon.tsx`/`icon1.tsx`/`apple-icon.tsx`
+(`export const dynamic = "force-static"`, required for static export),
+`frontend/components/service-worker-registration.tsx` (skip inside the
+native shell). Generated but git-ignored (per this repo's existing
+`.gitignore`, not a Phase 22 change): `mobile/capacitor/android/`,
+`mobile/capacitor/ios/`. No backend file touched; no migration; no
+investment-strategy, allocation, recommendation, notification,
+transaction, or Telegram logic touched.
+
+### Regression
+
+Full backend suite: 601 passed, unchanged (confirms the backend truly
+was not touched). Frontend: 130 passed (116 Phase-21 baseline + 14 new
+Capacitor tests: the build-time API URL guard's every failure/success
+case, native-environment detection, the service worker's native-shell
+skip, an automated scan confirming no backend-only secret name is ever
+referenced from frontend source and the only `process.env.NEXT_PUBLIC_*`
+read anywhere is `NEXT_PUBLIC_API_BASE_URL`, and a regression guard on
+`lib/api.ts`'s `cache: "no-store"`), lint clean, `tsc --noEmit` clean,
+both the normal web production build and `BUILD_TARGET=capacitor`
+static export build clean (13 routes each), live-verified against
+`next build && next start` that the web/PWA server is unaffected. In
+`mobile/capacitor/`: `npx cap add android`/`ios` and `npx cap sync`
+succeed cleanly against a fresh static export; 5 structural tests pass
+(`npm test`). A real Android Gradle build and a real iOS Xcode build
+were both attempted and could not complete in this environment for the
+reasons in DEPLOYMENT.md, "Capacitor Native Builds" (Android:
+`dl.google.com` blocked by egress policy, confirmed directly; iOS: no
+macOS/Xcode toolchain, structural — the only kind of iOS validation
+possible without one).

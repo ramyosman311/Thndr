@@ -2,6 +2,10 @@ import { ImageResponse } from "next/og";
 
 export const size = { width: 512, height: 512 };
 export const contentType = "image/png";
+// Required for `output: "export"` (the Phase 22 Capacitor build) to
+// prerender this route handler; a no-op for the normal web build, which
+// already statically optimizes it since it takes no dynamic input.
+export const dynamic = "force-static";
 
 /** Maskable variant of the MIZAN monogram (see app/icon.tsx for the base
  * brand asset). Named icon1.tsx per Next's numbered-icon convention --

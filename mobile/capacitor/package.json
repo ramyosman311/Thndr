@@ -1,0 +1,25 @@
+{
+  "name": "mizan-capacitor-shell",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Capacitor native app shell for MIZAN Smart Portfolio Manager. Bundles the frontend's static export (Phase 22) -- it does not run its own web server; FastAPI + PostgreSQL remain server-side, reached over HTTPS via NEXT_PUBLIC_API_BASE_URL. See DEPLOYMENT.md, \"Capacitor Native Builds\".",
+  "scripts": {
+    "sync": "cap sync",
+    "open:android": "cap open android",
+    "open:ios": "cap open ios",
+    "build:android": "cd android && ./gradlew assembleDebug",
+    "test": "node --test capacitor.config.test.mjs",
+    "generate-assets": "capacitor-assets generate --android --ios --iconBackgroundColor '#0f766e' --iconBackgroundColorDark '#0f766e' --splashBackgroundColor '#0b0d12' --splashBackgroundColorDark '#0b0d12'"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.5.2",
+    "@capacitor/core": "8.5.2",
+    "@capacitor/ios": "8.5.2"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "8.5.2",
+    "typescript": "^7.0.2"
+  }
+}

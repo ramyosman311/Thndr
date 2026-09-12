@@ -103,20 +103,133 @@ monitoring, etc.).
 ## PWA Hosting Considerations
 
 The frontend is served over HTTPS in production (required for service
-worker registration and installability, once a service worker exists).
-Manifest/icon metadata exist since Phase 9; the installable-with-offline
-service worker itself remains a future phase (not Phase 11, which was
-price infrastructure — see ARCHITECTURE.md, "PWA and Capacitor
-Readiness"). When it is added, its static assets must be
-cache-controlled correctly so app updates propagate rather than being
-stuck behind a stale cached service worker.
+worker registration and installability). Manifest/icon metadata and the
+installable, offline-aware service worker were completed in **Phase 21**
+— see ARCHITECTURE.md, "PWA and Capacitor Readiness" and DECISIONS.md,
+"Phase 21 — PWA / Mobile App Experience". The service worker
+(`public/sw.js`) never caches `/api/*` or non-GET requests, only the
+static app shell, and updates are opt-in (a manual banner), never an
+automatic reload — see that same DECISIONS.md entry for the full
+cache-strategy rationale.
 
-## Capacitor (Phase 14)
+## Capacitor Native Builds (Phase 22)
 
-Capacitor iOS/Android wrapping is prepared but not required to deploy or
-run the web/PWA version. Native builds (Xcode/Android Studio) are not
-assumed to be available in this environment and are out of scope for
-automated deployment here.
+MIZAN ships as a native Android/iOS shell — via [Capacitor](https://capacitorjs.com/)
+— alongside the web/PWA build, from the same frontend codebase. See
+DECISIONS.md, "Phase 22 — Capacitor Native Wrappers" for the full design
+rationale; this section covers the operational build/deploy steps.
+
+**Architecture:** native shell (Capacitor) + bundled frontend (a Next.js
+*static export*, not a second frontend) + remote HTTPS FastAPI API.
+Capacitor does not run a server inside the app — FastAPI and PostgreSQL
+stay exactly where the rest of this document already puts them. The
+native app is simply another HTTPS client of the same backend the
+web/PWA build talks to.
+
+### Building the native web bundle
+
+The web/PWA build (`npm run build`) and the Capacitor build
+(`npm run build:capacitor`) are two different output modes of the same
+`frontend/` project, selected by the `BUILD_TARGET` environment variable
+(see `frontend/next.config.ts`):
+
+- `npm run build` (default, unchanged) — a normal Next.js server build;
+  `/api/*` is proxied to FastAPI via `rewrites()`. This is what the
+  web/PWA deployment always uses.
+- `BUILD_TARGET=capacitor npm run build:capacitor` — a static export
+  (`output: "export"`, no server, no rewrites — rewrites are not
+  supported with static export) into `frontend/out/`, which
+  `mobile/capacitor/capacitor.config.ts` (`webDir`) bundles into both
+  native projects. Static export is safe here because every route in
+  this app is a `"use client"` page with no server components, API
+  routes, middleware, or dynamic segments — confirmed by inspection
+  before Phase 22 began.
+
+**A Capacitor build requires an explicit, durable, HTTPS
+`NEXT_PUBLIC_API_BASE_URL`** — e.g.:
+
+```
+NEXT_PUBLIC_API_BASE_URL=https://api.<your-production-domain>/api BUILD_TARGET=capacitor npm run build:capacitor
+```
+
+The native app bundles static files with no server behind them, so the
+web build's relative `"/api"` default (which only works because the dev/
+production Next.js server rewrites it) cannot resolve inside a WebView.
+`next.config.ts` enforces this at build time via
+`lib/capacitor-build-guard.ts`: the build **fails fast** if
+`NEXT_PUBLIC_API_BASE_URL` is missing, not HTTPS, or looks like an
+ephemeral Codespace/cloud-IDE preview URL (`*.app.github.dev`,
+`*.githubpreview.dev`, `*.gitpod.io`) — a Codespace preview URL stops
+resolving once the session ends and must never become a shipped native
+app's backend dependency. **No production FastAPI deployment exists yet**
+(see the Deployment Checklist below) — provisioning one is a prerequisite
+for a real Capacitor release build, not something this phase invents or
+fakes.
+
+### Local device/emulator development
+
+For local testing against a dev backend that isn't HTTPS, set
+`ALLOW_INSECURE_CAPACITOR_API=1` together with an emulator-reachable
+loopback URL (never a real host): `http://10.0.2.2:8000/api` from the
+Android emulator (its alias for the host machine's `localhost`), or your
+LAN IP for a physical device. This escape hatch only accepts loopback-
+shaped hosts; a real domain over plain HTTP is still always rejected.
+
+### Building and syncing the native projects
+
+From `mobile/capacitor/`:
+
+- `npm run sync` (`cap sync`) — copies the frontend's `out/` into both
+  native projects and updates native dependencies. Run this after every
+  `build:capacitor`.
+- `npm run generate-assets` — regenerates all Android/iOS launcher icons
+  and splash screens from `assets/logo.png` (the MIZAN brand mark,
+  transparent background) via `@capacitor/assets`. Only needs re-running
+  if the brand mark changes.
+- `npm run open:android` / `npm run open:ios` — open the native project
+  in Android Studio / Xcode for a real signed build.
+- `npm test` — structural checks (app id/name, no remote `server.url`,
+  Android cleartext traffic disabled, native project identifiers match
+  `capacitor.config.ts`).
+
+`android/` and `ios/` are generated by `npx cap add android`/`ios` and
+are **git-ignored** (see `.gitignore`, a decision already made in this
+repository's Phase 1 scaffolding) — a fresh checkout must regenerate them
+before syncing or building.
+
+### Build status (this environment)
+
+This Codespace/sandboxed environment could verify the following and no
+further:
+
+- **Android:** `cap add android` + `cap sync` succeed; the generated
+  project structurally validated (manifest, `build.gradle`,
+  `variables.gradle`, icons all correct and consistent with
+  `capacitor.config.ts`). **A real Gradle build could not be completed**
+  — `dl.google.com` (which serves the Android Gradle Plugin and every
+  AndroidX/Google Maven artifact) is blocked by this environment's egress
+  policy (`403 Forbidden`, confirmed directly, not assumed). This is an
+  environment limitation, not a project defect — re-run
+  `npm run build:android` (from `mobile/capacitor/`, requires Android
+  SDK + a network with access to `dl.google.com`/`maven.google.com`) on a
+  developer machine or CI runner with normal Android tooling access.
+- **iOS:** `cap add ios` + `cap sync` succeed (this project uses Swift
+  Package Manager, not CocoaPods, so `cap sync ios` needs no macOS-only
+  tooling); the generated project structurally validated (`Info.plist`,
+  `project.pbxproj`, bundle identifier, icons). **No Xcode build was
+  performed** — this environment has no macOS/Xcode/Swift toolchain,
+  full stop. A signed build and any App Store Connect step must happen on
+  a Mac with Xcode and the relevant Apple Developer credentials.
+
+### CORS for the native app
+
+The native app's WebView still enforces CORS on its `fetch()` calls to
+FastAPI, exactly like a browser. `BACKEND_CORS_ORIGINS` already supports
+a comma-separated list (see Environment Variables above) — a production
+deployment serving the Capacitor app must add its WebView origin
+(`https://localhost`, since `capacitor.config.ts` sets
+`server.androidScheme: "https"`) alongside the web frontend's real
+origin.
 
 ## Deployment Checklist (to be completed in Phase 15)
 
@@ -129,3 +242,5 @@ automated deployment here.
 - [ ] `python -m app.workers.alert_notify` scheduled externally (cron/platform scheduled job) if Telegram delivery is wanted
 - [ ] Health check wired into hosting platform monitoring
 - [ ] Frontend served over HTTPS with correct PWA caching headers
+- [ ] (If shipping the native app) A durable production FastAPI URL exists and `BACKEND_CORS_ORIGINS` includes `https://localhost` for the Capacitor WebView origin, before running `npm run build:capacitor`
+- [ ] (If shipping the native app) A real Android build (Gradle + Android SDK) and a real signed iOS build (Xcode + Apple Developer credentials) completed outside this sandboxed environment

@@ -2,15 +2,26 @@
 
 import { useEffect, useState } from "react";
 import { RefreshIcon } from "@/components/icons";
+import { isNativeApp } from "@/lib/capacitor-env";
 
 /** Registers the app-shell service worker and offers a manual, opt-in
  * reload when a new version is ready -- never an automatic reload, so an
- * update can't interrupt someone mid-transaction-entry. */
+ * update can't interrupt someone mid-transaction-entry.
+ *
+ * Skipped entirely inside the Capacitor native shell (Phase 22): the
+ * native app already bundles the full static build on-disk, so there is
+ * no "offline app shell" gap for a service worker to fill, and no
+ * network-delivered JS update to watch for -- new versions ship through
+ * the App/Play Store, not a service-worker swap. Registering one there
+ * would add an extra, WebView-inconsistent cache layer for no benefit,
+ * and risks a stale Cache Storage entry surviving a native app update.
+ * See DECISIONS.md, "Phase 22 — Capacitor Native Wrappers". */
 export function ServiceWorkerRegistration() {
   const [waitingWorker, setWaitingWorker] = useState<ServiceWorker | null>(null);
 
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
+    if (isNativeApp()) return;
 
     navigator.serviceWorker.register("/sw.js").then((reg) => {
       if (reg.waiting && reg.active) {
