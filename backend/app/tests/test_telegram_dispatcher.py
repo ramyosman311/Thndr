@@ -10,6 +10,7 @@ import httpx
 
 from app.domain.alert_engine import AlertCheckResult, AlertType
 from app.models import Notification
+from app.models.enums import NotificationCategory, NotificationSeverity
 from app.services.telegram_dispatcher import TelegramNotificationDispatcher
 
 _BOT_TOKEN = "123456:SUPER-SECRET-TOKEN"
@@ -147,8 +148,8 @@ async def test_bot_token_never_appears_in_logs_on_http_error(caplog):
 def _notification() -> Notification:
     return Notification(
         source_id="RECOMMENDATION:BREACH:NOTOVER",
-        category="RECOMMENDATION_ALERT",
-        severity="CRITICAL",
+        category=NotificationCategory.RECOMMENDATION_ALERT,
+        severity=NotificationSeverity.CRITICAL,
         title="تجاوز الحد الأقصى",
         message="راجع توزيع المحفظة.",
         target_category="Growth",
