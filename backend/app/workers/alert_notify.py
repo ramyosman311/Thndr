@@ -24,6 +24,7 @@ from uuid import UUID
 
 from app.core.config import get_settings
 from app.core.database import async_session_factory
+from app.core.logging_config import configure_logging
 from app.models.enums import NotificationCategory
 from app.repositories.notification_repository import list_pending_telegram_notifications
 from app.repositories.portfolio_repository import get_portfolio_config
@@ -127,7 +128,7 @@ async def run_alert_notify() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     asyncio.run(run_alert_notify())
 
 

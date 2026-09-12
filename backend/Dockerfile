@@ -21,7 +21,11 @@ USER appuser
 
 EXPOSE 8000
 
+# Shell form (not exec-form array) so $PORT expands -- most container
+# hosting platforms (Render, Railway, etc.) inject a dynamic $PORT and
+# expect the process to bind to it; local docker-compose leaves PORT
+# unset and gets the same default (8000) as before.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" || exit 1
+    CMD python -c "import os,urllib.request; urllib.request.urlopen(f'http://localhost:{os.environ.get(\"PORT\",\"8000\")}/api/health')" || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}

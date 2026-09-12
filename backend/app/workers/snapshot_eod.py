@@ -28,6 +28,7 @@ import asyncio
 import logging
 
 from app.core.database import async_session_factory
+from app.core.logging_config import configure_logging
 from app.repositories.portfolio_repository import get_portfolio_config
 from app.services.snapshot_service import create_eod_snapshot_if_missing
 
@@ -54,7 +55,7 @@ async def run_snapshot_eod() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     asyncio.run(run_snapshot_eod())
 
 

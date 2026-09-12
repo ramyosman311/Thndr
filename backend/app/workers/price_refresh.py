@@ -22,6 +22,7 @@ import asyncio
 import logging
 
 from app.core.database import async_session_factory
+from app.core.logging_config import configure_logging
 from app.services.price_orchestrator import refresh_all_automated_assets
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ async def run_price_refresh() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     asyncio.run(run_price_refresh())
 
 

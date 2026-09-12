@@ -1,0 +1,7 @@
+# Development/test-only dependencies. Never installed into the
+# production Docker image (see Dockerfile, which installs only
+# requirements.txt) -- see DEPLOYMENT.md, "Production FastAPI".
+-r requirements.txt
+
+pytest==8.3.4
+pytest-asyncio==0.25.0

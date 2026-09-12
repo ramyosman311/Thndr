@@ -1595,3 +1595,225 @@ reasons in DEPLOYMENT.md, "Capacitor Native Builds" (Android:
 `dl.google.com` blocked by egress policy, confirmed directly; iOS: no
 macOS/Xcode toolchain, structural — the only kind of iOS validation
 possible without one).
+
+## Phase 23 — Production Infrastructure & Deployment Readiness
+
+### Inspection findings before implementation
+
+Per this phase's explicit "audit first, don't assume a provider" and
+"do not ask for routine diagnostics" instructions, the full existing
+infrastructure was read before anything was changed:
+
+- `DEPLOYMENT.md` already documented a target topology (FastAPI on
+  Render/Railway, PostgreSQL on Supabase, frontend on Vercel or
+  containerized) going back to early phases — this was respected rather
+  than re-decided, per the task's own "if a provider has already been
+  selected, respect that unless there is a concrete technical reason to
+  change it" instruction. Nothing found during the audit gave such a
+  reason.
+- `backend/Dockerfile` was already solid in most respects (non-root
+  user, healthcheck, `0.0.0.0` binding, minimal `apt` footprint) but
+  hardcoded `--port 8000` in exec-form `CMD`/`HEALTHCHECK`, which cannot
+  read a platform-injected `$PORT` (Render/Railway both assign one
+  dynamically) — found by reading the file, not assumed.
+- `app/main.py` never called `logging.basicConfig` (or equivalent) at
+  all; the three workers each had their own bare
+  `logging.basicConfig(level=logging.INFO)` with no timestamp in the
+  default format — found by grepping for logging setup across the
+  codebase.
+- `app/seed/__main__.py` had no guard against running against
+  `APP_ENV=production` — the seed itself is fully idempotent and
+  non-destructive (confirmed by re-reading `seed.py`'s "create if
+  missing" pattern across every function), but running it against a
+  real deployment would still inject fake demo assets (a `"CLOUDZ"`
+  emergency-cash asset, sample buckets/targets/snapshots) into a real
+  user's portfolio.
+- `.env.example` documented `MARKET_DATA_PROVIDER`/`MARKET_DATA_API_KEY`
+  as configuration, but a repository-wide grep found these were never
+  read by any code path — Phase 13 wired providers per-asset via
+  `asset_price_configs.primary_provider` against a static in-code
+  registry (`app/providers/registry.py`) instead, with no generic
+  provider-selection env var ever implemented. Documenting an unused
+  variable as required configuration is actively misleading to a
+  production operator, so it was removed.
+- `requirements.txt` bundled `pytest`/`pytest-asyncio` into the same
+  file the Dockerfile installs into the production image — confirmed by
+  reading the Dockerfile's `pip install -r requirements.txt` line and
+  cross-checking `httpx` (which *is* used in production, by
+  `telegram_dispatcher.py`, and therefore correctly stays in the
+  runtime file) against a grep for `import pytest` outside `app/tests/`.
+- `app/core/database.py`'s engine and `app/models/mixins.py`'s UUID/
+  timestamp conventions were both audited and found already correct
+  (`pool_pre_ping=True` already present; UUIDs are application-generated
+  via `uuid.uuid4`, avoiding a dependency on a Postgres extension like
+  `pgcrypto` that a managed provider might not enable; all timestamps
+  are `TIMESTAMP(timezone=True)` with `server_default=func.now()`) — no
+  change was needed to either beyond adding `pool_recycle=1800` to the
+  engine for managed-Postgres idle-connection resilience.
+- CORS (`app/main.py`) was already fully environment-driven via
+  `BACKEND_CORS_ORIGINS` with no wildcard default anywhere in the
+  codebase — confirmed by reading the middleware configuration and
+  `core/config.py` directly; no code change was needed, only documenting
+  the exact production origins required (the web origin plus the
+  Capacitor app's `https://localhost` WebView origin, per Phase 22's
+  `androidScheme: "https"` setting).
+- No `.github/workflows/` directory existed at all before this phase.
+- `docker` and `docker compose` are present in this environment; a real
+  `docker build` was attempted and failed identically to the Phase 2
+  finding already recorded in DEPLOYMENT.md (`docker.io`'s CloudFront-
+  backed blob storage returns `403 Forbidden`; the registry API itself
+  resolves, confirming a deliberate egress policy, not a transient
+  fault) — re-confirmed directly in this session rather than assumed
+  still true from a stale note.
+- No cloud provider credentials (Render, Railway, Supabase, Vercel, or
+  any other) exist anywhere in this environment — checked directly; the
+  only "cloud" environment variables present are proxy-injected AWS
+  placeholders unrelated to any real account. This is the phase's
+  central, unavoidable external blocker.
+
+### Design decisions (why, not just what)
+
+- **Shell-form `CMD`/`HEALTHCHECK` in the Dockerfile, not a wrapper
+  entrypoint script.** `CMD uvicorn app.main:app --host 0.0.0.0 --port
+  ${PORT:-8000}` lets `/bin/sh -c` expand `$PORT` when a platform injects
+  one, while defaulting to `8000` (unchanged local `docker-compose.yml`
+  behavior) when it doesn't — the minimal fix for the actual gap, not an
+  excuse to introduce a new script/process-manager layer this
+  application does not need.
+- **Migrations stay a separate, explicit step — never wired into
+  container startup.** The task is explicit that concurrent migration
+  from multiple replicas is a real risk on platforms that can scale
+  horizontally; `alembic upgrade head` remains something an operator (or
+  a platform's dedicated pre-deploy/one-off command feature) runs once,
+  documented in DEPLOYMENT.md's Migration Procedure, rather than
+  something `app/main.py`'s `lifespan` or the Dockerfile's `CMD` does
+  automatically on every boot.
+- **A production guard on the seed script, not a rewrite of its
+  semantics.** The seed's actual behavior (idempotent, additive-only)
+  was already safe in the narrow "never deletes data" sense the task
+  cares about; the guard exists for the different, real risk of
+  polluting a real deployment with fake demo data by operator mistake
+  (e.g. a copy-pasted command meant for staging) — `ALLOW_SEED_IN_
+  PRODUCTION=1` remains available for the legitimate case (seeding a
+  deliberately-provisioned demo/pre-launch instance) rather than making
+  the script unconditionally unusable in that environment shape.
+- **A genuine readiness endpoint (`/api/health/ready`), kept separate
+  from the existing liveness endpoint rather than changing its
+  behavior.** `GET /api/health`'s "never flip to an error state on a
+  database hiccup" behavior was a deliberate Phase 2 design choice
+  (its own docstring already said so) so that a database blip doesn't
+  cause a hosting platform to kill and restart an otherwise-healthy
+  process — changing that to satisfy a "readiness" need would have
+  silently undone that guarantee. Adding a second, genuinely-different
+  endpoint preserves both semantics simultaneously; a regression test
+  (`test_readiness_never_flips_the_liveness_endpoint`) asserts they stay
+  independent.
+- **One shared `configure_logging()`, not per-process ad-hoc setup.**
+  Both the API and every worker previously configured logging
+  independently (or, in the API's case, not at all); centralizing format
+  and level selection in `app/core/logging_config.py` means a future
+  change to log format happens once, and removes the risk of the API
+  process silently having no log handler at all (Python's logging
+  module's "handler of last resort" would have papered over that with an
+  unformatted, timestamp-less fallback otherwise).
+- **`requirements-dev.txt` layers on `requirements.txt` via `-r`, rather
+  than duplicating every runtime pin.** A single source of truth for
+  runtime pins, with test tooling added on top only for local/CI use —
+  the Dockerfile's `pip install -r requirements.txt` line needed no
+  change at all, since it already only ever referenced the (now leaner)
+  runtime file.
+- **A CI workflow that only tests, never deploys.** The task's own
+  "do not over-engineer, do not deploy on every random branch, do not
+  require secrets" boundary was taken literally: `.github/workflows/
+  ci.yml` runs the full backend suite (against a throwaway, non-secret
+  Postgres service container) and the full frontend suite (tests, type
+  check, lint, both build modes) on every push/PR, and does nothing
+  else. Wiring an actual deploy step is left for whenever real platform
+  credentials exist to do it safely — inventing one now would mean
+  either a no-op placeholder or something that could fail in confusing
+  ways with no real target to deploy to.
+- **No provider was actually provisioned, and none was invented.** This
+  phase's single largest constraint: this environment holds no
+  Render/Railway/Supabase/Vercel credentials. Every piece of
+  configuration that depends on a real external endpoint
+  (`NEXT_PUBLIC_API_BASE_URL`'s production value, `DATABASE_URL`'s
+  production value, `BACKEND_CORS_ORIGINS`'s production origin) was left
+  as an explicit, documented, environment-driven placeholder — never a
+  fabricated URL, and never the Codespace preview URL named in this
+  phase's own instructions as the one thing that must never leak into
+  production configuration (confirmed absent from all committed source
+  by direct grep).
+
+### Files changed
+
+New: `backend/app/core/logging_config.py`, `backend/requirements-dev.txt`,
+`backend/app/tests/test_seed_production_guard.py`,
+`.github/workflows/ci.yml`. Modified: `backend/Dockerfile` (`$PORT`-aware
+shell-form CMD/HEALTHCHECK), `backend/.dockerignore` (added `venv/`,
+previously only `.venv/` was excluded), `backend/requirements.txt`
+(pytest/pytest-asyncio moved out), `backend/app/main.py` (structured
+logging, explicit startup/shutdown lifespan, engine disposal on
+shutdown), `backend/app/core/database.py` (`pool_recycle=1800`),
+`backend/app/workers/{price_refresh,alert_notify,snapshot_eod}.py`
+(shared `configure_logging()` instead of each own bare
+`basicConfig`), `backend/app/api/routes/health.py` +
+`backend/app/services/health_service.py` + `backend/app/schemas/health.py`
+(new `/api/health/ready` readiness endpoint), `backend/app/tests/test_health.py`
+(readiness tests + an engine-disposal fixture needed for test isolation
+against the process-wide database engine), `backend/app/seed/__main__.py`
+(production guard), `.env.example` (removed two unused variables,
+added production-vs-development guidance for every remaining one),
+`README.md`, `DEPLOYMENT.md` (substantially expanded). No migration
+added (no schema change was required); no investment-strategy,
+allocation, recommendation, notification, transaction, or Telegram
+business logic touched.
+
+### Regression
+
+Full backend suite: 607 passed (601 Phase-22 baseline + 6 new: 3
+readiness-endpoint tests plus 3 seed-production-guard tests) — re-run
+multiple times to confirm the readiness tests' interaction with the
+process-wide database engine is stable, not flaky, after adding the
+per-test engine-disposal fixture that made it so. Frontend: 130 passed,
+unchanged (no frontend code was touched this phase). `tsc --noEmit` and
+lint clean on both. Both the normal web production build and the
+`BUILD_TARGET=capacitor` static export build succeed (13 routes each).
+In `mobile/capacitor/`: `cap sync` and all 5 structural tests pass
+against a fresh build. Migrations verified end-to-end: created a
+brand-new, completely empty PostgreSQL database and ran `alembic upgrade
+head` directly against it — all 5 migrations applied cleanly in order,
+producing all 15 expected tables, with `alembic check` clean afterward.
+The backend was also started live (both with and without a `$PORT`
+override) to confirm the new structured startup/shutdown log lines and
+the `/api/health`+`/api/health/ready` endpoints behave as documented.
+`docker compose config` re-validated as parsing correctly; a real
+`docker build` was attempted and failed identically to the pre-existing
+Phase 2 finding (this environment's egress policy blocks `docker.io`'s
+blob storage) — an environment limitation, re-confirmed rather than
+assumed, not a defect in the Dockerfile itself.
+
+### Implemented and verified vs. prepared but requiring external provisioning
+
+**Implemented and verified in this session:** Docker image hardening;
+migration procedure (proven against a clean database); health/readiness
+endpoints; structured logging with an audited no-secrets guarantee;
+CORS configuration mechanism and its documented production values; the
+Capacitor build-time API-URL safety guard (every failure case and the
+success case, via real build attempts); the seed production guard;
+`.env.example` accuracy; the CI workflow; the full test suite, both
+production build modes, and `cap sync` plus Capacitor's structural
+tests.
+
+**Prepared, but requires external cloud provisioning this environment
+cannot perform** (no Render/Railway/Supabase/Vercel account access
+exists here): an actual Supabase (or equivalent) PostgreSQL instance; an
+actual Render/Railway deployment of the backend container behind a
+durable HTTPS URL; an actual Vercel (or equivalent) deployment of the
+web frontend; setting the real values of `DATABASE_URL`,
+`BACKEND_CORS_ORIGINS`, and `NEXT_PUBLIC_API_BASE_URL` against those real
+endpoints; a real signed Android/iOS Capacitor build (unchanged from
+Phase 22 — still blocked by this environment lacking `dl.google.com`
+access and any macOS/Xcode toolchain); a live Telegram delivery
+verification (unchanged from Phase 14 — `api.telegram.org` remains
+unreachable from this environment); an actual automated-backup
+configuration (requires a real Supabase project/plan decision).

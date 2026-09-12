@@ -4,7 +4,52 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 22 — Capacitor Native Wrappers. MIZAN now ships as a
+> **Status:** Phase 23 — Production Infrastructure & Deployment
+> Readiness. This phase makes the existing FastAPI/PostgreSQL/Next.js/
+> Capacitor architecture (Phases 2–22) production-ready as
+> infrastructure, without changing any financial logic. Backend: the
+> Docker image now binds to a platform-injected `$PORT` (previously
+> hardcoded to 8000), runs as a non-root user with only runtime
+> dependencies (`requirements.txt`; `pytest`/`pytest-asyncio` moved to
+> `requirements-dev.txt`), and gained a connection-pool `pool_recycle`
+> setting so a managed Postgres's own idle-connection timeout can't
+> silently drop connections. `GET /api/health/ready` is new — a true
+> readiness probe (503 when the database is unreachable) distinct from
+> the unchanged `GET /api/health` liveness check, which still never
+> flips to an error state on a database hiccup. Every process (the API
+> and all three workers) now shares one structured log format via
+> `app/core/logging_config.py`, audited to confirm no secret is ever
+> logged. `python -m app.seed` refuses to run against
+> `APP_ENV=production` unless explicitly overridden — not because the
+> seed is destructive (it never deletes anything), but because it would
+> otherwise inject fake demo assets into a real portfolio. `.env.example`
+> had two vestigial, never-read variables removed
+> (`MARKET_DATA_PROVIDER`/`MARKET_DATA_API_KEY`) and gained explicit
+> production-vs-development guidance for every remaining variable,
+> including exactly which origins `BACKEND_CORS_ORIGINS` needs in
+> production (the web origin plus the Capacitor app's `https://localhost`
+> WebView origin) and exactly what `NEXT_PUBLIC_API_BASE_URL` must be for
+> a Capacitor build (an explicit, durable HTTPS URL — the existing Phase
+> 22 build-time guard rejecting a missing/insecure/Codespace-preview URL
+> was re-verified with real build attempts, not just re-read). A new
+> `.github/workflows/ci.yml` runs the full backend and frontend test
+> suites on every push/PR — no deployment step, no secrets required.
+> Migrations were verified end-to-end against a brand-new, completely
+> empty PostgreSQL database (all 5 migrations applied cleanly, `alembic
+> check` clean afterward) — the strongest verification available without
+> a real target platform. **No durable external deployment exists**:
+> this sandboxed environment has no Render/Railway/Supabase/Vercel
+> credentials, so provisioning a real production API URL, database, and
+> hosting remains an explicit external step — never faked, never a
+> Codespace/localhost/placeholder URL presented as live. See
+> [DEPLOYMENT.md](./DEPLOYMENT.md) for the complete architecture,
+> environment variable reference, migration/backup/rollback procedures,
+> and readiness checklist, and [DECISIONS.md](./DECISIONS.md), "Phase 23
+> — Production Infrastructure & Deployment Readiness" for the full
+> rationale and the implemented-and-verified vs. prepared-but-external
+> distinction.
+>
+> Phase 22 — Capacitor Native Wrappers. MIZAN now ships as a
 > native Android/iOS app shell (`mobile/capacitor/`, app id
 > `com.mizan.app`) alongside the unchanged web/PWA build, from the same
 > `frontend/` codebase — Capacitor bundles a Next.js **static export**
@@ -266,8 +311,8 @@ before the next begins.
 19. Alerts & Notifications, P1 (in-app Notification Center built on the existing, unmodified Phase 8 alert engine and Phase 17/18 rebalancing/recommendation outputs — never a third financial engine; deduplicated via a database-level partial unique index so repeated evaluation never spams; PRICE_ALERT/ALLOCATION_ALERT/RECOMMENDATION_ALERT categories with CRITICAL/WARNING/INFO severity; unread/read state; contextual navigation to Distribution/Recommendations/Watchlist; the existing two-level watchlist-entry + alert-rule activation hierarchy made visible, not changed; no automatic trade execution; Telegram delivery intentionally untouched, deferred to Phase 20) — done
 20. Telegram push delivery for the Notification Center (Phase 19 explicitly deferred external delivery — see [DECISIONS.md](./DECISIONS.md), "Phase 19 — Alerts & Notifications"; delivers the persisted Phase 19 Notification Center as its sole source of truth via the existing Telegram dispatcher, gated by global config → portfolio switch → per-alert-rule opt-in for alert-origin notifications, portfolio switch alone for recommendation-origin notifications; never recomputes an alert or recommendation) — done
 21. PWA / Mobile App Experience (installable manifest with standard + maskable icons, iOS home-screen metadata and safe-area handling for the notch/Dynamic Island/home indicator, a minimal hand-rolled service worker that caches only the static app shell and never touches `/api/*` so financial data is always network-authoritative, an offline banner, and an opt-in update prompt that never reloads mid-transaction — see [DECISIONS.md](./DECISIONS.md), "Phase 21 — PWA / Mobile App Experience") — done
-22. Capacitor Native Wrappers (native Android/iOS shell — `mobile/capacitor/`, app id `com.mizan.app` — bundling the frontend's static export, `BUILD_TARGET=capacitor npm run build:capacitor`, alongside the unchanged web/PWA build from the same codebase; a build-time guard rejects a missing, non-HTTPS, or ephemeral-Codespace-preview `NEXT_PUBLIC_API_BASE_URL` rather than ever hardcoding one; the Phase 21 service worker is disabled inside the native shell as redundant there, the offline banner stays active; MIZAN brand icons/splash screens generated for both platforms; Android/iOS native projects generated and structurally validated — a real Gradle build and a real Xcode build were not completed in this sandboxed environment, see [DEPLOYMENT.md](./DEPLOYMENT.md), "Capacitor Native Builds" — see [DECISIONS.md](./DECISIONS.md), "Phase 22 — Capacitor Native Wrappers") — done *(current)*
-23. Production deployment prep
+22. Capacitor Native Wrappers (native Android/iOS shell — `mobile/capacitor/`, app id `com.mizan.app` — bundling the frontend's static export, `BUILD_TARGET=capacitor npm run build:capacitor`, alongside the unchanged web/PWA build from the same codebase; a build-time guard rejects a missing, non-HTTPS, or ephemeral-Codespace-preview `NEXT_PUBLIC_API_BASE_URL` rather than ever hardcoding one; the Phase 21 service worker is disabled inside the native shell as redundant there, the offline banner stays active; MIZAN brand icons/splash screens generated for both platforms; Android/iOS native projects generated and structurally validated — a real Gradle build and a real Xcode build were not completed in this sandboxed environment, see [DEPLOYMENT.md](./DEPLOYMENT.md), "Capacitor Native Builds" — see [DECISIONS.md](./DECISIONS.md), "Phase 22 — Capacitor Native Wrappers") — done
+23. Production Infrastructure & Deployment Readiness (Docker hardened — `$PORT`-aware startup, non-root user, split runtime/dev dependencies; `GET /api/health/ready` added alongside the unchanged liveness `/api/health`; shared structured logging across the API and every worker with an audited no-secrets-logged guarantee; the dev seed script now refuses to run against `APP_ENV=production` without explicit override; `.env.example` corrected (two unused variables removed); CORS/HTTPS/Capacitor production-API requirements documented; a minimal test-only CI workflow added; migrations verified end-to-end against a clean empty database — see [DEPLOYMENT.md](./DEPLOYMENT.md) for the full architecture, environment variables, and production readiness checklist, and [DECISIONS.md](./DECISIONS.md), "Phase 23 — Production Infrastructure & Deployment Readiness" for what's implemented-and-verified versus prepared-but-externally-unprovisioned: no cloud account access exists in this environment, so no durable production URL, database, or deployment exists yet) — done *(current)*
 24. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
 25. A verified EGID or EGXAPI adapter, or another zero-cost EGX-specific data source (deferred from Phase 13 — see [DECISIONS.md](./DECISIONS.md), requires network access and human-obtained API documentation this environment could not get)
 26. Live Telegram verification (deferred from Phase 14 — see [DECISIONS.md](./DECISIONS.md), `api.telegram.org` confirmed blocked by this environment's egress policy) and a "send test message" admin action (explicitly deferred by Phase 14's own approval)
@@ -291,7 +336,7 @@ Supabase).
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt  # runtime deps + pytest; use requirements.txt alone for a production install
 ```
 
 **2. Configure environment**

@@ -16,6 +16,10 @@ def create_engine() -> AsyncEngine:
         settings.database_url,
         echo=settings.app_debug and not settings.is_production,
         pool_pre_ping=True,
+        # Recycle connections before a managed Postgres provider's own
+        # idle-connection timeout (e.g. a pooler in front of Supabase)
+        # can silently drop them out from under a long-lived process.
+        pool_recycle=1800,
     )
 
 

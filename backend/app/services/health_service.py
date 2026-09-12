@@ -12,3 +12,11 @@ async def get_health_status() -> HealthResponse:
     """
     db_ok = await check_database_connection()
     return HealthResponse(status="ok", database="connected" if db_ok else "unavailable")
+
+
+async def is_ready() -> bool:
+    """Readiness (Phase 23): can this instance actually serve requests right
+    now, distinct from `get_health_status`'s "is the process alive" liveness
+    check. Currently that means "the database is reachable" — the only
+    required infrastructure dependency this app has."""
+    return await check_database_connection()
