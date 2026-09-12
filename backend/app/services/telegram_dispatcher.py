@@ -44,7 +44,14 @@ class TelegramNotificationDispatcher:
     async def dispatch_notification(self, notification: Notification) -> bool:
         """Send one persisted Notification and report whether Telegram accepted it."""
         sent_at = datetime.now(timezone.utc)
-        text = format_telegram_notification_message(notification, sent_at=sent_at)
+        text = format_telegram_notification_message(
+            title=notification.title,
+            message=notification.message,
+            severity=notification.severity.value,
+            target_category=notification.target_category,
+            target_asset=notification.target_asset,
+            sent_at=sent_at,
+        )
         return await self._send(text, context=str(notification.id))
 
     async def _send(self, text: str, *, context: str) -> bool:
