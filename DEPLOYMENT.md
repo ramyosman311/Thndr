@@ -2,17 +2,54 @@
 
 ## Status
 
-**Phase 23 (this document's authoritative revision)**: production
-infrastructure is implemented and locally verified — Docker image,
-migrations, health/readiness endpoints, structured logging, CORS,
-secrets handling, CI, and Capacitor production configuration are all in
-place and tested in this environment. **No durable external deployment
-has been provisioned** — this sandboxed environment has no cloud
-credentials for Render/Railway/Supabase/Vercel or any other provider.
-Every section below distinguishes what was implemented-and-verified here
-from what still requires an operator with real cloud account access to
-provision externally. See DECISIONS.md, "Phase 23 — Production
-Infrastructure & Deployment Readiness" for the full rationale.
+**Phase 23.5 (this document's authoritative revision)**: a real
+provisioning attempt was made against all four target providers
+(Vercel, Render, Railway, Supabase) and confirmed, with direct evidence,
+that this sandboxed environment's egress policy denies outbound
+connections to every one of them (`403` policy denial at the proxy
+layer, not a transient failure — see "Production Provisioning Attempt
+Log" below). **No durable external deployment exists.** Everything
+provisionable without cloud account access was re-verified fresh in
+this session: full test suites, a clean-database migration run, both
+production build modes, Capacitor sync/tests, and a full security scan
+— all green, all with fresh evidence, not carried over from Phase 23's
+own run. See DECISIONS.md, "Phase 23.5 — Production Provisioning" for
+the full rationale and exactly what would need to happen, by a human
+with real cloud credentials, to move from here to LIVE AND VERIFIED.
+
+**Phase 23** (prior revision): production infrastructure implemented and
+locally verified — Docker image, migrations, health/readiness endpoints,
+structured logging, CORS, secrets handling, CI, and Capacitor production
+configuration all in place. See DECISIONS.md, "Phase 23 — Production
+Infrastructure & Deployment Readiness" for that phase's own rationale.
+
+## Production Provisioning Attempt Log (Phase 23.5)
+
+A real attempt was made to reach every provider named in the intended
+architecture, from this session's own network, before concluding
+provisioning is externally blocked rather than assuming it:
+
+| Target | Host | Result |
+|---|---|---|
+| Vercel API | `api.vercel.com:443` | `CONNECT` rejected — gateway returned `403` |
+| Render API | `api.render.com:443` | `CONNECT` rejected — gateway returned `403` |
+| Railway API | `backboard.railway.app:443` | `CONNECT` rejected — gateway returned `403` |
+| Supabase API | `api.supabase.com:443` | `CONNECT` rejected — gateway returned `403` |
+
+The egress proxy's own status log records these as `connect_rejected`
+with detail `"gateway answered 403 to CONNECT (policy denial or upstream
+failure)"` for all four hosts, at the same timestamp, immediately after
+the requests were made — consistent with an organization-level policy
+denial (the same category of restriction already documented for
+`docker.io` since Phase 2, and for `dl.google.com` since Phase 22), not
+a DNS issue, a single flaky host, or a coincidence. No credentials for
+any of these providers exist in this environment's variables either
+(checked directly) — even if the network allowed it through, there is no
+account to authenticate against. **This is the one, complete, external
+blocker for this phase**: nothing in the repository, configuration, or
+code prevents deployment — only the absence of both network access and
+credentials to actually reach a cloud provider's control plane from
+here.
 
 ## Architecture
 
@@ -533,14 +570,18 @@ credentials are available to wire up a deploy job safely.
 
 ## Production Readiness Checklist
 
+- [x] Actual provisioning attempted — Phase 23.5 tried to reach Vercel,
+      Render, Railway, and Supabase directly from this session; all four
+      were denied at the egress-proxy layer (`403`, policy denial) — see
+      "Production Provisioning Attempt Log" above
 - [x] Production FastAPI container — Dockerfile hardened (non-root,
       minimal deps, `$PORT`-aware, healthcheck); a real `docker build`
       itself remains blocked in this sandboxed environment (re-verify
       elsewhere)
 - [ ] Durable HTTPS API — **prepared, not provisioned** (no cloud
-      account access here)
+      account access or network egress to any provider here)
 - [ ] Persistent PostgreSQL — **prepared, not provisioned** (Supabase
-      project not created)
+      project not created — network egress to `api.supabase.com` denied)
 - [x] Alembic migrations — verified end-to-end against a clean, empty
       database in this session
 - [x] Safe production initialization — seed script now refuses to run

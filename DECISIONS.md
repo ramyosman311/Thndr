@@ -1817,3 +1817,111 @@ access and any macOS/Xcode toolchain); a live Telegram delivery
 verification (unchanged from Phase 14 — `api.telegram.org` remains
 unreachable from this environment); an actual automated-backup
 configuration (requires a real Supabase project/plan decision).
+
+## Phase 23.5 — Production Provisioning
+
+### What this phase actually attempted
+
+Phase 23 built and locally verified everything needed for a production
+deployment; it stopped short of provisioning because no cloud
+credentials were available in that session. Phase 23.5's explicit job
+was to actually attempt provisioning, not to re-document the same
+absence of credentials — so before touching anything, this session
+tested real network reachability to all four target providers directly:
+
+```
+curl → api.vercel.com:443      → CONNECT tunnel failed, response 403
+curl → api.render.com:443      → CONNECT tunnel failed, response 403
+curl → backboard.railway.app:443 → CONNECT tunnel failed, response 403
+curl → api.supabase.com:443    → CONNECT tunnel failed, response 403
+```
+
+The environment's own egress-proxy status endpoint independently
+recorded all four as `connect_rejected` with detail `"gateway answered
+403 to CONNECT (policy denial or upstream failure)"`, at the same
+timestamp — corroborating evidence from a second source, not just a
+single curl's exit code. `env | grep -i "render|railway|vercel|supabase"`
+also returned nothing: no credentials for any of these providers exist
+in this environment's variables, so even a hypothetically unblocked
+network would not have been sufficient on its own. This is the same
+category of environment-level restriction already documented twice
+before (Phase 2, `docker.io`; Phase 22, `dl.google.com`) — the pattern
+holding a third time across every remaining provider this project
+depends on confirms it is a deliberate, blanket egress policy for this
+sandboxed session, not a series of coincidental host-specific outages.
+
+**Decision: do not fabricate provisioning.** Per this phase's own
+explicit "never fabricate a successful deployment" rule and the
+project's established practice (Phase 2, Phase 13, Phase 14, Phase 22
+all disclosed identical environment limitations rather than papering
+over them), the correct action once this was confirmed was to stop
+attempting further provisioning steps that all presuppose reaching one
+of these four hosts (creating a Supabase project, creating a Render/
+Railway service, creating a Vercel project — every one of Steps 4, 7,
+and 10 in this phase's own instructions requires exactly the connectivity
+just proven absent) and instead spend the rest of the session on what
+Step 23 explicitly asks for: complete everything possible locally, with
+fresh evidence, rather than leaving Phase 23's now-slightly-stale
+verification as the only evidence on record.
+
+### Provider strategy (re-affirmed, not re-decided)
+
+The intended architecture (Supabase / Render-or-Railway / Vercel) was
+inspected against the actual repository once more and found unchanged
+from Phase 23's own conclusion — nothing about the current codebase's
+shape gives a reason to prefer one of Render/Railway over the other, and
+the task's own instructions treat them as interchangeable ("if both are
+technically viable... choose the simpler option"). Since neither could
+actually be reached to compare in practice, and the existing
+documentation already treats them as equivalent, no new preference was
+recorded — DEPLOYMENT.md continues to name both as valid.
+
+### Re-verification performed this session (fresh evidence, not carried over)
+
+Everything below was re-run from a clean process state in this session,
+not assumed still true from Phase 23's own run:
+
+- Full backend suite: 607 passed (started PostgreSQL fresh in this
+  session's container, since the previous session's Postgres process
+  does not persist across sessions).
+- Migrations against a brand-new, completely empty PostgreSQL database
+  (a freshly created database, distinct from the one used in Phase 23's
+  own verification): all 5 migrations applied cleanly in order,
+  `alembic check` clean afterward.
+- Full frontend suite: 130 passed; `tsc --noEmit` clean; lint clean.
+- Both production build modes (`npm run build` and `BUILD_TARGET=capacitor
+  npm run build:capacitor`) succeed, 13 routes each.
+- `mobile/capacitor/`: `npx cap sync` succeeds against a fresh build; all
+  5 structural tests pass.
+- A repository-wide security scan: no committed secrets; the Codespace
+  URL named in this phase's own instructions appears nowhere in
+  committed source except as a literal test fixture in
+  `frontend/tests/capacitor.test.tsx` (asserting the build guard rejects
+  it); no log statement anywhere references a token, password, secret,
+  or connection string; CORS remains fully environment-driven with no
+  wildcard; no `reload=True` anywhere; no committed `.env` file.
+
+No code change was required as a result of this re-verification — Phase
+23's implementation held up under a second, independent check.
+
+### Implemented and verified vs. prepared but requiring external provisioning
+
+**Implemented and verified in this session:** a genuine, evidenced
+provisioning attempt against all four target providers (not merely
+re-stated absence of credentials); a fresh, independent re-run of every
+locally-verifiable check from Phase 23 (backend/frontend suites, clean-
+database migration, both build modes, Capacitor sync and tests, security
+scan) — all green, with new evidence rather than reused conclusions.
+
+**Prepared, but requires external cloud provisioning this environment
+cannot perform, for the reason demonstrated above (network egress to
+every relevant provider is denied, and no credentials exist regardless):**
+an actual Supabase (or equivalent) PostgreSQL instance; an actual
+Render/Railway deployment of the backend container behind a durable
+HTTPS URL; an actual Vercel (or equivalent) deployment of the web
+frontend; setting the real values of `DATABASE_URL`,
+`BACKEND_CORS_ORIGINS`, and `NEXT_PUBLIC_API_BASE_URL` against those real
+endpoints; a real signed Android/iOS Capacitor build; a live Telegram
+delivery verification; an actual automated-backup configuration. None of
+these changed status from Phase 23 — this phase's job was to prove the
+blocker is real by attempting it, not to re-describe it.

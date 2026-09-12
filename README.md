@@ -4,7 +4,33 @@ A personal, cloud-deployable full-stack application for tracking and managing
 an Egyptian stock market and investment fund portfolio — inspired
 functionally by apps like Thndr, but an independent, standalone product.
 
-> **Status:** Phase 23 — Production Infrastructure & Deployment
+> **Status:** Phase 23.5 — Production Provisioning. A real deployment
+> attempt was made against all four target providers named in the
+> intended architecture — Vercel (web/PWA), Render/Railway (FastAPI
+> backend), and Supabase (PostgreSQL) — from this session's own network,
+> not merely assumed unreachable. Every one of `api.vercel.com`,
+> `api.render.com`, `backboard.railway.app`, and `api.supabase.com` was
+> denied at the egress-proxy layer with an explicit `403` policy
+> rejection, logged by the proxy itself at the same moment for all four
+> hosts — the same category of restriction already documented for
+> `docker.io` (Phase 2) and `dl.google.com` (Phase 22). No credentials
+> for any of these providers exist in this environment either, so even
+> unblocked network access would not have been enough on its own.
+> **No durable external deployment exists as a result** — there is no
+> production API URL, no production database, and no production web
+> deployment. Nothing in the repository or its configuration is the
+> cause; every piece of Phase 23's preparation was re-verified fresh in
+> this session instead (full backend and frontend test suites, a
+> migration run against a brand-new empty database, both production
+> build modes, Capacitor sync and its structural tests, and a full
+> security scan — all green). See [DEPLOYMENT.md](./DEPLOYMENT.md),
+> "Production Provisioning Attempt Log" for the exact evidence, and
+> [DECISIONS.md](./DECISIONS.md), "Phase 23.5 — Production Provisioning"
+> for the full rationale and exactly what a human with real cloud
+> credentials would need to do from here to reach a genuinely live,
+> verified deployment.
+>
+> Phase 23 — Production Infrastructure & Deployment
 > Readiness. This phase makes the existing FastAPI/PostgreSQL/Next.js/
 > Capacitor architecture (Phases 2–22) production-ready as
 > infrastructure, without changing any financial logic. Backend: the
@@ -312,7 +338,8 @@ before the next begins.
 20. Telegram push delivery for the Notification Center (Phase 19 explicitly deferred external delivery — see [DECISIONS.md](./DECISIONS.md), "Phase 19 — Alerts & Notifications"; delivers the persisted Phase 19 Notification Center as its sole source of truth via the existing Telegram dispatcher, gated by global config → portfolio switch → per-alert-rule opt-in for alert-origin notifications, portfolio switch alone for recommendation-origin notifications; never recomputes an alert or recommendation) — done
 21. PWA / Mobile App Experience (installable manifest with standard + maskable icons, iOS home-screen metadata and safe-area handling for the notch/Dynamic Island/home indicator, a minimal hand-rolled service worker that caches only the static app shell and never touches `/api/*` so financial data is always network-authoritative, an offline banner, and an opt-in update prompt that never reloads mid-transaction — see [DECISIONS.md](./DECISIONS.md), "Phase 21 — PWA / Mobile App Experience") — done
 22. Capacitor Native Wrappers (native Android/iOS shell — `mobile/capacitor/`, app id `com.mizan.app` — bundling the frontend's static export, `BUILD_TARGET=capacitor npm run build:capacitor`, alongside the unchanged web/PWA build from the same codebase; a build-time guard rejects a missing, non-HTTPS, or ephemeral-Codespace-preview `NEXT_PUBLIC_API_BASE_URL` rather than ever hardcoding one; the Phase 21 service worker is disabled inside the native shell as redundant there, the offline banner stays active; MIZAN brand icons/splash screens generated for both platforms; Android/iOS native projects generated and structurally validated — a real Gradle build and a real Xcode build were not completed in this sandboxed environment, see [DEPLOYMENT.md](./DEPLOYMENT.md), "Capacitor Native Builds" — see [DECISIONS.md](./DECISIONS.md), "Phase 22 — Capacitor Native Wrappers") — done
-23. Production Infrastructure & Deployment Readiness (Docker hardened — `$PORT`-aware startup, non-root user, split runtime/dev dependencies; `GET /api/health/ready` added alongside the unchanged liveness `/api/health`; shared structured logging across the API and every worker with an audited no-secrets-logged guarantee; the dev seed script now refuses to run against `APP_ENV=production` without explicit override; `.env.example` corrected (two unused variables removed); CORS/HTTPS/Capacitor production-API requirements documented; a minimal test-only CI workflow added; migrations verified end-to-end against a clean empty database — see [DEPLOYMENT.md](./DEPLOYMENT.md) for the full architecture, environment variables, and production readiness checklist, and [DECISIONS.md](./DECISIONS.md), "Phase 23 — Production Infrastructure & Deployment Readiness" for what's implemented-and-verified versus prepared-but-externally-unprovisioned: no cloud account access exists in this environment, so no durable production URL, database, or deployment exists yet) — done *(current)*
+23. Production Infrastructure & Deployment Readiness (Docker hardened — `$PORT`-aware startup, non-root user, split runtime/dev dependencies; `GET /api/health/ready` added alongside the unchanged liveness `/api/health`; shared structured logging across the API and every worker with an audited no-secrets-logged guarantee; the dev seed script now refuses to run against `APP_ENV=production` without explicit override; `.env.example` corrected (two unused variables removed); CORS/HTTPS/Capacitor production-API requirements documented; a minimal test-only CI workflow added; migrations verified end-to-end against a clean empty database — see [DEPLOYMENT.md](./DEPLOYMENT.md) for the full architecture, environment variables, and production readiness checklist, and [DECISIONS.md](./DECISIONS.md), "Phase 23 — Production Infrastructure & Deployment Readiness" for what's implemented-and-verified versus prepared-but-externally-unprovisioned: no cloud account access exists in this environment, so no durable production URL, database, or deployment exists yet) — done
+23.5. Production Provisioning (a real deployment attempt against all four target providers — Vercel, Render, Railway, Supabase — confirmed with direct evidence that this environment's egress policy denies outbound connections to every one of them; no credentials for any provider exist here either. Nothing in the repository blocks deployment — only the absence of both network access and cloud credentials from this environment. Every locally-verifiable piece of Phase 23's work was re-confirmed fresh: full test suites, a clean-database migration run, both production build modes, Capacitor sync/tests, and a full security scan — see [DEPLOYMENT.md](./DEPLOYMENT.md), "Production Provisioning Attempt Log" and [DECISIONS.md](./DECISIONS.md), "Phase 23.5 — Production Provisioning") — done *(current)*
 24. Full multi-portfolio support (deferred from Phase 12 — see [DECISIONS.md](./DECISIONS.md))
 25. A verified EGID or EGXAPI adapter, or another zero-cost EGX-specific data source (deferred from Phase 13 — see [DECISIONS.md](./DECISIONS.md), requires network access and human-obtained API documentation this environment could not get)
 26. Live Telegram verification (deferred from Phase 14 — see [DECISIONS.md](./DECISIONS.md), `api.telegram.org` confirmed blocked by this environment's egress policy) and a "send test message" admin action (explicitly deferred by Phase 14's own approval)
