@@ -242,6 +242,39 @@ short of running it against the real target platform.
 Never rewrite a historical migration file — Phase 23 added no new
 migration (no schema change was required for any infrastructure work).
 
+### Running migrations from CI
+
+Claude Code's own sandboxed sessions **cannot** run `alembic upgrade
+head` against a real hosted database directly — this environment's
+network policy explicitly does not support raw-TCP database connections
+(only HTTPS on port 443), which was confirmed directly in Phase 23.5 by
+testing a real Supabase connection string: DNS resolved and port 443 to
+the same host connected instantly, but ports 5432 (session pooler) and
+6543 (transaction pooler) both timed out with no response, and the
+environment's own proxy documentation lists "raw-TCP databases" as
+explicitly unsupported. A GitHub Actions runner has normal outbound
+network access, so `.github/workflows/migrate-production.yml` (Phase
+23.5) exists to run the migration from there instead:
+
+1. In the repository's GitHub settings, add a secret named
+   `PRODUCTION_DATABASE_URL` containing the real
+   `postgresql+asyncpg://...` connection string for the production
+   database. This is the same value that goes into the backend's own
+   `DATABASE_URL` environment variable on Render/Railway — Alembic's
+   `env.py` only ever reads the async URL for migrations, so
+   `DATABASE_URL_SYNC` is not needed for this workflow.
+2. From the Actions tab, run "Migrate Production Database" manually
+   (`workflow_dispatch`) and type `MIGRATE` into the confirmation input.
+   Anything else leaves the job skipped, not run.
+3. The workflow runs exactly `alembic upgrade head` followed by
+   `alembic check` — nothing else. It never runs on push/PR, never runs
+   a downgrade, and never touches seed data.
+
+This is the same two-command procedure described above; only the
+execution environment changes (a GitHub-hosted runner instead of this
+sandboxed session), because only the former can actually open a
+PostgreSQL connection to an external host.
+
 ## Secrets Management
 
 Audited in Phase 23; no changes needed to the mechanism (environment
@@ -273,6 +306,12 @@ variables only, `pydantic-settings` reading them — see
   value.
 - Never commit a real `.env` — already gitignored; verified still the
   case in this session's `git status`.
+- `PRODUCTION_DATABASE_URL` (Phase 23.5) lives only as a GitHub Actions
+  repository secret, consumed only by
+  `.github/workflows/migrate-production.yml` — never committed, never
+  printed by that workflow's own steps, never referenced from
+  `ci.yml` (the always-on test workflow, which needs no production
+  credential at all).
 
 ## CORS
 
@@ -538,6 +577,15 @@ Actual deployment (pushing a new image to Render/Railway, promoting a
 Vercel build) remains a manual, external step until real cloud
 credentials are available to wire up a deploy job safely.
 
+`.github/workflows/migrate-production.yml` (new, Phase 23.5) — a
+second, separate workflow, manual-only (`workflow_dispatch`), requiring
+a typed `MIGRATE` confirmation, that runs `alembic upgrade head` +
+`alembic check` against the `PRODUCTION_DATABASE_URL` repository secret.
+See "Running migrations from CI" above for exactly why this exists and
+how to use it. Kept deliberately separate from `ci.yml` — one file runs
+automatically and touches nothing production-shaped; the other touches
+the production database and never runs automatically.
+
 ## Troubleshooting
 
 - **`alembic upgrade head` fails with a connection error** — check
@@ -583,7 +631,14 @@ credentials are available to wire up a deploy job safely.
 - [ ] Persistent PostgreSQL — **prepared, not provisioned** (Supabase
       project not created — network egress to `api.supabase.com` denied)
 - [x] Alembic migrations — verified end-to-end against a clean, empty
-      database in this session
+      database in this session; a real attempt against the actual
+      Supabase production database confirmed this sandboxed session
+      cannot open a direct PostgreSQL connection at all (raw-TCP
+      databases are explicitly unsupported here — HTTPS only), so
+      `.github/workflows/migrate-production.yml` now runs the same
+      procedure from a GitHub Actions runner instead — not yet triggered
+      against production (requires the `PRODUCTION_DATABASE_URL` secret
+      to be added first)
 - [x] Safe production initialization — seed script now refuses to run
       against `APP_ENV=production` without explicit override; no
       auto-migration on container boot

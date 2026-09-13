@@ -1925,3 +1925,75 @@ endpoints; a real signed Android/iOS Capacitor build; a live Telegram
 delivery verification; an actual automated-backup configuration. None of
 these changed status from Phase 23 — this phase's job was to prove the
 blocker is real by attempting it, not to re-describe it.
+
+### Addendum — a real credentialed attempt, and the actual root cause found
+
+After this entry was first written, a real Supabase connection string
+was supplied and a genuine `alembic upgrade head` attempt was made
+against it. This refined the finding above from "no credentials" to
+something more precise: **even with real, working credentials, this
+sandboxed session cannot open a PostgreSQL connection to any external
+host at all.** Confirmed directly:
+
+- DNS for the Supabase pooler hostname resolved correctly.
+- A raw TCP connection to that same host on port 443 succeeded
+  instantly.
+- A raw TCP connection to that same host on port 5432 (session pooler)
+  and port 6543 (transaction pooler) both timed out completely — no
+  response, no rejection, just silence — while a local Postgres on
+  `127.0.0.1:5432` connected instantly once started, isolating the
+  restriction to *outbound* traffic on non-443 ports specifically.
+- This environment's own proxy documentation (`/root/.ccr/README.md`)
+  independently lists "raw-TCP databases" under "Not supported through
+  the proxy (report, do not work around)" — corroborating the empirical
+  finding from a source that predates this session's own testing.
+
+**Decision: report, do not work around, per that documentation's own
+instruction.** No tunnel, proxy hack, or protocol-smuggling attempt was
+made. Nothing was applied to the production database — the command
+never got far enough to touch it.
+
+**Decision: add a manual-trigger GitHub Actions workflow
+(`migrate-production.yml`) rather than any other workaround.** A GitHub
+Actions runner has ordinary outbound network access and can open a real
+PostgreSQL connection, so it is the natural place to run the one
+production-database command this project ever needs
+(`alembic upgrade head`, per the already-documented migration
+procedure) from somewhere that actually can. Design choices:
+
+- **A separate workflow file from `ci.yml`, not a job added to it.**
+  `ci.yml` runs automatically on every push/PR and needs no production
+  credential at all; a workflow that touches the real production
+  database must never share that automatic trigger. Keeping them
+  separate makes "this one only runs when a human deliberately runs it"
+  visible from the file list alone.
+- **`workflow_dispatch` plus a typed `MIGRATE` confirmation input, not
+  just `workflow_dispatch` alone.** Selecting a branch and clicking "Run
+  workflow" in the GitHub UI is already a real approval gate, but typing
+  a literal word adds a second, cheap safeguard against a misclick
+  running a production migration by accident — the job is skipped
+  (not merely a no-op inside a run) unless the input matches exactly.
+- **Only `alembic upgrade head` + `alembic check`, nothing else exposed
+  as a workflow input.** A more "flexible" version could have taken a
+  target revision as an input (enabling an easy downgrade path from the
+  same confirmation phrase) — deliberately not built, since
+  DEPLOYMENT.md's own "Rollback Considerations" already treats a
+  downgrade as a deliberate, manual, last-resort action, not something
+  that should be one confirmation word away from a routine migration
+  workflow.
+- **The connection string lives only in a GitHub Actions repository
+  secret (`PRODUCTION_DATABASE_URL`)**, never in this repository's
+  source, never echoed by the workflow's own steps. Only the async
+  `DATABASE_URL` value is needed — `alembic/env.py` reads
+  `get_settings().database_url` exclusively for migrations, so
+  `DATABASE_URL_SYNC` is irrelevant to this specific workflow (also
+  worth noting: the connection string supplied during this session had
+  a literal placeholder in its `DATABASE_URL_SYNC` position, which
+  turned out not to matter for this reason, though it would matter for
+  anything that does use the sync URL).
+
+This remains true: no production database has been migrated, and no
+durable deployment exists. What changed is that the one command Phase
+23.5 could not run from this session now has a documented, safe place
+to run from — a human with repository admin access needs to add the
+`PRODUCTION_DATABASE_URL` secret and trigger the workflow once.

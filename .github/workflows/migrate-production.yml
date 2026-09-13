@@ -1,0 +1,67 @@
+name: Migrate Production Database
+
+# Manual-only, never triggered by push/PR. Exists because Alembic needs a
+# genuine PostgreSQL wire-protocol connection (port 5432/6543), which
+# Claude Code's own sandboxed sessions cannot open -- this environment's
+# egress policy explicitly does not support raw-TCP databases, only HTTPS
+# (see DEPLOYMENT.md, "Production Provisioning Attempt Log"). A GitHub
+# Actions runner has normal outbound network access, so this is where the
+# migration procedure documented in DEPLOYMENT.md ("Database Creation &
+# Migration Procedure") actually gets to run.
+#
+# Safety:
+#   - Only runs via a human explicitly triggering it from the Actions tab
+#     (or `gh workflow run`) and picking a branch/ref -- that's the
+#     approval gate, on top of the confirmation input below.
+#   - Requires typing the literal word MIGRATE into the confirmation
+#     input; anything else is a no-op (the job is skipped, not failed).
+#   - Runs only `alembic upgrade head` (additive schema migration) and
+#     `alembic check` (read-only verification) -- never a downgrade,
+#     never a seed, never anything destructive. A downgrade is a
+#     deliberately separate, manual action -- see DEPLOYMENT.md,
+#     "Rollback Considerations".
+#   - The connection string lives only in the repository's
+#     PRODUCTION_DATABASE_URL secret -- never in this file, never in a
+#     log line this workflow prints itself.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type MIGRATE to run alembic upgrade head against PRODUCTION_DATABASE_URL'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    if: github.event.inputs.confirm == 'MIGRATE'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run alembic upgrade head
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::PRODUCTION_DATABASE_URL secret is not set -- see DEPLOYMENT.md, 'Running migrations from CI'."
+            exit 1
+          fi
+          alembic upgrade head
+
+      - name: Verify with alembic check
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: alembic check
