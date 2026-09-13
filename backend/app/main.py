@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
+from app.core.auth import ensure_auth_configured
 from app.core.config import get_settings
 from app.core.database import engine
 from app.core.logging_config import configure_logging
@@ -19,6 +20,7 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    ensure_auth_configured()
     logger.info("MIZAN backend starting up (env=%s, debug=%s).", settings.app_env, app.debug)
     yield
     logger.info("MIZAN backend shutting down.")

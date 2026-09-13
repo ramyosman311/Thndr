@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
     telegram_enabled: bool = Field(default=False, alias="TELEGRAM_ENABLED")
 
+    api_auth_token: str = Field(default="", alias="API_AUTH_TOKEN")
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.backend_cors_origins.split(",") if origin.strip()]

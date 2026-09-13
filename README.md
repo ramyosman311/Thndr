@@ -30,6 +30,28 @@ functionally by apps like Thndr, but an independent, standalone product.
 > credentials would need to do from here to reach a genuinely live,
 > verified deployment.
 >
+> **Update:** the paragraph above is no longer current. The user
+> manually provisioned and deployed the application (Vercel + Render)
+> outside any Claude Code session, and confirmed the live frontend
+> correctly reaches the live backend — see
+> `https://mizan-frontend-six.vercel.app` /
+> `https://mizan-backend-5e7b.onrender.com`. A production audit of that
+> live architecture then found every non-health API route completely
+> unauthenticated (`ARCHITECTURE.md`'s own documented "Authentication
+> Boundary" gap, never previously enforced in code). **P0-2 — Secure the
+> Public Backend** closes that gap: every route except `/api/health` and
+> `/api/health/ready` now requires `API_AUTH_TOKEN`
+> (`Authorization: Bearer <token>`, `hmac.compare_digest`), the backend
+> fails closed at startup if `DEV_MODE=false` and the token is unset, and
+> the token is never shipped to the browser — a new Next.js server-side
+> proxy (`frontend/app/api/[...path]/route.ts`) holds it instead. See
+> [DEPLOYMENT.md](./DEPLOYMENT.md), "Authentication" and
+> [DECISIONS.md](./DECISIONS.md), "P0-2 — Secure the Public Backend" for
+> the full design. This still requires the `API_AUTH_TOKEN`/
+> `BACKEND_API_URL` environment variables to actually be set on Render
+> and Vercel before it takes effect in production — not yet done as of
+> this update.
+>
 > Phase 23 — Production Infrastructure & Deployment
 > Readiness. This phase makes the existing FastAPI/PostgreSQL/Next.js/
 > Capacitor architecture (Phases 2–22) production-ready as

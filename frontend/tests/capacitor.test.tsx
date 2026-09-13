@@ -115,14 +115,23 @@ describe("Frontend source never references backend-only secrets", () => {
     return out;
   }
 
-  it("contains none of the backend-only environment variable names", () => {
+  // app/api/**/route.ts (P0-2's app/api/[...path]/route.ts) is the one
+  // place backend-only env vars (API_AUTH_TOKEN, BACKEND_API_URL) are
+  // legitimately read: Route Handlers are guaranteed server-only by
+  // Next.js's own file convention -- never bundled into client JS, unlike
+  // everything else these tests scan.
+  function isServerOnlyRouteHandler(file: string): boolean {
+    return /route\.(ts|js)$/.test(file);
+  }
+
+  it("contains none of the backend-only environment variable names outside server-only route handlers", () => {
     const root = process.cwd();
     const files = [
       ...sourceFiles(join(root, "app")),
       ...sourceFiles(join(root, "components")),
       ...sourceFiles(join(root, "lib")),
       ...sourceFiles(join(root, "hooks")),
-    ];
+    ].filter((file) => !isServerOnlyRouteHandler(file));
     for (const file of files) {
       const content = readFileSync(file, "utf-8");
       for (const secret of forbidden) {
@@ -131,14 +140,14 @@ describe("Frontend source never references backend-only secrets", () => {
     }
   });
 
-  it("only ever reads NEXT_PUBLIC_API_BASE_URL from process.env", () => {
+  it("only ever reads NEXT_PUBLIC_API_BASE_URL from process.env outside server-only route handlers", () => {
     const root = process.cwd();
     const files = [
       ...sourceFiles(join(root, "app")),
       ...sourceFiles(join(root, "components")),
       ...sourceFiles(join(root, "lib")),
       ...sourceFiles(join(root, "hooks")),
-    ];
+    ].filter((file) => !isServerOnlyRouteHandler(file));
     const envReads: string[] = [];
     for (const file of files) {
       const content = readFileSync(file, "utf-8");
@@ -147,6 +156,25 @@ describe("Frontend source never references backend-only secrets", () => {
     }
     const unique = [...new Set(envReads)];
     expect(unique).toEqual(["process.env.NEXT_PUBLIC_API_BASE_URL"]);
+  });
+
+  it("keeps API_AUTH_TOKEN reads confined to a server-only route handler", () => {
+    const root = process.cwd();
+    const allFiles = [
+      ...sourceFiles(join(root, "app")),
+      ...sourceFiles(join(root, "components")),
+      ...sourceFiles(join(root, "lib")),
+      ...sourceFiles(join(root, "hooks")),
+    ];
+    for (const file of allFiles) {
+      const content = readFileSync(file, "utf-8");
+      if (content.includes("process.env.API_AUTH_TOKEN")) {
+        expect(
+          isServerOnlyRouteHandler(file),
+          `${file} reads API_AUTH_TOKEN but is not a server-only route handler`
+        ).toBe(true);
+      }
+    }
   });
 });
 

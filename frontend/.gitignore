@@ -43,3 +43,8 @@ next-env.d.ts
 # next postinstall AI-agent guidance files (auto-regenerated, not project docs)
 /AGENTS.md
 /CLAUDE.md
+
+# scripts/build-capacitor.js's temporary home for app/api during a Capacitor
+# build; restored to app/api immediately afterward, but ignored in case a
+# hard crash ever leaves it in place.
+/.capacitor-build-excluded-api

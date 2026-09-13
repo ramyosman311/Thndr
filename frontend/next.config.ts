@@ -13,19 +13,14 @@ const nextConfig: NextConfig = isCapacitorBuild
   ? {
       // Capacitor bundles this output directly (see
       // mobile/capacitor/capacitor.config.ts, webDir) -- there is no
-      // server at runtime to serve pages or run the API rewrite below,
-      // so a static export is the only compatible output mode.
+      // server at runtime to serve pages or run app/api/[...path]/route.ts
+      // below, so a static export is the only compatible output mode.
       output: "export",
     }
   : {
-      async rewrites() {
-        return [
-          {
-            source: "/api/:path*",
-            destination: "http://127.0.0.1:8000/api/:path*",
-          },
-        ];
-      },
+      // /api/* is handled by app/api/[...path]/route.ts (P0-2) -- a real
+      // filesystem route always takes precedence over a plain-array
+      // rewrite here, so a rewrite for the same path would be dead code.
     };
 
 export default nextConfig;

@@ -1997,3 +1997,107 @@ durable deployment exists. What changed is that the one command Phase
 23.5 could not run from this session now has a documented, safe place
 to run from — a human with repository admin access needs to add the
 `PRODUCTION_DATABASE_URL` secret and trigger the workflow once.
+
+## P0-2 — Secure the Public Backend
+
+By the time this decision was made, the user had manually deployed and
+verified the application live (Vercel + Render), superseding Phase
+23.5's "no durable deployment exists" — and confirmed the frontend was
+actually reaching the backend correctly. A production audit of that live
+architecture (route inventory, `ARCHITECTURE.md`'s own documented
+"Authentication Boundary") found every non-health API route completely
+unauthenticated: any request that reached the backend could read or
+write real portfolio data, including deletes, with no credential at all.
+This was the first P0 fix applied to the live deployment.
+
+**Mechanism: a single shared bearer token, not a session or JWT.**
+`ARCHITECTURE.md`'s "Authentication Boundary" already documented this
+project as deliberately single-user, with `DEV_MODE` reserved to gate
+auth enforcement — a contract `.env.example` stated but no code
+enforced. A shared static secret compared with `hmac.compare_digest`
+(`backend/app/core/auth.py`) is the minimum mechanism that actually
+closes the open-API risk for a single-user deployment; building session
+management or JWT verification now would be solving a multi-user problem
+this project doesn't have yet, for no additional safety today. The
+dependency is attached once, at router-mounting level
+(`backend/app/api/router.py`), rather than per-route, specifically so a
+future route can never be added and accidentally ship unauthenticated.
+
+**Fail-closed startup, not a runtime warning.** `DEV_MODE=false` without
+`API_AUTH_TOKEN` set makes the backend refuse to start
+(`ensure_auth_configured()`, called from `app/main.py`'s `lifespan`,
+`sys.exit(1)`) — the same shape as the existing seed production guard
+and the Capacitor build guard elsewhere in this codebase. A silent
+fallback to unauthenticated would defeat the entire point of this phase;
+a process that never starts is a loud, immediate signal instead of a
+quietly-reopened API.
+
+**The real constraint: the token can never reach the browser.** The
+live frontend (Vercel) and backend (Render) are different origins, and
+before this phase the frontend called the backend directly with an
+absolute `NEXT_PUBLIC_API_BASE_URL`. A `NEXT_PUBLIC_*` variable is
+inlined into the client bundle at build time — anything placed there is
+public by construction, so the shared token could never live in one.
+The only place left to hold it is a server the browser doesn't control,
+which meant introducing one: `frontend/app/api/[...path]/route.ts`, a
+Next.js Route Handler that runs on Vercel's own server, reads
+`API_AUTH_TOKEN`/`BACKEND_API_URL` from non-public environment
+variables, and attaches `Authorization: Bearer <token>` when forwarding
+to Render. The browser goes back to calling relative `/api/...` on its
+own origin — `frontend/lib/api.ts` needed no change at all, since that
+was already its default before any absolute-URL override existed.
+
+This reintroduces, deliberately, the exact shape Phase 16B's proxy once
+had (`next.config.ts`'s `rewrites()` to a co-located backend) but fixes
+what that shape could never do: attach a credential. Once the Route
+Handler existed, the old `rewrites()` config became genuinely dead code
+— a real filesystem route under `app/api` always wins over a plain-array
+rewrite for the same path in Next.js's own routing precedence — so it
+was removed rather than left as an unreachable, confusing leftover.
+
+**A side effect worth naming: this also fixes CORS, not just auth.**
+Once the browser only ever calls the same-origin Vercel proxy, it never
+sends the backend a cross-origin request at all — Render's
+`BACKEND_CORS_ORIGINS` no longer needs the web origin listed, only
+Capacitor's `https://localhost` (which still calls Render directly, see
+below). This wasn't a goal going in; it fell out of solving the secret
+placement problem correctly.
+
+**Capacitor could not use this proxy, and didn't need to.** The native
+build ships a static export with no server of its own
+(`output: "export"`), and Next.js's static export explicitly does not
+support a Route Handler that relies on the Request object (arbitrary
+method/body/headers) — confirmed empirically: adding the proxy file
+broke `npm run build:capacitor` outright (`cannot be used with
+"output: export"`). Since the Capacitor app already calls the backend
+directly via an explicit `NEXT_PUBLIC_API_BASE_URL` (Phase 22's build
+guard, unrelated to this phase) and isn't store-distributed yet, the
+correct fix was exclusion, not adaptation: `npm run build:capacitor` now
+runs `frontend/scripts/build-capacitor.mjs`, which moves `app/api` out
+of the `app/` tree before `next build` and always restores it
+afterward — on success, on failure, or on Ctrl-C — so the real,
+version-controlled route file is never actually lost, only absent for
+the duration of that one build. How the native app should authenticate
+once it's actually distributed is an explicitly deferred question, not
+an oversight — it has no live users to protect yet, unlike the web
+deployment.
+
+**Migration to Supabase Auth stays a two-line swap, not a redesign.**
+`require_api_token`'s body changes from comparing a static secret to
+verifying a Supabase-issued JWT; the proxy stops injecting a shared
+secret and instead forwards the signed-in user's real session token.
+Neither the router wiring nor the browser-to-proxy-to-backend request
+shape changes at all — this was a design constraint from the start, not
+a happy accident, since `ARCHITECTURE.md` already committed to the
+database schema supporting per-user auth "without restructuring existing
+tables" once it exists.
+
+Verification for this phase: 618 backend tests (607 prior + 11 new in
+`test_auth.py` — missing/invalid/malformed/valid token, DEV_MODE bypass,
+fail-closed startup with and without the token), 131 frontend tests (130
+prior + 1 new, replacing a secret-scan assertion that needed to
+distinguish the new server-only route handler from genuinely
+client-bundled code, plus a new assertion that `API_AUTH_TOKEN` reads
+stay confined to that one file), both Next.js build modes passing
+independently, `tsc --noEmit` and `eslint` clean on every changed file.
+No financial/domain logic touched.

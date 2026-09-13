@@ -126,16 +126,18 @@ commit a real `.env`. Full inventory and what each controls:
 |---|---|---|
 | `APP_ENV` | `development` | `production` — gates debug mode and the seed script's production guard |
 | `APP_DEBUG` | `true` | `false` (also force-disabled whenever `APP_ENV=production`, regardless of this value) |
-| `DEV_MODE` | `true` | `false` — see ARCHITECTURE.md, "Authentication Boundary" |
+| `DEV_MODE` | `true` | `false` — as of P0-2, this is what actually enforces `API_AUTH_TOKEN` on every non-health route; see "Authentication" below and ARCHITECTURE.md, "Authentication Boundary" |
 | `BACKEND_HOST` | `0.0.0.0` | `0.0.0.0` (required for a container to accept external traffic) |
 | `BACKEND_PORT` | `8000` | Not usually set directly — most platforms inject `$PORT`, which `backend/Dockerfile`'s CMD already reads with `8000` as its fallback |
 | `BACKEND_CORS_ORIGINS` | `http://localhost:3000` | Comma-separated, explicit production origins — see "CORS" below. Never `*` |
-| `DATABASE_URL` / `DATABASE_URL_SYNC` | local/dockerized Postgres | Supabase (or equivalent) connection strings — async and sync forms respectively (Alembic uses the sync one) |
-| `SECRET_KEY` | placeholder | A strong, unique, randomly generated value |
+| `DATABASE_URL` / `DATABASE_URL_SYNC` | local/dockerized Postgres | Supabase (or equivalent) connection strings — async and sync forms respectively (`alembic/env.py` reads the async `DATABASE_URL`) |
+| `SECRET_KEY` | placeholder | A strong, unique, randomly generated value. Reserved for a future signing use (see `.env.example`) — distinct from `API_AUTH_TOKEN` below, which is already in active use |
+| `API_AUTH_TOKEN` | unset | **Mandatory whenever `DEV_MODE=false`** — the backend refuses to start without it. See "Authentication" below |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | empty | Backend-only secrets — see "Secrets" and "Telegram Configuration" below |
 | `TELEGRAM_ENABLED` | `false` | `true` only once credentials are set and delivery is wanted |
 | `ALLOW_SEED_IN_PRODUCTION` | unset | Leave unset in real production — only set to `1` deliberately, e.g. seeding a pre-launch demo instance |
-| `NEXT_PUBLIC_API_BASE_URL` | `/api` (relative, dev) | The production API's HTTPS URL for the web deployment; a build-time-baked HTTPS URL for the Capacitor build — see "Web Deployment" and "Capacitor Production Configuration" |
+| `NEXT_PUBLIC_API_BASE_URL` | unset (relative `/api`) | **Web/PWA (Vercel): leave unset** — P0-2's server-side proxy (`frontend/app/api/[...path]/route.ts`) handles routing to the backend; a build-time-baked absolute HTTPS URL is still required for the Capacitor build specifically — see "Web Deployment" and "Capacitor Production Configuration" |
+| `BACKEND_API_URL` | unset (falls back to `http://127.0.0.1:8000/api`) | Vercel (frontend), server-side only, never `NEXT_PUBLIC_` — the backend base URL the proxy forwards to. See "Authentication" below |
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | unset | Reserved — no code path reads these today (see `.env.example`'s comment); do not set real values without a corresponding feature that uses them |
 
 ## Local Development
@@ -320,18 +322,91 @@ variables only, `pydantic-settings` reading them — see
 default (`http://localhost:3000` in dev, confirmed by reading
 `app/main.py` and `app/core/config.py`; no code path ever passes `"*"`).
 
+**Since P0-2 (see "Authentication" below), the browser no longer calls
+the backend cross-origin at all** — the web/PWA frontend calls its own
+Vercel origin at a relative `/api/...` path, and
+`frontend/app/api/[...path]/route.ts` forwards that request to the
+backend server-side (Vercel-to-Render, not subject to browser CORS in
+the first place). The only thing that still calls the backend directly
+from an actual browser-equivalent WebView is the Capacitor native app.
+
 **A production deployment must set this to include:**
 
-1. The production web/PWA origin (e.g. `https://mizan.example.com`,
-   whatever the actual Vercel/custom domain ends up being).
-2. `https://localhost` — the Capacitor native app's WebView origin
+1. `https://localhost` — the Capacitor native app's WebView origin
    (`mobile/capacitor/capacitor.config.ts` sets
    `server.androidScheme: "https"`), once a native build is distributed.
 
-Example: `BACKEND_CORS_ORIGINS=https://mizan.example.com,https://localhost`
+The production web/PWA origin (e.g. `https://mizan.example.com`) no
+longer needs to be listed here, precisely because the browser never
+sends it a cross-origin request anymore — including it isn't harmful,
+just unnecessary.
+
+Example: `BACKEND_CORS_ORIGINS=https://localhost`
 
 Development remains more permissive (`http://localhost:3000` only,
 matching the local Next.js dev server) — no change needed there.
+
+## Authentication
+
+**P0-2.** Every backend API route requires a shared bearer token except
+`GET /api/health` and `GET /api/health/ready`, which stay public for
+platform health checks. See `backend/app/core/auth.py` for the
+dependency itself and `backend/app/api/router.py` for where it's
+attached (once, at router-mounting level — never per-route).
+
+- **Mechanism**: `Authorization: Bearer <API_AUTH_TOKEN>`, compared with
+  `hmac.compare_digest` (constant-time). Not a session, not a JWT, not
+  per-user — a single shared secret, matching this project's current
+  single-user architecture. Missing or wrong token → `401`.
+- **`DEV_MODE=true`** bypasses this entirely (the pre-existing contract
+  already documented in `.env.example` before P0-2 implemented it) — no
+  token is needed for local development.
+- **`DEV_MODE=false`** (required in production) makes `API_AUTH_TOKEN`
+  mandatory: the backend calls `ensure_auth_configured()` during startup
+  (`app/main.py`'s `lifespan`) and refuses to boot — `sys.exit(1)`, no
+  partial/unauthenticated startup — if the token isn't set. There is no
+  production fallback to unauthenticated mode.
+- **The frontend never holds the secret.** `frontend/lib/api.ts` is
+  unchanged and still calls relative `/api/...` paths on the browser's
+  own origin. `frontend/app/api/[...path]/route.ts` is a Next.js Route
+  Handler that runs only on Vercel's server, reads `API_AUTH_TOKEN` and
+  `BACKEND_API_URL` from server-side (non-`NEXT_PUBLIC_`) environment
+  variables, and attaches the `Authorization` header itself when
+  forwarding to the real backend. Neither variable is ever read by
+  client-bundled code — enforced by a dedicated test,
+  `frontend/tests/capacitor.test.tsx`'s "keeps API_AUTH_TOKEN reads
+  confined to a server-only route handler".
+- **Local development**: both `BACKEND_API_URL` and `API_AUTH_TOKEN` are
+  typically unset. The proxy then falls back to
+  `http://127.0.0.1:8000/api`, and since the local backend runs with
+  `DEV_MODE=true`, no token is required there either.
+- **Capacitor is the one exception**: it ships as a static export with
+  no server of its own (see "Capacitor Production Configuration" below),
+  so it cannot use this proxy — `app/api/[...path]/route.ts` is
+  physically excluded from that build by
+  `frontend/scripts/build-capacitor.mjs` (Next.js does not support a
+  Route Handler that relies on the Request object under
+  `output: "export"`). The native app instead calls the backend directly
+  via `NEXT_PUBLIC_API_BASE_URL`, exactly as before P0-2. How (or
+  whether) that direct connection gets its own credential is a decision
+  for whenever the Capacitor app is actually distributed — it isn't
+  live/store-distributed today, so P0-2 didn't need to solve it.
+- **Required environment variables**:
+  - Render (backend): `API_AUTH_TOKEN` (a strong random secret, e.g.
+    `openssl rand -hex 32`) and `DEV_MODE=false`.
+  - Vercel (frontend), both server-side/non-`NEXT_PUBLIC_`: `API_AUTH_TOKEN`
+    (the exact same value as Render's) and `BACKEND_API_URL` (e.g.
+    `https://mizan-backend-5e7b.onrender.com/api`).
+  - Vercel's `NEXT_PUBLIC_API_BASE_URL` should be unset for the web/PWA
+    build — the frontend already defaults to relative `/api`, which is
+    what routes through the proxy.
+- **Migrating to Supabase Auth later**: only `require_api_token`'s body
+  (verify a Supabase-issued JWT instead of comparing a static secret)
+  and the proxy's header-injection logic (forward the signed-in user's
+  real session token instead of a shared secret) need to change — the
+  router wiring and the browser-to-proxy-to-backend request shape stay
+  identical. See ARCHITECTURE.md, "Authentication Boundary" for the
+  schema-level compatibility this depends on.
 
 ## Health & Readiness
 
@@ -457,23 +532,31 @@ environment. Documented here so a real deployment does not skip it:
 
 ## Web Deployment
 
-No change to the web/PWA architecture — `npm run build` (a normal
-Next.js server build, `/api/*` proxied to FastAPI via `next.config.ts`'s
-`rewrites()`) remains exactly as Phase 16B left it. Deploy it to Vercel
-(zero-config for a standard Next.js app) or containerize it alongside
-the backend — both remain valid per the existing Target Topology; Phase
-23 did not need to pick between them, since nothing about production
-readiness depends on that choice.
+`npm run build` (a normal Next.js server build) is deployed to Vercel
+(zero-config for a standard Next.js app) or containerized alongside the
+backend — both remain valid per the existing Target Topology.
 
-**Required for production**: set `NEXT_PUBLIC_API_BASE_URL` (via the
-hosting platform's environment variable configuration, e.g. Vercel's
-project settings) to the real production FastAPI URL. Never leave it
-defaulting to the relative `/api` path unless the frontend and backend
-are actually deployed behind the same origin/reverse proxy.
+**As of P0-2**, `/api/*` is handled by
+`frontend/app/api/[...path]/route.ts`, a server-side proxy that forwards
+to the real backend and attaches the shared auth token itself (see
+"Authentication" above) — this superseded the older `next.config.ts`
+`rewrites()`-based proxy, which could only ever point at a co-located
+`127.0.0.1:8000` and had no way to attach a credential.
 
-**Verified in this session**: `npm run build` still succeeds (13 routes,
-unchanged from Phase 22), with no Codespace dependency anywhere in the
-build output — confirmed by the same automated scan that checks
+**Required for production (Vercel project settings)**:
+
+- `BACKEND_API_URL` and `API_AUTH_TOKEN` (server-side, never
+  `NEXT_PUBLIC_`) — see "Authentication" above for exact values.
+- `NEXT_PUBLIC_API_BASE_URL` — leave unset. The frontend already
+  defaults to the relative `/api` path, which is what routes through the
+  proxy above.
+
+**Verified in this session**: `npm run build` succeeds (13 routes,
+`/api/[...path]` correctly reported as a dynamic/server-rendered route),
+and `npm run build:capacitor` (via `frontend/scripts/build-capacitor.mjs`)
+still succeeds separately (13 static routes, the proxy route excluded —
+see "Authentication" above for why). No Codespace dependency anywhere in
+either build's output — confirmed by the same automated scan that checks
 Capacitor's build guard.
 
 ## Capacitor Production Configuration
@@ -497,11 +580,20 @@ configuration a hard requirement rather than a documented convention.
 - **Production build command**:
   ```
   NEXT_PUBLIC_API_BASE_URL=https://api.<your-production-domain>/api \
-  BUILD_TARGET=capacitor npm run build:capacitor
+  npm run build:capacitor
   cd mobile/capacitor && npm run sync
   ```
   then `npm run open:android` / `npm run open:ios` for a real signed
   build on a machine with the Android SDK / Xcode respectively.
+- **P0-2 note**: `npm run build:capacitor` now runs
+  `frontend/scripts/build-capacitor.mjs` rather than `next build`
+  directly (it sets `BUILD_TARGET=capacitor` itself). This wrapper
+  temporarily excludes `app/api/[...path]/route.ts` — the server-side
+  auth proxy added for the web/PWA build — because Next.js's
+  `output: "export"` cannot include a Route Handler that relies on the
+  Request object. The Capacitor app never used that proxy anyway (it has
+  no server at runtime); this only changes how the exclusion happens,
+  not what the native app does. See "Authentication" above.
 - **Service worker**: confirmed still correctly disabled inside the
   native shell (`isNativeApp()` check, Phase 22) — re-verified in this
   session's frontend test run (130/130 passing, including the
@@ -646,7 +738,15 @@ the production database and never runs automatically.
       (removed two unused variables, clarified the rest); no secret
       reaches the frontend bundle (automated test)
 - [x] CORS — environment-driven, no wildcard, documented production
-      values (web origin + Capacitor's `https://localhost`)
+      values (web origin no longer needed once the P0-2 proxy is in
+      place; Capacitor's `https://localhost` still required)
+- [x] Authentication (P0-2) — every non-health API route requires
+      `API_AUTH_TOKEN`; `DEV_MODE=false` without it fails the backend
+      closed at startup; the token is never shipped to the browser (a
+      Next.js server-side proxy holds it) — see "Authentication" above.
+      Still a single shared secret, not per-user auth (see
+      ARCHITECTURE.md, "Authentication Boundary" for the deliberate
+      scope and the migration path to Supabase Auth)
 - [x] Health/readiness — `/api/health` (liveness, unchanged) and
       `/api/health/ready` (readiness, new) both implemented and tested
 - [x] Production logging — shared structured format across the API and

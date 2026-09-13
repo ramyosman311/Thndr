@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "build:capacitor": "BUILD_TARGET=capacitor next build",
+    "build:capacitor": "node scripts/build-capacitor.mjs",
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest"
