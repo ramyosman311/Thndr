@@ -2202,3 +2202,162 @@ Node import of the installed package confirming its actual shipped API
 shape. No `API_AUTH_TOKEN` reference of any kind in this phase's files —
 this is a different secret from the P0-2 shared token, and the two are
 unrelated. No financial/domain logic touched.
+
+## P0-3A/B — Identity, Ownership, JWT Verification
+
+**Scope.** Two things, and only these two: (1) a local `users` table plus
+nullable ownership columns on the tables identified as user-owned
+(portfolio_configs.user_id; holdings/transactions/watchlist/alert_rules/
+notifications.portfolio_config_id), and (2) `require_supabase_user` — real,
+cryptographic, JWKS-based verification of a Supabase Auth JWT — plus
+`get_current_user` (get-or-create local identity) and
+`verify_internal_proxy_token` (a separate, optional-if-present
+server-to-server trust signal). Explicitly NOT in scope, and not touched:
+login/signup UI, a Supabase client SDK integration, Capacitor session
+wiring, refresh tokens, router wiring for any of the above, or an
+application-wide ownership refactor. `app/api/router.py` and every
+existing route's dependencies are byte-for-byte unchanged from P0-2.
+
+**Why the identity chain is `auth.users.id` → local `users.id` →
+`portfolio_configs.user_id` → user-owned data, not something invented.**
+Supabase Auth already owns "who a request is from" — it issues the JWT and
+maintains `auth.users`. This project's own schema needed exactly one new
+fact: a place to hang foreign keys off that identity without depending on
+Supabase's own schema (a separate Postgres schema this project's
+migrations don't manage). `users.id` is therefore NOT auto-generated (no
+`UUIDPrimaryKeyMixin`) — it is always set to the exact `sub` claim from a
+*verified* JWT, so "the same person" always means "the same row," by
+construction, not by convention. The table carries no other columns
+deliberately: nothing in this phase reads or displays profile data, and
+Supabase's `auth.users` already owns it — duplicating it here without a
+reader would be exactly the kind of speculative field this project
+consistently avoids (see e.g. `Notification.read_at` instead of a
+redundant boolean, or the P0-3 Secure Storage decision above).
+
+**Why every new ownership column is nullable, and what makes that safe.**
+Every column added by migration `b3e04b7fe898` is `NULL`-able and every
+existing row is left untouched — no backfill, no production data write of
+any kind. This is a hard requirement, not a preference: any real
+production `portfolio_configs` row (and everything hanging off it) predates
+any concept of a user and cannot be safely assigned an owner by code —
+guessing would either silently create a fake user or misattribute real
+financial data to the wrong identity, both unacceptable. A later,
+verified-backfill phase — run with actual knowledge of who owns what,
+never inferred — is a prerequisite for ever making these columns
+`NOT NULL`. Until then: `uq_holdings_asset_id` and `uq_watchlist_asset_id`
+are deliberately left as single-column unique constraints on `asset_id`
+rather than widened to `(portfolio_config_id, asset_id)`, because Postgres
+treats `NULL` as distinct from every other `NULL` in a unique constraint —
+widening now, before every row has a verified owner, would silently admit
+duplicate-per-asset rows the constraint exists to prevent. `alert_rules`
+gets a *direct* `portfolio_config_id` (in addition to its existing,
+transitively-owning `watchlist_id`) so a later phase can scope it without
+a join — the one place this phase adds a column beyond the minimum, and
+only because ownership scoping was named as a target for this table
+explicitly. Every repository/service "first row" lookup this phase found
+(`get_portfolio_config()` in `app/repositories/portfolio_repository.py`,
+the only one) is untouched byte-for-byte — it is not wired to filter by
+the new columns, so no endpoint's behavior silently changes from "the one
+portfolio in a single-user deployment" to "the first user's portfolio."
+
+**Why JWKS/asymmetric verification, never a shared secret or a bare
+`decode()`.** Supabase signs Auth JWTs with an asymmetric key (RS256
+today; ES256 is Supabase's own documented alternative) and publishes the
+corresponding public key(s) at a standard, per-project JWKS endpoint.
+`require_supabase_user` fetches that key via `jwt.PyJWKClient` (cached
+per JWKS URL for the process lifetime — the client itself also caches
+fetched keys) and passes it to `jwt.decode(...)`, which verifies the
+signature, `exp`, `iss`, and `aud` together, atomically — there is no
+code path anywhere in this file that decodes a payload without verifying
+its signature first (`options={"verify_signature": False}` appears
+nowhere), and only `RS256`/`ES256` are ever accepted, never `HS256` (which
+would let anyone holding the *public* key forge a token if it were
+mistakenly treated as a shared secret — a classic JWT library
+misconfiguration this deliberately forecloses). `SUPABASE_URL` was already
+a reserved-but-unread config value (see `.env.example`); this phase is the
+first to read it, deriving both the issuer (`{SUPABASE_URL}/auth/v1`) and
+the JWKS URL from it — never a hardcoded or guessed project reference.
+`SUPABASE_JWT_AUDIENCE` defaults to `"authenticated"`, Supabase's own
+documented standard audience claim for every access token it issues, not
+a project-specific secret. An unconfigured `SUPABASE_URL` fails closed
+(every request 401s) rather than open. `DEV_MODE` — P0-2's bypass for the
+unrelated `require_api_token` shared-secret check — has no effect on this
+dependency at all; a test confirms an invalid Supabase JWT is still
+rejected even with `DEV_MODE=true`.
+
+**Why `verify_internal_proxy_token` is a new function reading a new
+header, not a change to `require_api_token`.** The target end-state
+architecture is: Web sends both `Authorization: Bearer <Supabase JWT>`
+(via the Vercel proxy, which already exists from P0-2) and
+`X-Internal-Proxy-Token: <API_AUTH_TOKEN>`; native/Capacitor sends only
+the Supabase JWT, never `API_AUTH_TOKEN` (a secret that must never ship in
+a native binary). But P0-2's `require_api_token` already reads
+`Authorization` in production today, on every live route, to mean "is the
+shared secret present" — changing what that header means, or attaching a
+second dependency to the same routes, requires a coordinated deploy with
+the frontend proxy that is out of scope for this phase and would risk
+breaking the already-live API. `verify_internal_proxy_token` is therefore
+built standalone, reads a header P0-2 never touches, and is wired into
+nothing yet. Its semantics are optional-if-present by design: absent →
+allowed (this is what a native client's request looks like, and it is not
+an error); present and correct → allowed; present and incorrect → 401
+(a wrong token is never silently ignored). It never resolves or requires
+identity — a successful call returns `None`, not a user — because it is
+solely a trust signal that "this request came through our own proxy," not
+a substitute for `require_supabase_user` under any circumstance.
+
+**Why `get_current_user` commits immediately rather than only flushing.**
+The dependency is not wired into any route in this phase, so there is no
+guarantee a caller's own request will commit anything at all (e.g. a
+read-only `GET`). Committing the new `users` row itself, in its own small
+transaction, the first time a given Supabase UUID is seen makes the
+get-or-create durable and correct independent of whatever the eventual
+caller does — matching "same UUID always resolves to the same local
+row," which is required, tested behavior, not an incidental property of
+transaction timing. A concurrent first-request race for the same UUID is
+handled by catching the primary-key `IntegrityError`, rolling back, and
+re-fetching, rather than assuming requests are serialized.
+
+**Environment/network constraint driving the test strategy.** This
+sandbox cannot reach an arbitrary `*.supabase.co` host, so tests never
+hit a real JWKS endpoint. Instead, `jwt.PyJWKClient` is generated a real
+RSA keypair locally (via `cryptography`), `_jwks_client` — the one
+function `require_supabase_user` calls to obtain a client — is
+monkeypatched to a fake object that always returns that key, and tokens
+are signed with `jwt.encode` exactly the way Supabase itself signs them
+(RS256, asymmetric). This means the tests still exercise real signature
+verification (a token forged with a *different* keypair is correctly
+rejected) and real claim verification (issuer/audience/expiration), not
+just claim inspection — only the network fetch of the public key is
+replaced, not the cryptography.
+
+**What is ownership-scoped now vs. deferred.** Now: schema relationships
+exist and are tested (a `PortfolioConfig`/`Holding`/`Transaction`/
+`Watchlist`/`AlertRule`/`Notification` row can carry an owner and resolve
+its `user`/`portfolio_config` relationship); `require_supabase_user`,
+`get_current_user`, and `verify_internal_proxy_token` exist, are fully
+unit-tested, and are usable as FastAPI dependencies. Deferred to a later
+phase, explicitly: wiring any of these three dependencies into
+`app/api/router.py` or any route; filtering any repository/service query
+by `user_id`/`portfolio_config_id` (today's queries are unchanged and
+still return all rows, matching the current single-portfolio-deployment
+reality); the coordinated frontend-proxy change to forward a real
+Supabase JWT and send `X-Internal-Proxy-Token` instead of overwriting
+`Authorization`; the verified backfill that would let any of this
+phase's nullable columns become `NOT NULL`; login/signup UI; Supabase
+Auth client and Capacitor session integration; refresh-token handling.
+
+Verification for this phase: migration `b3e04b7fe898` applied and
+downgraded/re-applied cleanly against the real dev database with its
+existing rows (no data loss, no drift — `alembic check` reports no new
+operations after applying); 29 model tests (including 7 new P0-3A
+ownership/schema tests) and 18 new P0-3B auth tests, all passing; 643
+backend tests total (previous 596 + 47 new, zero regressions); `ruff`
+clean on every changed/added file. Security scan: no `API_AUTH_TOKEN` or
+JWT-verification secret in any frontend file or `NEXT_PUBLIC_*` variable;
+no `jwt.decode(..., options={"verify_signature": False})` or other
+signature-skipping decode anywhere; no hardcoded Supabase project URL or
+key outside of test fixtures (`test-project.supabase.co`, never resolved);
+`app/api/router.py` and `app/repositories/portfolio_repository.py`
+byte-for-byte unchanged from P0-2. No frontend files touched at all in
+this phase.

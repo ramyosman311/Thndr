@@ -13,6 +13,7 @@ from app.models.mixins import CreatedAtMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
     from app.models.asset import Asset
+    from app.models.portfolio_config import PortfolioConfig
 
 
 class Transaction(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -26,6 +27,11 @@ class Transaction(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     Numeric precision: quantity/price use NUMERIC(20, 8) to support
     fractional units and low-priced assets exactly. fees uses
     NUMERIC(18, 2) as a plain currency amount.
+
+    `portfolio_config_id` (P0-3A): nullable for now, deliberately — see
+    DECISIONS.md, "P0-3A/B — Identity, Ownership, JWT Verification" for
+    why, and for the verified-backfill procedure a later phase must run
+    before this becomes NOT NULL.
     """
 
     __tablename__ = "transactions"
@@ -36,6 +42,9 @@ class Transaction(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         Index("ix_transactions_asset_id_transaction_date", "asset_id", "transaction_date"),
     )
 
+    portfolio_config_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("portfolio_configs.id", ondelete="CASCADE"), nullable=True
+    )
     asset_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("assets.id", ondelete="RESTRICT"), nullable=False
     )
@@ -49,3 +58,4 @@ class Transaction(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     asset: Mapped["Asset"] = relationship(back_populates="transactions")
+    portfolio_config: Mapped["PortfolioConfig | None"] = relationship()

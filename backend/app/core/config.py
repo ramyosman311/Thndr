@@ -46,6 +46,17 @@ class Settings(BaseSettings):
 
     api_auth_token: str = Field(default="", alias="API_AUTH_TOKEN")
 
+    # --- Supabase Auth (P0-3B) ---
+    # supabase_url was already reserved (see .env.example) but unread by any
+    # code before this phase. It is the same project as DATABASE_URL points
+    # at, so no new secret is introduced: issuer/JWKS URL below are derived
+    # from it using Supabase's own documented URL layout, never guessed or
+    # hardcoded to one project. supabase_jwt_audience defaults to "authenticated",
+    # which is Supabase's own documented standard audience claim value for
+    # every Supabase Auth-issued access token (not a project-specific secret).
+    supabase_url: str = Field(default="", alias="SUPABASE_URL")
+    supabase_jwt_audience: str = Field(default="authenticated", alias="SUPABASE_JWT_AUDIENCE")
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.backend_cors_origins.split(",") if origin.strip()]
@@ -53,6 +64,21 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() == "production"
+
+    @property
+    def supabase_jwt_issuer(self) -> str:
+        """Supabase Auth's documented issuer for every access token it
+        signs: `{project URL}/auth/v1`. Empty when supabase_url is unset
+        (require_supabase_user's caller must treat that as "not configured",
+        never as a wildcard issuer)."""
+        return f"{self.supabase_url.rstrip('/')}/auth/v1" if self.supabase_url else ""
+
+    @property
+    def supabase_jwks_url(self) -> str:
+        """Supabase Auth's documented JWKS endpoint, used to fetch the
+        public key(s) that verify its JWT signatures (asymmetric
+        RS256/ES256 -- never a shared secret)."""
+        return f"{self.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json" if self.supabase_url else ""
 
 
 @lru_cache

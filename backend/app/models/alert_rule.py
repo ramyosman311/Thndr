@@ -11,6 +11,7 @@ from app.core.database import Base
 from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
+    from app.models.portfolio_config import PortfolioConfig
     from app.models.watchlist import Watchlist
 
 
@@ -20,6 +21,12 @@ class AlertRule(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     Numeric precision: allocation_max_percent uses NUMERIC(5, 2)
     (0.00-100.00); price_target/dip_buy_price use NUMERIC(20, 8), matching
     the precision used for asset prices elsewhere.
+
+    `portfolio_config_id` (P0-3A): a direct FK, in addition to the existing
+    `watchlist_id` FK, even though ownership is also derivable transitively
+    via watchlist -- added directly per the ownership model so alert rules
+    can be scoped without a join. Nullable for now, deliberately; see
+    DECISIONS.md, "P0-3A/B — Identity, Ownership, JWT Verification".
     """
 
     __tablename__ = "alert_rules"
@@ -37,6 +44,9 @@ class AlertRule(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ),
     )
 
+    portfolio_config_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("portfolio_configs.id", ondelete="CASCADE"), nullable=True
+    )
     watchlist_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("watchlist.id", ondelete="CASCADE"), nullable=False
     )
@@ -51,3 +61,4 @@ class AlertRule(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     last_triggered_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 
     watchlist: Mapped["Watchlist"] = relationship(back_populates="alert_rule")
+    portfolio_config: Mapped["PortfolioConfig | None"] = relationship()

@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -9,14 +10,21 @@ from app.models import (
     AlertRule,
     AllocationTarget,
     Asset,
+    AssetPrice,
+    AssetPriceConfig,
     AssetType,
+    FxRate,
     Holding,
+    Notification,
+    NotificationCategory,
+    NotificationSeverity,
     PortfolioConfig,
     PortfolioSnapshot,
     PortfolioSnapshotItem,
     StrategyBucket,
     Transaction,
     TransactionType,
+    User,
     Watchlist,
 )
 
@@ -531,3 +539,131 @@ async def test_pre_phase_15_style_snapshot_with_null_trigger_source_is_still_val
     assert snapshot.total_cost_basis is None
     assert snapshot.invested_capital is None
     assert snapshot.realized_pnl_cumulative is None
+
+
+# --- P0-3A: Identity, Ownership -----------------------------------------
+# See DECISIONS.md, "P0-3A/B — Identity, Ownership, JWT Verification".
+
+GLOBAL_REFERENCE_MODELS = [Asset, AssetPrice, AssetPriceConfig, FxRate]
+
+
+def test_global_reference_tables_have_no_ownership_columns():
+    """Market/reference data (assets, prices, price config, FX rates) is
+    shared across the whole deployment, never per-user -- P0-3A must not
+    have added user_id/portfolio_config_id to any of these."""
+    for model in GLOBAL_REFERENCE_MODELS:
+        column_names = {column.name for column in model.__table__.columns}
+        assert "user_id" not in column_names, f"{model.__name__} must not carry user_id"
+        assert "portfolio_config_id" not in column_names, f"{model.__name__} must not carry portfolio_config_id"
+
+
+async def test_users_table_primary_key_is_not_auto_generated(db_session):
+    """The local `users.id` must always equal the verified Supabase
+    `auth.users.id` -- never a locally generated UUID -- so creating a
+    User requires supplying `id` explicitly."""
+    supabase_uuid = uuid.uuid4()
+    db_session.add(User(id=supabase_uuid))
+    await db_session.commit()
+
+    loaded = (await db_session.execute(select(User).where(User.id == supabase_uuid))).scalar_one()
+    assert loaded.id == supabase_uuid
+
+
+async def test_portfolio_config_user_id_is_nullable_and_pre_existing_rows_still_valid(db_session):
+    """Existing (pre-P0-3A) portfolio_configs rows have no owner and must
+    remain valid -- this migration performs no backfill."""
+    config = make_portfolio_config()
+    db_session.add(config)
+    await db_session.commit()
+
+    await db_session.refresh(config)
+    assert config.user_id is None
+
+
+async def test_portfolio_config_to_user_ownership_relationship(db_session):
+    user = User(id=uuid.uuid4())
+    db_session.add(user)
+    await db_session.flush()
+
+    config = make_portfolio_config(user_id=user.id)
+    db_session.add(config)
+    await db_session.commit()
+
+    loaded = (
+        await db_session.execute(select(PortfolioConfig).where(PortfolioConfig.id == config.id))
+    ).scalar_one()
+    await db_session.refresh(loaded, attribute_names=["user"])
+    assert loaded.user.id == user.id
+
+
+async def test_holding_portfolio_config_id_is_nullable_and_optional(db_session):
+    asset = make_asset(symbol="OWNHOLD")
+    db_session.add(asset)
+    await db_session.flush()
+
+    holding = Holding(asset_id=asset.id, quantity=Decimal("1"))
+    db_session.add(holding)
+    await db_session.commit()
+
+    await db_session.refresh(holding)
+    assert holding.portfolio_config_id is None
+
+
+async def test_holding_transaction_watchlist_alert_rule_notification_ownership_scoping(db_session):
+    """Every table P0-3A named as a direct ownership target must accept
+    (optionally) a portfolio_config_id and resolve the relationship."""
+    config = make_portfolio_config()
+    db_session.add(config)
+    await db_session.flush()
+
+    asset = make_asset(symbol="OWNSCOPE")
+    db_session.add(asset)
+    await db_session.flush()
+
+    holding = Holding(asset_id=asset.id, quantity=Decimal("1"), portfolio_config_id=config.id)
+    txn = Transaction(
+        asset_id=asset.id,
+        transaction_type=TransactionType.BUY,
+        quantity=Decimal("1"),
+        price=Decimal("1"),
+        transaction_date=datetime.now(timezone.utc),
+        portfolio_config_id=config.id,
+    )
+    watchlist_entry = Watchlist(asset_id=asset.id, portfolio_config_id=config.id)
+    db_session.add_all([holding, txn, watchlist_entry])
+    await db_session.flush()
+
+    alert_rule = AlertRule(watchlist_id=watchlist_entry.id, portfolio_config_id=config.id)
+    notification = Notification(
+        source_id="ownership-test",
+        category=NotificationCategory.PRICE_ALERT,
+        severity=NotificationSeverity.INFO,
+        title="t",
+        message="m",
+        portfolio_config_id=config.id,
+    )
+    db_session.add_all([alert_rule, notification])
+    await db_session.commit()
+
+    for row in (holding, txn, watchlist_entry, alert_rule, notification):
+        await db_session.refresh(row)
+        assert row.portfolio_config_id == config.id
+
+    await db_session.refresh(holding, attribute_names=["portfolio_config"])
+    assert holding.portfolio_config.id == config.id
+
+
+async def test_ownership_columns_are_additive_existing_rows_unaffected(db_session):
+    """Rows created the pre-P0-3A way (no ownership kwargs at all) must
+    remain fully valid -- ownership is opt-in additive, not a breaking
+    change to any existing write path."""
+    asset = make_asset(symbol="PREEXIST")
+    db_session.add(asset)
+    await db_session.flush()
+
+    watchlist_entry = Watchlist(asset_id=asset.id)
+    db_session.add(watchlist_entry)
+    await db_session.commit()
+
+    await db_session.refresh(watchlist_entry)
+    assert watchlist_entry.portfolio_config_id is None

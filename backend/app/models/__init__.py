@@ -17,6 +17,7 @@ from app.models.portfolio_config import PortfolioConfig
 from app.models.snapshot import PortfolioSnapshot, PortfolioSnapshotItem
 from app.models.strategy_bucket import StrategyBucket
 from app.models.transaction import Transaction
+from app.models.user import User
 from app.models.watchlist import Watchlist
 
 __all__ = [
@@ -38,5 +39,6 @@ __all__ = [
     "StrategyBucket",
     "Transaction",
     "TransactionType",
+    "User",
     "Watchlist",
 ]

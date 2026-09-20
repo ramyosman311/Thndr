@@ -1,12 +1,17 @@
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import Enum, Index, String, Text, TIMESTAMP, text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Enum, ForeignKey, Index, String, Text, TIMESTAMP, text
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 from app.models.enums import NotificationAction, NotificationCategory, NotificationSeverity
 from app.models.mixins import CreatedAtMixin, UUIDPrimaryKeyMixin
+
+if TYPE_CHECKING:
+    from app.models.portfolio_config import PortfolioConfig
 
 
 class Notification(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -16,6 +21,9 @@ class Notification(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     Phase 20 adds only the non-financial Telegram delivery timestamp so an
     external worker can deliver each notification at most once after a
     successful send while safely retrying failed sends.
+
+    `portfolio_config_id` (P0-3A): nullable for now, deliberately -- see
+    DECISIONS.md, "P0-3A/B — Identity, Ownership, JWT Verification".
     """
 
     __tablename__ = "notifications"
@@ -28,6 +36,9 @@ class Notification(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         ),
     )
 
+    portfolio_config_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("portfolio_configs.id", ondelete="CASCADE"), nullable=True
+    )
     source_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     category: Mapped[NotificationCategory] = mapped_column(
         Enum(NotificationCategory, name="notification_category", native_enum=True), nullable=False
@@ -52,3 +63,5 @@ class Notification(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     # Phase 20: NULL means Telegram delivery has not successfully completed.
     # Failed sends deliberately leave this NULL so the worker can retry.
     telegram_sent_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+    portfolio_config: Mapped["PortfolioConfig | None"] = relationship()
