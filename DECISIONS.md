@@ -2101,3 +2101,104 @@ client-bundled code, plus a new assertion that `API_AUTH_TOKEN` reads
 stay confined to that one file), both Next.js build modes passing
 independently, `tsc --noEmit` and `eslint` clean on every changed file.
 No financial/domain logic touched.
+
+## P0-3 — Secure Storage (Capacitor native session storage)
+
+A multi-round audit (package identity, Capacitor 8 compatibility, iOS
+Keychain/Android Keystore implementation detail, maintenance history,
+supply-chain risk, and MIZAN's own actual `minSdkVersion`/deployment
+target) selected `@aparajita/capacitor-secure-storage@8.0.0` as the
+OS-backed storage for a future Supabase refresh/session token on
+Android and iOS, explicitly rejecting `@capacitor/preferences` (plain,
+unencrypted key/value storage — unacceptable for a financial app's
+credentials) and two alternative secure-storage plugins (one with no
+`EncryptedSharedPreferences` path on Android at all and a dependency on
+an iOS Keychain wrapper archived by its own maintainer since 2023; see
+the audit transcript for the full comparison).
+
+**What exists today, and what deliberately doesn't.** Nothing in this
+codebase constructs a Supabase client yet — no `@supabase/supabase-js`
+dependency, no login/session UI, no JWT verification in FastAPI. The
+"Capacitor authentication/session flow for Supabase" this phase was
+asked to integrate the plugin into does not exist as a runnable flow;
+only its audit and architecture (P0-3's own prior specification) do.
+Building that flow now would mean guessing a Supabase project
+URL/anon key that were never provided and inventing login/session UI —
+exactly the "redesign authentication" this phase was told not to do.
+Instead, this phase delivers the one concrete, self-contained,
+independently testable piece that a future Supabase integration
+(P0-3D/E) will need unchanged: `frontend/lib/secure-session-storage.ts`,
+exporting `nativeSecureSessionStorage` shaped to match
+`@supabase/supabase-js`'s own `SupportedStorage` interface
+(`getItem`/`setItem`/`removeItem`) exactly, so it drops into
+`createClient(url, key, { auth: { storage: nativeSecureSessionStorage } })`
+without this file changing when that client is finally introduced.
+
+**The one real hazard this module exists to close.** Reading the
+plugin's own published source (`src/web.ts`) during the audit found
+that it ships a web implementation that silently writes to plain
+`localStorage` when not running natively — exactly the plaintext
+fallback this phase was told must never happen for a session secret.
+`nativeSecureSessionStorage` calls `assertNativePlatform()` (backed by
+the existing `isNativeApp()` from Phase 22) before every single
+operation and throws rather than ever letting a call reach that path.
+No `try/catch` exists anywhere in this file that could redirect a
+failure to `localStorage`, `sessionStorage`, or `@capacitor/preferences`
+— a thrown/rejected error is the only possible outcome of a failure,
+by construction, not by convention.
+
+**A necessary, deliberate boundary change.** Phase 22 established that
+the frontend package "cannot import Capacitor APIs directly" (see
+`frontend/lib/capacitor-env.ts`'s own docstring) — until now, `frontend/
+package.json` had zero `@capacitor/*` dependencies, only ever reading
+the injected `window.Capacitor` global as an untyped value. Using this
+plugin's actual public API (`getItem`/`setItem`/`removeItem`, with their
+prefixing/JSON/error-wrapping logic) rather than reimplementing its
+internal, undocumented native call shapes by hand requires importing
+the plugin's real JS wrapper, which itself imports `registerPlugin`/
+`WebPlugin`/`Capacitor` from `@capacitor/core`. `@capacitor/core@8.5.2`
+(matching the version already used everywhere else in this project) and
+the plugin were therefore added to `frontend/package.json`, not just
+`mobile/capacitor/package.json` — this is the first Capacitor package
+the frontend depends on directly, a deliberate, minimal widening of that
+boundary for the one reason it now exists (a native-only secure-storage
+primitive), not a reversal of the underlying principle.
+
+**Supply-chain footprint, verified rather than assumed.** The plugin's
+own `package.json` lists `@capacitor/app` and `@capacitor/keyboard` as
+real dependencies despite neither being referenced anywhere in its
+actual Swift/Java source (confirmed by reading both files in full during
+the audit) — installing it pulls both into `node_modules` in both
+`frontend/` and `mobile/capacitor/`. Verified empirically, not assumed:
+`npx cap sync` in `mobile/capacitor/` reports "Found 1 Capacitor plugin"
+for both Android and iOS — `@aparajita/capacitor-secure-storage` only —
+and the generated `android/capacitor.settings.gradle` and
+`ios/App/CapApp-SPM/Package.swift` each reference exactly that one
+plugin. The two extra packages sit unused in `node_modules`; they are
+never wired into the native build or the web bundle (confirmed absent
+from `.next/static`, `.next/server/app`, and the Capacitor `out/`
+export, since nothing imports this module yet either).
+
+**Left for a human decision, not decided here.** The plugin's default
+iOS Keychain accessibility is `.whenUnlocked` (its own `base.ts` default,
+confirmed against the exact installed `8.0.0` source) — an item under
+this class migrates to a new device via an encrypted backup. A stricter,
+non-migrating class (e.g. `.whenUnlockedThisDeviceOnly`) may be more
+appropriate for a refresh token specifically, but choosing one is a
+security-policy decision, not a mechanical part of "install and wire up
+the storage adapter" — left as an explicit open item rather than decided
+unprompted.
+
+Verification for this phase: 8 new frontend tests
+(`secure-session-storage.test.ts` — native calls forward correctly,
+plugin failures propagate as rejections rather than being swallowed,
+non-native calls throw before ever reaching the plugin, and a direct
+spy on `Storage.prototype` proves `localStorage`/`sessionStorage` are
+never touched), 139 frontend tests total, 618 backend tests (untouched,
+re-run to confirm no regression), both Next.js build modes passing
+independently including a real `npx cap sync` confirming native wiring
+on both platforms, `tsc --noEmit` and `eslint` clean, a real (non-mocked)
+Node import of the installed package confirming its actual shipped API
+shape. No `API_AUTH_TOKEN` reference of any kind in this phase's files —
+this is a different secret from the P0-2 shared token, and the two are
+unrelated. No financial/domain logic touched.

@@ -12,6 +12,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@aparajita/capacitor-secure-storage": "8.0.0",
+    "@capacitor/core": "8.5.2",
     "next": "16.3.4",
     "next-themes": "^0.4.6",
     "react": "19.2.8",
