@@ -28,10 +28,10 @@ class Transaction(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     fractional units and low-priced assets exactly. fees uses
     NUMERIC(18, 2) as a plain currency amount.
 
-    `portfolio_config_id` (P0-3A): nullable for now, deliberately — see
-    DECISIONS.md, "P0-3A/B — Identity, Ownership, JWT Verification" for
-    why, and for the verified-backfill procedure a later phase must run
-    before this becomes NOT NULL.
+    `portfolio_config_id` (P0-3A/P0-3C): the owning portfolio. Nullable only
+    for rows that predate ownership (see DECISIONS.md, "P0-3A/B"); every
+    application read/write is scoped to the caller's portfolio (see
+    DECISIONS.md, "P0-3C").
     """
 
     __tablename__ = "transactions"
@@ -43,7 +43,7 @@ class Transaction(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
 
     portfolio_config_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("portfolio_configs.id", ondelete="CASCADE"), nullable=True
+        UUID(as_uuid=True), ForeignKey("portfolio_configs.id", ondelete="CASCADE"), nullable=True, index=True
     )
     asset_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("assets.id", ondelete="RESTRICT"), nullable=False

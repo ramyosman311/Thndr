@@ -10,6 +10,15 @@ then delivers persisted notification events that have not yet been
 successfully sent. This prevents a second alert/recommendation engine and
 gives Telegram the same notification content the user sees in-app.
 
+P0-3C: this worker acts on every owned portfolio that has opted in
+(`portfolio_configs.telegram_enabled`), iterating them EXPLICITLY -- never
+"the first portfolio" -- and each portfolio's notifications are synced,
+selected, and marked sent strictly within that portfolio. Telegram
+credentials (`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`) are still one
+operator-level destination: per-user chat routing does not exist yet, so a
+portfolio's opt-in sends its notifications to that single chat (see
+DECISIONS.md, "P0-3C", deferred decisions).
+
 Delivery is best-effort and at-least-once: a successful Telegram response is
 persisted in `notifications.telegram_sent_at`; failures remain pending for a
 later run. A network timeout after Telegram accepted a message can therefore
@@ -27,7 +36,8 @@ from app.core.database import async_session_factory
 from app.core.logging_config import configure_logging
 from app.models.enums import NotificationCategory
 from app.repositories.notification_repository import list_pending_telegram_notifications
-from app.repositories.portfolio_repository import get_portfolio_config
+from app.models import PortfolioConfig
+from app.repositories.portfolio_repository import list_owned_portfolio_configs
 from app.repositories.watchlist_repository import get_alert_rule_by_id
 from app.services.notification_dispatcher import NotificationCenterDispatcher, NullNotificationDispatcher
 from app.services.notification_service import sync_notifications
@@ -46,7 +56,7 @@ def _build_notifier() -> NotificationCenterDispatcher:
     return NullNotificationDispatcher()
 
 
-async def _notification_is_telegram_enabled(session, notification) -> bool:
+async def _notification_is_telegram_enabled(session, config: PortfolioConfig, notification) -> bool:
     """Apply Phase 14 opt-in semantics without inventing a new user setting.
 
     Every Notification Center delivery requires the portfolio-level Telegram
@@ -55,8 +65,7 @@ async def _notification_is_telegram_enabled(session, notification) -> bool:
     rule by design, so the portfolio switch is their most granular existing
     Telegram control.
     """
-    config = await get_portfolio_config(session)
-    if config is None or not config.telegram_enabled:
+    if not config.telegram_enabled:
         return False
 
     if notification.category not in {
@@ -80,7 +89,7 @@ async def _notification_is_telegram_enabled(session, notification) -> bool:
         logger.warning("Skipping malformed alert rule id in source %s", notification.source_id)
         return False
 
-    rule = await get_alert_rule_by_id(session, alert_rule_id)
+    rule = await get_alert_rule_by_id(session, alert_rule_id, config.id)
     return bool(rule and rule.enabled and rule.telegram_enabled)
 
 
@@ -94,34 +103,40 @@ async def run_alert_notify() -> None:
     if isinstance(notifier, NullNotificationDispatcher):
         return
 
+    sent = 0
+    skipped = 0
+    pending_total = 0
+
     async with async_session_factory() as session:
-        config = await get_portfolio_config(session)
-        if config is None or not config.telegram_enabled:
-            logger.info("Telegram delivery skipped: portfolio Telegram switch is disabled.")
+        opted_in = [c.id for c in await list_owned_portfolio_configs(session) if c.telegram_enabled]
+        if not opted_in:
+            logger.info("Telegram delivery skipped: no owned portfolio has the Telegram switch enabled.")
             return
 
-        # Phase 19 remains the only source of notification truth. No live
-        # notifier is passed here, so this sync cannot make Telegram calls.
-        await sync_notifications(session)
-        pending = await list_pending_telegram_notifications(session)
+        for config_id in opted_in:
+            config = await session.get(PortfolioConfig, config_id)
+            # Phase 19 remains the only source of notification truth. No
+            # live notifier is passed here, so this sync cannot make
+            # Telegram calls. Scoped to this portfolio's own owner.
+            await sync_notifications(session, config.user_id)
+            pending = await list_pending_telegram_notifications(session, config.id)
+            pending_total += len(pending)
 
-        sent = 0
-        skipped = 0
-        for notification in pending:
-            if not await _notification_is_telegram_enabled(session, notification):
-                skipped += 1
-                continue
+            for notification in pending:
+                if not await _notification_is_telegram_enabled(session, config, notification):
+                    skipped += 1
+                    continue
 
-            delivered = await notifier.dispatch_notification(notification)
-            if delivered:
-                # Mark only after Telegram returned {"ok": true}.
-                notification.telegram_sent_at = datetime.now(timezone.utc)
-                await session.commit()
-                sent += 1
+                delivered = await notifier.dispatch_notification(notification)
+                if delivered:
+                    # Mark only after Telegram returned {"ok": true}.
+                    notification.telegram_sent_at = datetime.now(timezone.utc)
+                    await session.commit()
+                    sent += 1
 
     logger.info(
         "Telegram Notification Center run complete: %d pending, %d sent, %d skipped.",
-        len(pending),
+        pending_total,
         sent,
         skipped,
     )

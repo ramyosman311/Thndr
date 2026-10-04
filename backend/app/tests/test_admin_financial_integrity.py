@@ -11,34 +11,19 @@ byte-for-byte unchanged.
 from datetime import datetime, timezone
 from decimal import Decimal
 
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
-from app.core.database import get_db_session
-from app.main import app
 from app.models import Holding, PortfolioSnapshot, PortfolioSnapshotItem, Transaction, TransactionType
 from app.repositories import price_repository
 from app.tests.conftest import make_asset, make_current_price, make_portfolio_config
 
 
-@pytest_asyncio.fixture
-async def client(db_session):
-    async def _override_get_db_session():
-        yield db_session
-
-    app.dependency_overrides[get_db_session] = _override_get_db_session
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-    app.dependency_overrides.pop(get_db_session, None)
-
-
-async def test_asset_update_never_changes_transaction_history(db_session, client):
+async def test_asset_update_never_changes_transaction_history(db_session, client, owner, portfolio):
     asset = make_asset("INTEGRITY1", currency="EGP")
     db_session.add(asset)
     await db_session.flush()
     txn = Transaction(
+        portfolio_config_id=portfolio.id,
         asset_id=asset.id, transaction_type=TransactionType.BUY, quantity=Decimal("10"),
         price=Decimal("123.45"), fees=Decimal("1.50"),
         transaction_date=datetime(2026, 1, 1, tzinfo=timezone.utc), notes="original",
@@ -58,11 +43,11 @@ async def test_asset_update_never_changes_transaction_history(db_session, client
     assert reloaded.notes == "original"
 
 
-async def test_asset_update_never_changes_holding_accounting(db_session, client):
+async def test_asset_update_never_changes_holding_accounting(db_session, client, owner, portfolio):
     asset = make_asset("INTEGRITY2")
     db_session.add(asset)
     await db_session.flush()
-    holding = Holding(asset_id=asset.id, quantity=Decimal("42"), average_cost=Decimal("17.5"))
+    holding = Holding(portfolio_config_id=portfolio.id, asset_id=asset.id, quantity=Decimal("42"), average_cost=Decimal("17.5"))
     db_session.add(holding)
     await db_session.commit()
     holding_id = holding.id
@@ -75,12 +60,13 @@ async def test_asset_update_never_changes_holding_accounting(db_session, client)
     assert reloaded.average_cost == Decimal("17.50000000")
 
 
-async def test_manual_price_submission_never_touches_transactions_or_holdings(db_session, client):
+async def test_manual_price_submission_never_touches_transactions_or_holdings(db_session, client, owner, portfolio):
     asset = make_asset("INTEGRITY3", currency="EGP")
     db_session.add(asset)
     await db_session.flush()
-    db_session.add(Holding(asset_id=asset.id, quantity=Decimal("5"), average_cost=Decimal("100")))
+    db_session.add(Holding(portfolio_config_id=portfolio.id, asset_id=asset.id, quantity=Decimal("5"), average_cost=Decimal("100")))
     txn = Transaction(
+        portfolio_config_id=portfolio.id,
         asset_id=asset.id, transaction_type=TransactionType.BUY, quantity=Decimal("5"), price=Decimal("100"),
         transaction_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
@@ -101,7 +87,7 @@ async def test_manual_price_submission_never_touches_transactions_or_holdings(db
     assert reloaded_txn.quantity == Decimal("5.00000000")
 
 
-async def test_price_config_upsert_never_writes_a_price_observation(db_session, client):
+async def test_price_config_upsert_never_writes_a_price_observation(db_session, client, owner):
     asset = make_asset("INTEGRITY4")
     db_session.add(asset)
     await db_session.flush()
@@ -123,8 +109,8 @@ async def test_price_config_upsert_never_writes_a_price_observation(db_session, 
     assert after[0].price == Decimal("50.00000000")
 
 
-async def test_portfolio_config_update_never_touches_snapshots(db_session, client):
-    config = make_portfolio_config(name="Snapshotted", base_currency="EGP")
+async def test_portfolio_config_update_never_touches_snapshots(db_session, client, owner):
+    config = make_portfolio_config(user_id=owner.id, name="Snapshotted", base_currency="EGP")
     db_session.add(config)
     await db_session.flush()
     asset = make_asset("INTEGRITY5")
@@ -147,19 +133,20 @@ async def test_portfolio_config_update_never_touches_snapshots(db_session, clien
     assert reloaded_item.value == Decimal("777.00")
 
 
-async def test_strategy_target_update_never_alters_realized_pnl_from_a_prior_sell(db_session, client):
+async def test_strategy_target_update_never_alters_realized_pnl_from_a_prior_sell(db_session, client, owner):
     """Realized P&L is never stored as a ledger (see FINANCIAL_RULES.md,
     "Realized P&L") -- this proves the transaction record it was
     computed from stays byte-for-byte unchanged after an unrelated
     strategy configuration write, which is the only way realized P&L
     could ever silently drift."""
-    config = make_portfolio_config()
+    config = make_portfolio_config(user_id=owner.id)
     db_session.add(config)
     await db_session.flush()
     asset = make_asset("INTEGRITY6")
     db_session.add(asset)
     await db_session.flush()
     sell = Transaction(
+        portfolio_config_id=config.id,
         asset_id=asset.id, transaction_type=TransactionType.SELL, quantity=Decimal("3"), price=Decimal("55"),
         fees=Decimal("2"), transaction_date=datetime(2026, 2, 1, tzinfo=timezone.utc),
     )
@@ -180,7 +167,7 @@ async def test_strategy_target_update_never_alters_realized_pnl_from_a_prior_sel
     assert reloaded.fees == Decimal("2.00")
 
 
-async def test_asset_price_history_row_count_unaffected_by_unrelated_admin_writes(db_session, client):
+async def test_asset_price_history_row_count_unaffected_by_unrelated_admin_writes(db_session, client, owner):
     asset = make_asset("INTEGRITY7")
     db_session.add(asset)
     await db_session.flush()

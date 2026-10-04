@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import CheckConstraint, ForeignKey, Numeric, TIMESTAMP, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Numeric, TIMESTAMP, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -26,21 +26,26 @@ class Holding(UUIDPrimaryKeyMixin, Base):
     NUMERIC(20, 8) to represent fractional share/fund units and low-priced
     assets exactly, without binary floating-point rounding error.
 
-    `portfolio_config_id` (P0-3A): nullable for now, deliberately, and
-    `uq_holdings_asset_id` is deliberately left as `UniqueConstraint
-    ("asset_id")` rather than widened to `(portfolio_config_id, asset_id)`
-    in this phase — see DECISIONS.md, "P0-3A/B — Identity, Ownership, JWT
-    Verification". Widening it now, before every existing row has a
-    verified `portfolio_config_id`, would let Postgres's own NULL-is-
-    distinct semantics silently admit a duplicate-per-asset row that this
-    constraint's whole purpose is to prevent — a real, if borderline
-    risk that only a verified backfill (a later phase) can make safe to
-    lift.
+    `portfolio_config_id` (P0-3A/P0-3C): the owning portfolio. Nullable only
+    because rows that predate ownership have no verified owner (see
+    DECISIONS.md, "P0-3A/B"); application code never creates or reads an
+    unowned holding -- every read/write is scoped to the caller's
+    portfolio (see DECISIONS.md, "P0-3C"). One holding per asset PER
+    PORTFOLIO: `uq_holdings_portfolio_asset`. The partial
+    `uq_holdings_asset_id_unowned` keeps the original one-holding-per-asset
+    guarantee for legacy unowned rows, which the composite constraint alone
+    would not cover (Postgres treats NULL as distinct in a unique constraint).
     """
 
     __tablename__ = "holdings"
     __table_args__ = (
-        UniqueConstraint("asset_id", name="uq_holdings_asset_id"),
+        UniqueConstraint("portfolio_config_id", "asset_id", name="uq_holdings_portfolio_asset"),
+        Index(
+            "uq_holdings_asset_id_unowned",
+            "asset_id",
+            unique=True,
+            postgresql_where=text("portfolio_config_id IS NULL"),
+        ),
         CheckConstraint("quantity >= 0", name="ck_holdings_quantity_non_negative"),
         CheckConstraint("average_cost >= 0", name="ck_holdings_average_cost_non_negative"),
         CheckConstraint("current_price >= 0", name="ck_holdings_current_price_non_negative"),

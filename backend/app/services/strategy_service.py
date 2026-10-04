@@ -11,6 +11,7 @@ emergency bucket) — is identical.
 """
 
 from decimal import ROUND_HALF_UP, Decimal
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,7 +20,7 @@ from app.repositories.portfolio_repository import (
     get_active_allocation_targets,
     get_active_assets,
     get_active_strategy_buckets,
-    get_portfolio_config,
+    get_portfolio_config_for_user,
 )
 from app.schemas.strategy import AllocationRuleOut, RuleFieldErrorOut, StrategyValidationOut
 from app.services.portfolio_shared import find_emergency_bucket_id
@@ -47,14 +48,14 @@ def _rule_to_out(rule: AllocationRuleInput) -> AllocationRuleOut:
     )
 
 
-async def get_strategy_validation(session: AsyncSession) -> StrategyValidationOut:
-    config = await get_portfolio_config(session)
+async def get_strategy_validation(session: AsyncSession, user_id: UUID) -> StrategyValidationOut:
+    config = await get_portfolio_config_for_user(session, user_id)
     if config is None:
         raise PortfolioNotConfiguredError("No portfolio configuration exists yet.")
 
     buckets = await get_active_strategy_buckets(session, config.id)
     targets = await get_active_allocation_targets(session, config.id)
-    assets = await get_active_assets(session)
+    assets = await get_active_assets(session, config.id)
 
     target_by_bucket_id = {target.strategy_bucket_id: target for target in targets}
     emergency_bucket_id = find_emergency_bucket_id(assets, config.emergency_asset_id)

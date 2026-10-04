@@ -498,6 +498,15 @@ Audit findings (full detail in [DECISIONS.md](./DECISIONS.md)):
   explicit Phase 12 instruction ("if full multi-portfolio support
   requires a broad migration, DO NOT perform it in Phase 12"), this was
   **not** touched. It is documented as a Phase 15+ requirement.
+  **Update (P0-3A/B/C):** `holdings`, `transactions`, `watchlist`,
+  `alert_rules` and `notifications` now carry a nullable
+  `portfolio_config_id` (and `portfolio_configs` a nullable `user_id` →
+  `users.id`), every application query is scoped by it, and the one-per-asset
+  uniqueness is now one-per-asset-**per-portfolio**
+  (`uq_holdings_portfolio_asset`, `uq_watchlist_portfolio_asset`, and
+  `(portfolio_config_id, source_id)` for active notifications), each paired
+  with a partial unique index over the unowned legacy rows. `get_portfolio_config`
+  no longer exists — see DECISIONS.md, "P0-3C".
 - `watchlist` is likewise scoped only by `asset_id` (globally unique),
   consistent with the same pattern — left as-is, documented rather than
   arbitrarily changed, since the task explicitly asked for a decision to

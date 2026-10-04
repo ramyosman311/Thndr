@@ -17,6 +17,7 @@ the total by a cent. See _round_allocated_amounts below.
 """
 
 from decimal import ROUND_HALF_UP, Decimal
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,7 +29,7 @@ from app.repositories.portfolio_repository import (
     get_active_allocation_targets,
     get_active_assets,
     get_active_strategy_buckets,
-    get_portfolio_config,
+    get_portfolio_config_for_user,
 )
 from app.schemas.inflow import InflowAllocationOut, InflowRecommendationOut
 from app.services import price_service
@@ -70,15 +71,15 @@ def _round_allocated_amounts(recommendations: tuple[InflowRecommendation, ...]) 
     return rounded_by_bucket
 
 
-async def get_inflow_allocation(session: AsyncSession, amount: Decimal) -> InflowAllocationOut:
+async def get_inflow_allocation(session: AsyncSession, user_id: UUID, amount: Decimal) -> InflowAllocationOut:
     if amount <= 0:
         raise ValueError("amount must be greater than 0")
 
-    config = await get_portfolio_config(session)
+    config = await get_portfolio_config_for_user(session, user_id)
     if config is None:
         raise PortfolioNotConfiguredError("No portfolio configuration exists yet.")
 
-    assets = await get_active_assets(session)
+    assets = await get_active_assets(session, config.id)
     prices = await price_service.get_prices_for_assets_in_base_currency(session, assets, config.base_currency)
     positions = build_positions(assets, config.emergency_asset_id, prices, config.base_currency)
     totals = calculate_portfolio_totals(positions, emergency_excluded=config.emergency_excluded)

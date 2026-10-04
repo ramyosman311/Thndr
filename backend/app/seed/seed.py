@@ -14,6 +14,8 @@ configuration rows that a future engine will read from the database (see
 FINANCIAL_RULES.md, "Database Is the Source of Truth").
 """
 
+from uuid import UUID
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +27,7 @@ from app.models import (
     PortfolioSnapshot,
     PortfolioSnapshotItem,
     StrategyBucket,
+    User,
 )
 from app.seed.data import (
     EMERGENCY_ASSET_SYMBOL,
@@ -52,8 +55,15 @@ async def seed_assets(session: AsyncSession) -> dict[str, Asset]:
     return assets_by_symbol
 
 
-async def seed_portfolio_config(session: AsyncSession, emergency_asset: Asset) -> PortfolioConfig:
+async def seed_portfolio_config(
+    session: AsyncSession, emergency_asset: Asset, owner_user_id: UUID | None = None
+) -> PortfolioConfig:
     """Create the main portfolio config if missing, keyed by name.
+
+    `owner_user_id` (P0-3C): when given, the NEWLY CREATED config is owned
+    by that user (their local `users` row is created if missing). Without
+    it the seeded config is unowned and therefore invisible to every
+    authenticated request. An already-existing config is never reassigned.
 
     Cloudz is wired as the emergency asset here, in seed data, not via any
     `if symbol == "CLOUDZ"` check in application code — a future engine
@@ -64,7 +74,12 @@ async def seed_portfolio_config(session: AsyncSession, emergency_asset: Asset) -
     )
     config = result.scalar_one_or_none()
     if config is None:
-        config = PortfolioConfig(**SEED_PORTFOLIO_CONFIG, emergency_asset_id=emergency_asset.id)
+        if owner_user_id is not None and await session.get(User, owner_user_id) is None:
+            session.add(User(id=owner_user_id))
+            await session.flush()
+        config = PortfolioConfig(
+            **SEED_PORTFOLIO_CONFIG, emergency_asset_id=emergency_asset.id, user_id=owner_user_id
+        )
         session.add(config)
         await session.flush()
     return config
@@ -193,11 +208,11 @@ async def seed_asset_price_configs(
     return configs_by_symbol
 
 
-async def run_seed(session: AsyncSession) -> None:
+async def run_seed(session: AsyncSession, owner_user_id: UUID | None = None) -> None:
     """Run the full idempotent seed sequence and commit."""
     assets_by_symbol = await seed_assets(session)
     emergency_asset = assets_by_symbol[EMERGENCY_ASSET_SYMBOL]
-    config = await seed_portfolio_config(session, emergency_asset)
+    config = await seed_portfolio_config(session, emergency_asset, owner_user_id)
     buckets_by_name = await seed_strategy_buckets(session, config, assets_by_symbol)
     await seed_allocation_targets(session, config, buckets_by_name)
     await seed_snapshots(session, config, assets_by_symbol)

@@ -12,7 +12,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user
 from app.core.database import get_db_session
+from app.models import User
 from app.schemas.strategy import (
     AllocationTargetCreateRequest,
     AllocationTargetOut,
@@ -36,20 +38,24 @@ router = APIRouter(prefix="/strategy", tags=["strategy-admin"])
 
 @router.get("/buckets", response_model=list[StrategyBucketOut])
 async def list_buckets(
-    include_inactive: bool = False, session: AsyncSession = Depends(get_db_session)
+    include_inactive: bool = False,
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
 ) -> list[StrategyBucketOut]:
     try:
-        return await strategy_admin_service.list_buckets(session, include_inactive=include_inactive)
+        return await strategy_admin_service.list_buckets(session, user.id, include_inactive=include_inactive)
     except PortfolioNotConfiguredError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.post("/buckets", response_model=StrategyBucketOut, status_code=status.HTTP_201_CREATED)
 async def create_bucket(
-    request: StrategyBucketCreateRequest, session: AsyncSession = Depends(get_db_session)
+    request: StrategyBucketCreateRequest,
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
 ) -> StrategyBucketOut:
     try:
-        return await strategy_admin_service.create_bucket(session, request)
+        return await strategy_admin_service.create_bucket(session, user.id, request)
     except PortfolioNotConfiguredError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except DuplicateStrategyBucketNameError as exc:
@@ -58,10 +64,13 @@ async def create_bucket(
 
 @router.patch("/buckets/{bucket_id}", response_model=StrategyBucketOut)
 async def update_bucket(
-    bucket_id: UUID, request: StrategyBucketUpdateRequest, session: AsyncSession = Depends(get_db_session)
+    bucket_id: UUID,
+    request: StrategyBucketUpdateRequest,
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
 ) -> StrategyBucketOut:
     try:
-        return await strategy_admin_service.update_bucket(session, bucket_id, request)
+        return await strategy_admin_service.update_bucket(session, user.id, bucket_id, request)
     except StrategyBucketNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except DuplicateStrategyBucketNameError as exc:
@@ -69,37 +78,49 @@ async def update_bucket(
 
 
 @router.post("/buckets/{bucket_id}/activate", response_model=StrategyBucketOut)
-async def activate_bucket(bucket_id: UUID, session: AsyncSession = Depends(get_db_session)) -> StrategyBucketOut:
+async def activate_bucket(
+    bucket_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
+) -> StrategyBucketOut:
     try:
-        return await strategy_admin_service.activate_bucket(session, bucket_id)
+        return await strategy_admin_service.activate_bucket(session, user.id, bucket_id)
     except StrategyBucketNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.post("/buckets/{bucket_id}/deactivate", response_model=StrategyBucketOut)
-async def deactivate_bucket(bucket_id: UUID, session: AsyncSession = Depends(get_db_session)) -> StrategyBucketOut:
+async def deactivate_bucket(
+    bucket_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
+) -> StrategyBucketOut:
     try:
-        return await strategy_admin_service.deactivate_bucket(session, bucket_id)
+        return await strategy_admin_service.deactivate_bucket(session, user.id, bucket_id)
     except StrategyBucketNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.get("/targets", response_model=list[AllocationTargetOut])
 async def list_targets(
-    include_inactive: bool = False, session: AsyncSession = Depends(get_db_session)
+    include_inactive: bool = False,
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
 ) -> list[AllocationTargetOut]:
     try:
-        return await strategy_admin_service.list_targets(session, include_inactive=include_inactive)
+        return await strategy_admin_service.list_targets(session, user.id, include_inactive=include_inactive)
     except PortfolioNotConfiguredError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.post("/targets", response_model=AllocationTargetOut, status_code=status.HTTP_201_CREATED)
 async def create_target(
-    request: AllocationTargetCreateRequest, session: AsyncSession = Depends(get_db_session)
+    request: AllocationTargetCreateRequest,
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
 ) -> AllocationTargetOut:
     try:
-        return await strategy_admin_service.create_target(session, request)
+        return await strategy_admin_service.create_target(session, user.id, request)
     except PortfolioNotConfiguredError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except InvalidAllocationTargetError as exc:
@@ -110,10 +131,13 @@ async def create_target(
 
 @router.patch("/targets/{target_id}", response_model=AllocationTargetOut)
 async def update_target(
-    target_id: UUID, request: AllocationTargetUpdateRequest, session: AsyncSession = Depends(get_db_session)
+    target_id: UUID,
+    request: AllocationTargetUpdateRequest,
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
 ) -> AllocationTargetOut:
     try:
-        return await strategy_admin_service.update_target(session, target_id, request)
+        return await strategy_admin_service.update_target(session, user.id, target_id, request)
     except AllocationTargetNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except InvalidAllocationTargetError as exc:

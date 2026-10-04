@@ -72,7 +72,7 @@ async def _compute_snapshot_financials(
         item_values[asset.id] = value
         total_value += value
 
-    transactions = await list_transactions_ordered(session)
+    transactions = await list_transactions_ordered(session, config.id)
     invested_capital = Decimal("0")
     replay_events: list[ReplayEvent] = []
     for transaction in transactions:
@@ -153,7 +153,7 @@ async def build_post_transaction_snapshot(
     system already assumes transactions are entered in real-world
     chronological order (see DECISIONS.md, "Phase 15 Deterministic
     Ordering")."""
-    assets = await get_active_assets(session)
+    assets = await get_active_assets(session, config.id)
     financials = await _compute_snapshot_financials(session, assets, config)
     return _build_snapshot(
         config=config,
@@ -175,7 +175,7 @@ async def create_eod_snapshot_if_missing(session: AsyncSession, *, config: Portf
     if existing is not None:
         return None
 
-    assets = await get_active_assets(session)
+    assets = await get_active_assets(session, config.id)
     financials = await _compute_snapshot_financials(session, assets, config)
     snapshot = _build_snapshot(
         config=config,

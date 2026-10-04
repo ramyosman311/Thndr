@@ -7,6 +7,10 @@ Ownership boundary (see FINANCIAL_RULES.md, "Strategy Validation
 Ownership"): this module enforces only PER-ROW constraints (percent
 ranges, minimum <= maximum, duplicate bucket/target names) -- exactly
 what the database's own CHECK/UNIQUE constraints already require. It
+P0-3C: every function takes the verified `user_id` and only ever reads or
+writes buckets/targets of THAT user's portfolio. A bucket or target id from
+another portfolio behaves exactly like one that doesn't exist.
+
 NEVER validates or blocks on the AGGREGATE question of whether the
 whole strategy's target percentages sum to 100%; that remains
 exclusively `services/strategy_service.get_strategy_validation`'s
@@ -21,7 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories import strategy_admin_repository
-from app.repositories.portfolio_repository import get_portfolio_config
+from app.repositories.portfolio_repository import get_portfolio_config_for_user
 from app.schemas.strategy import (
     AllocationTargetCreateRequest,
     AllocationTargetOut,
@@ -82,28 +86,46 @@ def _target_to_out(target) -> AllocationTargetOut:
     )
 
 
-async def _require_portfolio_config(session: AsyncSession):
-    config = await get_portfolio_config(session)
+async def _require_portfolio_config(session: AsyncSession, user_id: UUID):
+    config = await get_portfolio_config_for_user(session, user_id)
     if config is None:
         raise PortfolioNotConfiguredError("No portfolio configuration exists yet.")
     return config
 
 
+async def _get_owned_bucket(session: AsyncSession, user_id: UUID, bucket_id: UUID):
+    """The bucket, only if it belongs to the caller's portfolio. A caller
+    with no portfolio owns no buckets, so every id is "not found"."""
+    config = await get_portfolio_config_for_user(session, user_id)
+    bucket = (
+        await strategy_admin_repository.get_strategy_bucket_by_id(session, bucket_id, config.id)
+        if config is not None
+        else None
+    )
+    if bucket is None:
+        raise StrategyBucketNotFoundError(f"Strategy bucket {bucket_id} does not exist.")
+    return bucket
+
+
 # --- Strategy Buckets ----------------------------------------------------
 
 
-async def list_buckets(session: AsyncSession, *, include_inactive: bool = False) -> list[StrategyBucketOut]:
-    config = await _require_portfolio_config(session)
+async def list_buckets(
+    session: AsyncSession, user_id: UUID, *, include_inactive: bool = False
+) -> list[StrategyBucketOut]:
+    config = await _require_portfolio_config(session, user_id)
     buckets = await strategy_admin_repository.list_strategy_buckets(
         session, config.id, include_inactive=include_inactive
     )
     return [_bucket_to_out(b) for b in buckets]
 
 
-async def create_bucket(session: AsyncSession, request: StrategyBucketCreateRequest) -> StrategyBucketOut:
+async def create_bucket(
+    session: AsyncSession, user_id: UUID, request: StrategyBucketCreateRequest
+) -> StrategyBucketOut:
     from app.models import StrategyBucket
 
-    config = await _require_portfolio_config(session)
+    config = await _require_portfolio_config(session, user_id)
     bucket = StrategyBucket(
         portfolio_config_id=config.id, name=request.name, description=request.description
     )
@@ -119,11 +141,9 @@ async def create_bucket(session: AsyncSession, request: StrategyBucketCreateRequ
 
 
 async def update_bucket(
-    session: AsyncSession, bucket_id: UUID, request: StrategyBucketUpdateRequest
+    session: AsyncSession, user_id: UUID, bucket_id: UUID, request: StrategyBucketUpdateRequest
 ) -> StrategyBucketOut:
-    bucket = await strategy_admin_repository.get_strategy_bucket_by_id(session, bucket_id)
-    if bucket is None:
-        raise StrategyBucketNotFoundError(f"Strategy bucket {bucket_id} does not exist.")
+    bucket = await _get_owned_bucket(session, user_id, bucket_id)
     if request.name is not None:
         bucket.name = request.name
     if request.description is not None:
@@ -138,44 +158,53 @@ async def update_bucket(
     return _bucket_to_out(bucket)
 
 
-async def _set_bucket_active(session: AsyncSession, bucket_id: UUID, *, is_active: bool) -> StrategyBucketOut:
-    bucket = await strategy_admin_repository.get_strategy_bucket_by_id(session, bucket_id)
-    if bucket is None:
-        raise StrategyBucketNotFoundError(f"Strategy bucket {bucket_id} does not exist.")
+async def _set_bucket_active(
+    session: AsyncSession, user_id: UUID, bucket_id: UUID, *, is_active: bool
+) -> StrategyBucketOut:
+    bucket = await _get_owned_bucket(session, user_id, bucket_id)
     bucket.is_active = is_active
     await session.commit()
     return _bucket_to_out(bucket)
 
 
-async def activate_bucket(session: AsyncSession, bucket_id: UUID) -> StrategyBucketOut:
-    return await _set_bucket_active(session, bucket_id, is_active=True)
+async def activate_bucket(session: AsyncSession, user_id: UUID, bucket_id: UUID) -> StrategyBucketOut:
+    return await _set_bucket_active(session, user_id, bucket_id, is_active=True)
 
 
-async def deactivate_bucket(session: AsyncSession, bucket_id: UUID) -> StrategyBucketOut:
+async def deactivate_bucket(session: AsyncSession, user_id: UUID, bucket_id: UUID) -> StrategyBucketOut:
     """Deactivation never deletes the bucket, its historical allocation
     targets, or any asset's existing `strategy_bucket_id` assignment --
     it only stops the bucket from being offered/considered as active
     going forward (existing engines already filter on `is_active`)."""
-    return await _set_bucket_active(session, bucket_id, is_active=False)
+    return await _set_bucket_active(session, user_id, bucket_id, is_active=False)
 
 
 # --- Allocation Targets ----------------------------------------------------
 
 
-async def list_targets(session: AsyncSession, *, include_inactive: bool = False) -> list[AllocationTargetOut]:
-    config = await _require_portfolio_config(session)
+async def list_targets(
+    session: AsyncSession, user_id: UUID, *, include_inactive: bool = False
+) -> list[AllocationTargetOut]:
+    config = await _require_portfolio_config(session, user_id)
     targets = await strategy_admin_repository.list_allocation_targets(
         session, config.id, include_inactive=include_inactive
     )
     return [_target_to_out(t) for t in targets]
 
 
-async def create_target(session: AsyncSession, request: AllocationTargetCreateRequest) -> AllocationTargetOut:
+async def create_target(
+    session: AsyncSession, user_id: UUID, request: AllocationTargetCreateRequest
+) -> AllocationTargetOut:
     from app.models import AllocationTarget
 
-    config = await _require_portfolio_config(session)
-    bucket = await strategy_admin_repository.get_strategy_bucket_by_id(session, request.strategy_bucket_id)
-    if bucket is None or bucket.portfolio_config_id != config.id:
+    config = await _require_portfolio_config(session, user_id)
+    # The bucket lookup is itself scoped to this portfolio, so a bucket
+    # belonging to anyone else is "not found" here -- the client-supplied
+    # strategy_bucket_id is never trusted as proof of ownership.
+    bucket = await strategy_admin_repository.get_strategy_bucket_by_id(
+        session, request.strategy_bucket_id, config.id
+    )
+    if bucket is None:
         raise InvalidAllocationTargetError(
             f"Strategy bucket {request.strategy_bucket_id} does not exist for this portfolio."
         )
@@ -201,9 +230,14 @@ async def create_target(session: AsyncSession, request: AllocationTargetCreateRe
 
 
 async def update_target(
-    session: AsyncSession, target_id: UUID, request: AllocationTargetUpdateRequest
+    session: AsyncSession, user_id: UUID, target_id: UUID, request: AllocationTargetUpdateRequest
 ) -> AllocationTargetOut:
-    target = await strategy_admin_repository.get_allocation_target_by_id(session, target_id)
+    config = await get_portfolio_config_for_user(session, user_id)
+    target = (
+        await strategy_admin_repository.get_allocation_target_by_id(session, target_id, config.id)
+        if config is not None
+        else None
+    )
     if target is None:
         raise AllocationTargetNotFoundError(f"Allocation target {target_id} does not exist.")
 

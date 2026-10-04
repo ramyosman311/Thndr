@@ -24,8 +24,8 @@ class _NoCloseSession:
         return False
 
 
-async def test_run_snapshot_eod_creates_a_real_snapshot(db_session, monkeypatch):
-    config = make_portfolio_config()
+async def test_run_snapshot_eod_creates_a_real_snapshot(db_session, monkeypatch, owner):
+    config = make_portfolio_config(user_id=owner.id)
     db_session.add(config)
     await db_session.commit()
 
@@ -43,8 +43,8 @@ async def test_run_snapshot_eod_creates_a_real_snapshot(db_session, monkeypatch)
     assert len(snapshots) == 1
 
 
-async def test_run_snapshot_eod_is_a_no_op_on_second_call_same_day(db_session, monkeypatch):
-    config = make_portfolio_config()
+async def test_run_snapshot_eod_is_a_no_op_on_second_call_same_day(db_session, monkeypatch, owner):
+    config = make_portfolio_config(user_id=owner.id)
     db_session.add(config)
     await db_session.commit()
 
@@ -63,7 +63,7 @@ async def test_run_snapshot_eod_is_a_no_op_on_second_call_same_day(db_session, m
     assert len(snapshots) == 1
 
 
-async def test_run_snapshot_eod_raises_when_no_portfolio_configured(db_session, monkeypatch):
+async def test_run_snapshot_eod_raises_when_no_portfolio_configured(db_session, monkeypatch, owner):
     monkeypatch.setattr(snapshot_eod, "async_session_factory", lambda: _NoCloseSession(db_session))
 
     try:

@@ -17,6 +17,7 @@ portfolio_service.py/inflow_service.py.
 
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,7 +28,7 @@ from app.repositories.portfolio_repository import (
     get_active_allocation_targets,
     get_active_assets,
     get_active_strategy_buckets,
-    get_portfolio_config,
+    get_portfolio_config_for_user,
 )
 from app.schemas.rebalancing import RebalancingOut, RebalancingRecommendationOut
 from app.services.portfolio_shared import find_emergency_bucket_id, load_priced_positions
@@ -62,7 +63,7 @@ class LoadedRebalancingResult:
     is_complete: bool
 
 
-async def load_rebalancing_result(session: AsyncSession) -> LoadedRebalancingResult:
+async def load_rebalancing_result(session: AsyncSession, user_id: UUID) -> LoadedRebalancingResult:
     """Fetches current portfolio/strategy/allocation state and runs the
     pure `domain/rebalancing_engine.calculate_rebalancing` — the single
     place this happens. Extracted out of `get_rebalancing_recommendations`
@@ -71,11 +72,11 @@ async def load_rebalancing_result(session: AsyncSession) -> LoadedRebalancingRes
     duplicating it (see FINANCIAL_RULES.md, "Rebalancing Is The Single
     Source Of Truth" — recommendations must consume Phase 17's numbers,
     never recompute them)."""
-    config = await get_portfolio_config(session)
+    config = await get_portfolio_config_for_user(session, user_id)
     if config is None:
         raise RebalancingNotConfiguredError("No portfolio configuration exists yet.")
 
-    assets = await get_active_assets(session)
+    assets = await get_active_assets(session, config.id)
     positions = await load_priced_positions(session, assets, config.emergency_asset_id, config.base_currency)
     totals = calculate_portfolio_totals(positions, emergency_excluded=config.emergency_excluded)
 
@@ -132,8 +133,8 @@ async def load_rebalancing_result(session: AsyncSession) -> LoadedRebalancingRes
     return LoadedRebalancingResult(result=result, is_complete=totals.is_complete)
 
 
-async def get_rebalancing_recommendations(session: AsyncSession) -> RebalancingOut:
-    loaded = await load_rebalancing_result(session)
+async def get_rebalancing_recommendations(session: AsyncSession, user_id: UUID) -> RebalancingOut:
+    loaded = await load_rebalancing_result(session, user_id)
     result = loaded.result
 
     recommendation_outs = [

@@ -48,12 +48,14 @@ async def list_snapshots_ordered(session: AsyncSession, portfolio_config_id: UUI
     return list(result.scalars().all())
 
 
-async def list_transactions_ordered(session: AsyncSession) -> list[Transaction]:
-    """Every transaction, in the same deterministic chronological order as
+async def list_transactions_ordered(session: AsyncSession, portfolio_config_id: UUID) -> list[Transaction]:
+    """Every transaction IN THIS PORTFOLIO (P0-3C), in the same deterministic chronological order as
     `list_snapshots_ordered` -- (transaction_date, created_at, id)
     ascending -- for realized-P/L replay and invested-capital summation
     (see domain/transaction_engine.py, `replay_cumulative_realized_pnl`)."""
     result = await session.execute(
-        select(Transaction).order_by(Transaction.transaction_date, Transaction.created_at, Transaction.id)
+        select(Transaction)
+        .where(Transaction.portfolio_config_id == portfolio_config_id)
+        .order_by(Transaction.transaction_date, Transaction.created_at, Transaction.id)
     )
     return list(result.scalars().all())

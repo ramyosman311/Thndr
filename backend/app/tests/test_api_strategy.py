@@ -1,29 +1,13 @@
 from decimal import Decimal
 
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
-from app.core.database import get_db_session
-from app.main import app
 from app.models import AllocationTarget, PortfolioConfig, StrategyBucket
 from app.seed.seed import run_seed
 
 
-@pytest_asyncio.fixture
-async def client(db_session):
-    async def _override_get_db_session():
-        yield db_session
-
-    app.dependency_overrides[get_db_session] = _override_get_db_session
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-    app.dependency_overrides.pop(get_db_session, None)
-
-
-async def test_strategy_validation_endpoint_returns_expected_structure(db_session, client):
-    config = PortfolioConfig(name="API Strategy Portfolio", base_currency="EGP", emergency_excluded=False)
+async def test_strategy_validation_endpoint_returns_expected_structure(db_session, client, owner):
+    config = PortfolioConfig(user_id=owner.id, name="API Strategy Portfolio", base_currency="EGP", emergency_excluded=False)
     db_session.add(config)
     await db_session.flush()
 
@@ -50,10 +34,10 @@ async def test_strategy_validation_endpoint_returns_expected_structure(db_sessio
     assert body["field_errors"] == []
 
 
-async def test_strategy_validation_endpoint_reports_seeded_config_as_incomplete_not_500(db_session, client):
+async def test_strategy_validation_endpoint_reports_seeded_config_as_incomplete_not_500(db_session, client, owner):
     """An incomplete configuration is a normal 200 response with a
     diagnostic status — never an HTTP 500."""
-    await run_seed(db_session)
+    await run_seed(db_session, owner.id)
 
     response = await client.get("/api/portfolio/strategy/validation")
     assert response.status_code == 200
@@ -66,13 +50,13 @@ async def test_strategy_validation_endpoint_reports_seeded_config_as_incomplete_
     assert max_only_names == {"Individual Stocks"}
 
 
-async def test_strategy_validation_returns_404_when_not_configured(client):
+async def test_strategy_validation_returns_404_when_not_configured(client, owner):
     response = await client.get("/api/portfolio/strategy/validation")
     assert response.status_code == 404
 
 
-async def test_strategy_validation_api_does_not_mutate_database(db_session, client):
-    await run_seed(db_session)
+async def test_strategy_validation_api_does_not_mutate_database(db_session, client, owner):
+    await run_seed(db_session, owner.id)
 
     async def counts():
         result = {}

@@ -76,10 +76,10 @@ async def test_fund_assets_are_never_assigned_an_egx_equity_provider():
 # --- holdings, transactions, or snapshots for the same assets.
 
 
-async def test_seeding_egx_price_configs_does_not_alter_existing_holding(db_session):
+async def test_seeding_egx_price_configs_does_not_alter_existing_holding(db_session, owner, portfolio):
     assets_by_symbol = await seed_assets(db_session)
     tmgh = assets_by_symbol["TMGH"]
-    holding = Holding(asset_id=tmgh.id, quantity=Decimal("42"), average_cost=Decimal("55.30"))
+    holding = Holding(portfolio_config_id=portfolio.id, asset_id=tmgh.id, quantity=Decimal("42"), average_cost=Decimal("55.30"))
     db_session.add(holding)
     await db_session.commit()
 
@@ -91,10 +91,11 @@ async def test_seeding_egx_price_configs_does_not_alter_existing_holding(db_sess
     assert reloaded.average_cost == Decimal("55.30000000")
 
 
-async def test_seeding_egx_price_configs_does_not_alter_existing_transaction(db_session):
+async def test_seeding_egx_price_configs_does_not_alter_existing_transaction(db_session, owner, portfolio):
     assets_by_symbol = await seed_assets(db_session)
     etel = assets_by_symbol["ETEL"]
     txn = Transaction(
+        portfolio_config_id=portfolio.id,
         asset_id=etel.id,
         transaction_type=TransactionType.BUY,
         quantity=Decimal("100"),
@@ -115,12 +116,12 @@ async def test_seeding_egx_price_configs_does_not_alter_existing_transaction(db_
     assert reloaded.fees == Decimal("2.00")
 
 
-async def test_seeding_egx_price_configs_does_not_alter_existing_snapshot_item(db_session):
+async def test_seeding_egx_price_configs_does_not_alter_existing_snapshot_item(db_session, owner):
     from app.models import PortfolioConfig
 
     assets_by_symbol = await seed_assets(db_session)
     efid = assets_by_symbol["EFID"]
-    config = PortfolioConfig(name="Snapshot Test Portfolio", base_currency="EGP")
+    config = PortfolioConfig(user_id=owner.id, name="Snapshot Test Portfolio", base_currency="EGP")
     db_session.add(config)
     await db_session.flush()
     snapshot = PortfolioSnapshot(portfolio_config_id=config.id, snapshot_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
@@ -140,7 +141,7 @@ async def test_seeding_egx_price_configs_does_not_alter_existing_snapshot_item(d
     assert reloaded.value == Decimal("999.99")
 
 
-async def test_seeding_egx_price_configs_is_additive_never_overwrites_an_existing_config(db_session):
+async def test_seeding_egx_price_configs_is_additive_never_overwrites_an_existing_config(db_session, owner):
     """If an admin has already hand-configured an asset's pricing (Phase
     12 UI), re-running the seed must not clobber it -- same 'create if
     missing' contract as every other seed function."""

@@ -22,22 +22,33 @@ class Notification(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     external worker can deliver each notification at most once after a
     successful send while safely retrying failed sends.
 
-    `portfolio_config_id` (P0-3A): nullable for now, deliberately -- see
-    DECISIONS.md, "P0-3A/B — Identity, Ownership, JWT Verification".
+    `portfolio_config_id` (P0-3A/P0-3C): the owning portfolio; nullable only
+    for rows that predate ownership. `source_id` is unique among a
+    portfolio's ACTIVE notifications, not globally -- two users can
+    legitimately have the same condition active at once. The partial
+    `uq_notifications_source_id_active_unowned` keeps the original
+    guarantee for legacy unowned rows (see DECISIONS.md, "P0-3C").
     """
 
     __tablename__ = "notifications"
     __table_args__ = (
         Index(
-            "uq_notifications_source_id_active",
+            "uq_notifications_portfolio_source_id_active",
+            "portfolio_config_id",
             "source_id",
             unique=True,
             postgresql_where=text("resolved_at IS NULL"),
         ),
+        Index(
+            "uq_notifications_source_id_active_unowned",
+            "source_id",
+            unique=True,
+            postgresql_where=text("resolved_at IS NULL AND portfolio_config_id IS NULL"),
+        ),
     )
 
     portfolio_config_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("portfolio_configs.id", ondelete="CASCADE"), nullable=True
+        UUID(as_uuid=True), ForeignKey("portfolio_configs.id", ondelete="CASCADE"), nullable=True, index=True
     )
     source_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     category: Mapped[NotificationCategory] = mapped_column(

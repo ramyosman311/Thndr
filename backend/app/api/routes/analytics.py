@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user
 from app.core.database import get_db_session
+from app.models import User
 from app.schemas.analytics import PortfolioAnalyticsHistoryOut
 from app.services.portfolio_analytics_service import (
     InvalidRangeError,
@@ -16,12 +18,13 @@ router = APIRouter(prefix="/portfolio/analytics", tags=["analytics"])
 async def get_analytics_history(
     range: str = Query("1M", pattern="^(1W|1M|3M|YTD|ALL)$"),
     session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
 ) -> PortfolioAnalyticsHistoryOut:
     """Read-only wealth history derived from persisted portfolio snapshots
     only (Phase 15) -- never computed from today's live holdings, never
     interpolated. See services/portfolio_analytics_service.py."""
     try:
-        return await get_portfolio_analytics_history(session, range_key=range)
+        return await get_portfolio_analytics_history(session, user.id, range_key=range)
     except PortfolioNotConfiguredError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except InvalidRangeError as exc:

@@ -11,6 +11,7 @@ cash. Recommendation only; no execution, ever.
 
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,13 +27,13 @@ def _round_or_none(value: Decimal | None) -> Decimal | None:
 
 
 async def get_portfolio_recommendations(
-    session: AsyncSession, *, evaluated_at: datetime | None = None
+    session: AsyncSession, user_id: UUID, *, evaluated_at: datetime | None = None
 ) -> RecommendationsOut:
     """`RebalancingNotConfiguredError` (imported from rebalancing_service
     rather than redefined here) propagates unchanged -- a portfolio with
     no configuration yet has no recommendations to compute, same as it
     has no rebalancing to compute."""
-    loaded = await load_rebalancing_result(session)
+    loaded = await load_rebalancing_result(session, user_id)
     evaluated_at = evaluated_at or datetime.now(timezone.utc)
 
     recommendations = build_recommendations(loaded.result, evaluated_at=evaluated_at)

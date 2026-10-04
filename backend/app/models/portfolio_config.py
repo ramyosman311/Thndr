@@ -25,14 +25,13 @@ class PortfolioConfig(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     its value is excluded from risk/investment/rebalancing/inflow
     calculations (see FINANCIAL_RULES.md, "Emergency Cash").
 
-    `user_id` (P0-3A): nullable for now, deliberately. Existing rows
-    (including any live production row) predate any concept of a user
-    and cannot be safely assigned an owner by this migration -- see
-    DECISIONS.md, "P0-3A/B — Identity, Ownership, JWT Verification" for
-    the verified-backfill procedure a later phase must run before this
-    column can become NOT NULL. No repository/service in this phase
-    filters by it; `get_portfolio_config()`'s existing "first row" lookup
-    is intentionally untouched (see app/repositories/portfolio_repository.py).
+    `user_id` (P0-3A/P0-3C): the owner (a Supabase Auth user). Nullable only
+    because rows that predate ownership have no verified owner and cannot be
+    safely assigned one by code -- see DECISIONS.md, "P0-3A/B" for the
+    verified-backfill procedure a later phase must run before this can
+    become NOT NULL. Every application read of a portfolio is scoped by it
+    (`get_portfolio_config_for_user`); there is no unscoped "first row"
+    lookup, and an unowned portfolio is unreachable through the API.
     """
 
     __tablename__ = "portfolio_configs"

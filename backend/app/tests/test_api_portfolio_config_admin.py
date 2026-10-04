@@ -5,33 +5,17 @@ and the base-currency change protection once transactions exist."""
 from datetime import datetime, timezone
 from decimal import Decimal
 
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_db_session
-from app.main import app
 from app.models import Transaction, TransactionType
 from app.tests.conftest import make_asset, make_portfolio_config
 
 
-@pytest_asyncio.fixture
-async def client(db_session):
-    async def _override_get_db_session():
-        yield db_session
-
-    app.dependency_overrides[get_db_session] = _override_get_db_session
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-    app.dependency_overrides.pop(get_db_session, None)
-
-
-async def test_get_config_404_when_none_exists(client):
+async def test_get_config_404_when_none_exists(client, owner):
     response = await client.get("/api/portfolio/config")
     assert response.status_code == 404
 
 
-async def test_create_config_succeeds_when_none_exists(db_session, client):
+async def test_create_config_succeeds_when_none_exists(db_session, client, owner):
     response = await client.post(
         "/api/portfolio/config", json={"name": "My Portfolio", "base_currency": "EGP"}
     )
@@ -42,15 +26,15 @@ async def test_create_config_succeeds_when_none_exists(db_session, client):
     assert body["emergency_excluded"] is False
 
 
-async def test_create_config_rejects_when_one_already_exists(db_session, client):
-    db_session.add(make_portfolio_config())
+async def test_create_config_rejects_when_one_already_exists(db_session, client, owner):
+    db_session.add(make_portfolio_config(user_id=owner.id))
     await db_session.commit()
 
     response = await client.post("/api/portfolio/config", json={"name": "Second", "base_currency": "USD"})
     assert response.status_code == 409
 
 
-async def test_create_config_rejects_invalid_emergency_asset(db_session, client):
+async def test_create_config_rejects_invalid_emergency_asset(db_session, client, owner):
     response = await client.post(
         "/api/portfolio/config",
         json={
@@ -62,8 +46,8 @@ async def test_create_config_rejects_invalid_emergency_asset(db_session, client)
     assert response.status_code == 400
 
 
-async def test_update_config_name(db_session, client):
-    db_session.add(make_portfolio_config(name="Old Name"))
+async def test_update_config_name(db_session, client, owner):
+    db_session.add(make_portfolio_config(user_id=owner.id, name="Old Name"))
     await db_session.commit()
 
     response = await client.patch("/api/portfolio/config", json={"name": "New Name"})
@@ -71,11 +55,11 @@ async def test_update_config_name(db_session, client):
     assert response.json()["name"] == "New Name"
 
 
-async def test_update_config_telegram_enabled(db_session, client):
+async def test_update_config_telegram_enabled(db_session, client, owner):
     """Phase 14: telegram_enabled is the portfolio-level master switch
     gating Telegram delivery -- must be updatable through the same admin
     mechanism as every other field, not stuck at its Phase 3 default."""
-    db_session.add(make_portfolio_config())
+    db_session.add(make_portfolio_config(user_id=owner.id))
     await db_session.commit()
 
     response = await client.patch("/api/portfolio/config", json={"telegram_enabled": True})
@@ -87,8 +71,8 @@ async def test_update_config_telegram_enabled(db_session, client):
     assert response.json()["telegram_enabled"] is False
 
 
-async def test_update_config_base_currency_allowed_with_no_transactions(db_session, client):
-    db_session.add(make_portfolio_config(base_currency="EGP"))
+async def test_update_config_base_currency_allowed_with_no_transactions(db_session, client, owner):
+    db_session.add(make_portfolio_config(user_id=owner.id, base_currency="EGP"))
     await db_session.commit()
 
     response = await client.patch("/api/portfolio/config", json={"base_currency": "USD"})
@@ -96,14 +80,15 @@ async def test_update_config_base_currency_allowed_with_no_transactions(db_sessi
     assert response.json()["base_currency"] == "USD"
 
 
-async def test_update_config_base_currency_blocked_once_a_transaction_exists(db_session, client):
-    config = make_portfolio_config(base_currency="EGP")
+async def test_update_config_base_currency_blocked_once_a_transaction_exists(db_session, client, owner):
+    config = make_portfolio_config(user_id=owner.id, base_currency="EGP")
     db_session.add(config)
     asset = make_asset("PCFGTXN")
     db_session.add(asset)
     await db_session.flush()
     db_session.add(
         Transaction(
+            portfolio_config_id=config.id,
             asset_id=asset.id, transaction_type=TransactionType.BUY, quantity=Decimal("1"), price=Decimal("10"),
             transaction_date=datetime.now(timezone.utc),
         )
@@ -117,16 +102,16 @@ async def test_update_config_base_currency_blocked_once_a_transaction_exists(db_
     assert unchanged.json()["base_currency"] == "EGP"
 
 
-async def test_update_config_rejects_invalid_currency_code(db_session, client):
-    db_session.add(make_portfolio_config())
+async def test_update_config_rejects_invalid_currency_code(db_session, client, owner):
+    db_session.add(make_portfolio_config(user_id=owner.id))
     await db_session.commit()
 
     response = await client.patch("/api/portfolio/config", json={"base_currency": "1"})
     assert response.status_code == 422
 
 
-async def test_update_config_sets_and_clears_emergency_asset(db_session, client):
-    db_session.add(make_portfolio_config())
+async def test_update_config_sets_and_clears_emergency_asset(db_session, client, owner):
+    db_session.add(make_portfolio_config(user_id=owner.id))
     emergency_asset = make_asset("EMERGADMIN")
     db_session.add(emergency_asset)
     await db_session.commit()
@@ -143,8 +128,8 @@ async def test_update_config_sets_and_clears_emergency_asset(db_session, client)
     assert clear_response.json()["emergency_asset_id"] is None
 
 
-async def test_update_config_rejects_invalid_emergency_asset(db_session, client):
-    db_session.add(make_portfolio_config())
+async def test_update_config_rejects_invalid_emergency_asset(db_session, client, owner):
+    db_session.add(make_portfolio_config(user_id=owner.id))
     await db_session.commit()
 
     response = await client.patch(
@@ -153,6 +138,6 @@ async def test_update_config_rejects_invalid_emergency_asset(db_session, client)
     assert response.status_code == 400
 
 
-async def test_update_config_404_when_none_exists(client):
+async def test_update_config_404_when_none_exists(client, owner):
     response = await client.patch("/api/portfolio/config", json={"name": "Nope"})
     assert response.status_code == 404

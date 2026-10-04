@@ -29,7 +29,7 @@ async def test_seed_runs_in_production_when_explicitly_allowed(monkeypatch):
 
     called = False
 
-    async def fake_run_seed(session) -> None:
+    async def fake_run_seed(session, owner_user_id=None) -> None:
         nonlocal called
         called = True
 
@@ -46,7 +46,7 @@ async def test_seed_runs_normally_outside_production(monkeypatch):
 
     called = False
 
-    async def fake_run_seed(session) -> None:
+    async def fake_run_seed(session, owner_user_id=None) -> None:
         nonlocal called
         called = True
 

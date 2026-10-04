@@ -9,7 +9,6 @@ async_session_factory()` reuses the fixture-managed `db_session` instead
 of opening an unrelated connection.
 """
 
-from datetime import datetime, timezone
 from decimal import Decimal
 
 from app.core.config import Settings
@@ -18,7 +17,7 @@ from app.models.enums import NotificationCategory
 from app.repositories.notification_repository import list_pending_telegram_notifications
 from app.services import alert_service, watchlist_service
 from app.services.notification_dispatcher import NullNotificationDispatcher
-from app.tests.conftest import make_asset, make_current_price, make_portfolio_config
+from app.tests.conftest import make_asset, make_current_price, make_portfolio_config, owned_config
 from app.workers import alert_notify
 
 
@@ -55,11 +54,11 @@ def _enable_telegram_globally(monkeypatch, *, enabled=True, bot_token="test-toke
     monkeypatch.setattr(alert_notify, "get_settings", lambda: fake_settings)
 
 
-async def _setup_breached_portfolio(session, *, portfolio_telegram_enabled=True):
+async def _setup_breached_portfolio(session, owner, *, portfolio_telegram_enabled=True):
     """A category already over its configured maximum -- a real,
     unmodified Phase 17/18/19 chain produces a RECOMMENDATION_ALERT/
     CRITICAL notification for it."""
-    config = make_portfolio_config(emergency_excluded=False, telegram_enabled=portfolio_telegram_enabled)
+    config = make_portfolio_config(user_id=owner.id, emergency_excluded=False, telegram_enabled=portfolio_telegram_enabled)
     session.add(config)
     await session.flush()
 
@@ -71,7 +70,7 @@ async def _setup_breached_portfolio(session, *, portfolio_telegram_enabled=True)
     await session.flush()
     from app.models import Holding
 
-    session.add(Holding(asset_id=asset.id, quantity=Decimal("100")))  # 10000
+    session.add(Holding(portfolio_config_id=config.id, asset_id=asset.id, quantity=Decimal("100")))  # 10000
     await make_current_price(session, asset, Decimal("100"))
     target = AllocationTarget(
         portfolio_config_id=config.id, strategy_bucket_id=bucket.id, maximum_percent=Decimal("15"), priority=1
@@ -81,8 +80,8 @@ async def _setup_breached_portfolio(session, *, portfolio_telegram_enabled=True)
     return config
 
 
-async def _setup_watched_price_asset(session, *, current_price=Decimal("150"), rule_telegram_enabled=True, portfolio_telegram_enabled=True):
-    config = make_portfolio_config(telegram_enabled=portfolio_telegram_enabled)
+async def _setup_watched_price_asset(session, owner, *, current_price=Decimal("150"), rule_telegram_enabled=True, portfolio_telegram_enabled=True):
+    config = make_portfolio_config(user_id=owner.id, telegram_enabled=portfolio_telegram_enabled)
     session.add(config)
     await session.flush()
     asset = make_asset("WRKRPRICE")
@@ -90,19 +89,24 @@ async def _setup_watched_price_asset(session, *, current_price=Decimal("150"), r
     await session.flush()
     from app.models import Holding
 
-    session.add(Holding(asset_id=asset.id, quantity=Decimal("1")))
+    session.add(Holding(portfolio_config_id=config.id, asset_id=asset.id, quantity=Decimal("1")))
     await make_current_price(session, asset, current_price)
     await session.commit()
 
-    entry = await watchlist_service.add_to_watchlist(session, asset.id)
+    entry = await watchlist_service.add_to_watchlist(session, owner.id, asset.id)
     rule = await alert_service.create_alert_rule(
-        session,
+        session, owner.id,
         entry.id,
         price_target_enabled=True,
         price_target=Decimal("150"),
         telegram_enabled=rule_telegram_enabled,
     )
     return config, asset, entry, rule
+
+
+async def _pending(session, owner):
+    config = await owned_config(session, owner)
+    return await list_pending_telegram_notifications(session, config.id)
 
 
 async def _run_worker(db_session, monkeypatch, notifier):
@@ -114,30 +118,30 @@ async def _run_worker(db_session, monkeypatch, notifier):
 # --- A/B: pending notification is delivered and marked sent -----------------
 
 
-async def test_a_b_pending_recommendation_notification_is_delivered_and_marked_sent(db_session, monkeypatch):
-    await _setup_breached_portfolio(db_session)
+async def test_a_b_pending_recommendation_notification_is_delivered_and_marked_sent(db_session, monkeypatch, owner):
+    await _setup_breached_portfolio(db_session, owner)
     _enable_telegram_globally(monkeypatch)
 
     notifier = RecordingCenterNotifier(should_succeed=True)
     await _run_worker(db_session, monkeypatch, notifier)
 
     assert len(notifier.dispatched) == 1
-    pending_after = await list_pending_telegram_notifications(db_session)
+    pending_after = await _pending(db_session, owner)
     assert pending_after == []  # the one notification is no longer pending
 
 
 # --- C: failed delivery leaves telegram_sent_at NULL, remains pending -------
 
 
-async def test_c_failed_delivery_leaves_notification_pending(db_session, monkeypatch):
-    await _setup_breached_portfolio(db_session)
+async def test_c_failed_delivery_leaves_notification_pending(db_session, monkeypatch, owner):
+    await _setup_breached_portfolio(db_session, owner)
     _enable_telegram_globally(monkeypatch)
 
     notifier = RecordingCenterNotifier(should_succeed=False)
     await _run_worker(db_session, monkeypatch, notifier)
 
     assert len(notifier.dispatched) == 1
-    pending_after = await list_pending_telegram_notifications(db_session)
+    pending_after = await _pending(db_session, owner)
     assert len(pending_after) == 1
     assert pending_after[0].telegram_sent_at is None
 
@@ -145,17 +149,17 @@ async def test_c_failed_delivery_leaves_notification_pending(db_session, monkeyp
 # --- D: resolved but undelivered notification is still eligible -------------
 
 
-async def test_d_resolved_notification_still_eligible_for_delivery(db_session, monkeypatch):
+async def test_d_resolved_notification_still_eligible_for_delivery(db_session, monkeypatch, owner):
     """A maximum breach that has since been genuinely fixed (so Phase 19's
     own resolution logic sets resolved_at) but was never Telegram-
     delivered must still be sent -- Telegram delivery answers 'was the
     user informed', not 'is the condition still true'."""
     from app.services.notification_service import sync_notifications
 
-    await _setup_breached_portfolio(db_session)
-    await sync_notifications(db_session)  # Phase 19's own sync -- independent of this worker
+    await _setup_breached_portfolio(db_session, owner)
+    await sync_notifications(db_session, owner.id)  # Phase 19's own sync -- independent of this worker
 
-    pending_before = await list_pending_telegram_notifications(db_session)
+    pending_before = await _pending(db_session, owner)
     assert len(pending_before) == 1
     notification_id = pending_before[0].id
 
@@ -166,22 +170,21 @@ async def test_d_resolved_notification_still_eligible_for_delivery(db_session, m
     # Phase 19's own edge-triggered logic, rather than a test manually
     # poking resolved_at.
     from app.models import Holding
-    from app.repositories.portfolio_repository import get_portfolio_config
 
-    config = await get_portfolio_config(db_session)
+    config = await owned_config(db_session, owner)
     other_bucket = StrategyBucket(portfolio_config_id=config.id, name="Diluting Bucket")
     db_session.add(other_bucket)
     await db_session.flush()
     other_asset = make_asset("WRKRDILUTE", strategy_bucket_id=other_bucket.id)
     db_session.add(other_asset)
     await db_session.flush()
-    db_session.add(Holding(asset_id=other_asset.id, quantity=Decimal("900")))
+    db_session.add(Holding(portfolio_config_id=config.id, asset_id=other_asset.id, quantity=Decimal("900")))
     await make_current_price(db_session, other_asset, Decimal("100"))
     await db_session.commit()
 
-    await sync_notifications(db_session)
+    await sync_notifications(db_session, owner.id)
 
-    resolved = await list_pending_telegram_notifications(db_session)
+    resolved = await _pending(db_session, owner)
     assert len(resolved) == 1
     assert resolved[0].id == notification_id
     assert resolved[0].resolved_at is not None
@@ -198,8 +201,8 @@ async def test_d_resolved_notification_still_eligible_for_delivery(db_session, m
 # --- E: already-delivered notification is never sent again ------------------
 
 
-async def test_e_already_delivered_notification_is_never_resent(db_session, monkeypatch):
-    await _setup_breached_portfolio(db_session)
+async def test_e_already_delivered_notification_is_never_resent(db_session, monkeypatch, owner):
+    await _setup_breached_portfolio(db_session, owner)
     _enable_telegram_globally(monkeypatch)
 
     first_notifier = RecordingCenterNotifier(should_succeed=True)
@@ -214,18 +217,18 @@ async def test_e_already_delivered_notification_is_never_resent(db_session, monk
 # --- F: global Telegram disabled --------------------------------------------
 
 
-async def test_f_global_telegram_disabled_skips_delivery_entirely(db_session, monkeypatch):
+async def test_f_global_telegram_disabled_skips_delivery_entirely(db_session, monkeypatch, owner):
     from app.services.notification_service import sync_notifications
 
-    await _setup_breached_portfolio(db_session)
-    await sync_notifications(db_session)  # Phase 19's own sync -- independent of this worker
+    await _setup_breached_portfolio(db_session, owner)
+    await sync_notifications(db_session, owner.id)  # Phase 19's own sync -- independent of this worker
     _enable_telegram_globally(monkeypatch, enabled=False)
 
     notifier = RecordingCenterNotifier(should_succeed=True)
     await _run_worker(db_session, monkeypatch, notifier)
 
     assert len(notifier.dispatched) == 0
-    pending_after = await list_pending_telegram_notifications(db_session)
+    pending_after = await _pending(db_session, owner)
     assert len(pending_after) == 1
     assert pending_after[0].telegram_sent_at is None
 
@@ -233,8 +236,8 @@ async def test_f_global_telegram_disabled_skips_delivery_entirely(db_session, mo
 # --- G: missing credentials ---------------------------------------------------
 
 
-async def test_g_missing_credentials_skips_delivery(db_session, monkeypatch):
-    await _setup_breached_portfolio(db_session)
+async def test_g_missing_credentials_skips_delivery(db_session, monkeypatch, owner):
+    await _setup_breached_portfolio(db_session, owner)
     fake_settings = Settings(TELEGRAM_ENABLED=True, TELEGRAM_BOT_TOKEN="", TELEGRAM_CHAT_ID="")
     monkeypatch.setattr(alert_notify, "get_settings", lambda: fake_settings)
 
@@ -247,18 +250,18 @@ async def test_g_missing_credentials_skips_delivery(db_session, monkeypatch):
 # --- H: portfolio Telegram disabled -------------------------------------------
 
 
-async def test_h_portfolio_telegram_disabled_skips_delivery(db_session, monkeypatch):
+async def test_h_portfolio_telegram_disabled_skips_delivery(db_session, monkeypatch, owner):
     from app.services.notification_service import sync_notifications
 
-    await _setup_breached_portfolio(db_session, portfolio_telegram_enabled=False)
-    await sync_notifications(db_session)  # Phase 19's own sync -- independent of this worker
+    await _setup_breached_portfolio(db_session, owner, portfolio_telegram_enabled=False)
+    await sync_notifications(db_session, owner.id)  # Phase 19's own sync -- independent of this worker
     _enable_telegram_globally(monkeypatch)
 
     notifier = RecordingCenterNotifier(should_succeed=True)
     await _run_worker(db_session, monkeypatch, notifier)
 
     assert len(notifier.dispatched) == 0
-    pending_after = await list_pending_telegram_notifications(db_session)
+    pending_after = await _pending(db_session, owner)
     assert len(pending_after) == 1
     assert pending_after[0].telegram_sent_at is None
 
@@ -266,22 +269,22 @@ async def test_h_portfolio_telegram_disabled_skips_delivery(db_session, monkeypa
 # --- I: alert-origin notification with rule-level Telegram disabled ----------
 
 
-async def test_i_alert_origin_notification_respects_per_rule_telegram_opt_in(db_session, monkeypatch):
-    await _setup_watched_price_asset(db_session, current_price=Decimal("150"), rule_telegram_enabled=False)
+async def test_i_alert_origin_notification_respects_per_rule_telegram_opt_in(db_session, monkeypatch, owner):
+    await _setup_watched_price_asset(db_session, owner, current_price=Decimal("150"), rule_telegram_enabled=False)
     _enable_telegram_globally(monkeypatch)
 
     notifier = RecordingCenterNotifier(should_succeed=True)
     await _run_worker(db_session, monkeypatch, notifier)
 
-    pending = await list_pending_telegram_notifications(db_session)
+    pending = await _pending(db_session, owner)
     assert len(pending) == 1  # the PRICE_ALERT notification exists...
     assert pending[0].category == NotificationCategory.PRICE_ALERT
     assert len(notifier.dispatched) == 0  # ...but is never delivered: the rule opted out.
     assert pending[0].telegram_sent_at is None
 
 
-async def test_i_alert_origin_notification_delivered_when_rule_telegram_enabled(db_session, monkeypatch):
-    await _setup_watched_price_asset(db_session, current_price=Decimal("150"), rule_telegram_enabled=True)
+async def test_i_alert_origin_notification_delivered_when_rule_telegram_enabled(db_session, monkeypatch, owner):
+    await _setup_watched_price_asset(db_session, owner, current_price=Decimal("150"), rule_telegram_enabled=True)
     _enable_telegram_globally(monkeypatch)
 
     notifier = RecordingCenterNotifier(should_succeed=True)
@@ -294,11 +297,11 @@ async def test_i_alert_origin_notification_delivered_when_rule_telegram_enabled(
 # --- J: recommendation notification needs only the portfolio switch ---------
 
 
-async def test_j_recommendation_notification_needs_only_portfolio_switch(db_session, monkeypatch):
+async def test_j_recommendation_notification_needs_only_portfolio_switch(db_session, monkeypatch, owner):
     """No alert rule exists for a recommendation-origin notification --
     the portfolio-level switch alone (after global config) is sufficient,
     unlike the alert-origin case in test I."""
-    await _setup_breached_portfolio(db_session, portfolio_telegram_enabled=True)
+    await _setup_breached_portfolio(db_session, owner, portfolio_telegram_enabled=True)
     _enable_telegram_globally(monkeypatch)
 
     notifier = RecordingCenterNotifier(should_succeed=True)
@@ -311,12 +314,12 @@ async def test_j_recommendation_notification_needs_only_portfolio_switch(db_sess
 # --- K: Phase 14 raw-alert-check dispatch path remains untouched -------------
 
 
-async def test_k_worker_never_uses_the_legacy_raw_alert_dispatch_method(db_session, monkeypatch):
+async def test_k_worker_never_uses_the_legacy_raw_alert_dispatch_method(db_session, monkeypatch, owner):
     """The Phase 20 worker must call only `dispatch_notification` on
     persisted Notification Center rows -- never the Phase 14
     `dispatch(AlertCheckResult, ...)` method, which remains reserved for
     `alert_service.evaluate_alerts`'s own on-demand call path."""
-    await _setup_watched_price_asset(db_session, current_price=Decimal("150"), rule_telegram_enabled=True)
+    await _setup_watched_price_asset(db_session, owner, current_price=Decimal("150"), rule_telegram_enabled=True)
     _enable_telegram_globally(monkeypatch)
 
     class DispatchNotCalled(RecordingCenterNotifier):
@@ -331,15 +334,15 @@ async def test_k_worker_never_uses_the_legacy_raw_alert_dispatch_method(db_sessi
 # --- L: Notification Center stays functional with Telegram fully disabled ---
 
 
-async def test_l_notification_center_sync_unaffected_by_telegram_being_disabled(db_session, monkeypatch):
+async def test_l_notification_center_sync_unaffected_by_telegram_being_disabled(db_session, monkeypatch, owner):
     """sync_notifications/list_notifications (Phase 19) must keep working
     identically regardless of Telegram configuration -- in-app visibility
     never depends on it."""
     from app.services.notification_service import list_notifications
 
-    await _setup_breached_portfolio(db_session, portfolio_telegram_enabled=False)
+    await _setup_breached_portfolio(db_session, owner, portfolio_telegram_enabled=False)
 
-    result = await list_notifications(db_session)
+    result = await list_notifications(db_session, owner.id)
     assert len(result.notifications) == 1
     assert result.notifications[0].category == "RECOMMENDATION_ALERT"
 
@@ -348,7 +351,7 @@ async def test_l_notification_center_sync_unaffected_by_telegram_being_disabled(
     notifier = RecordingCenterNotifier(should_succeed=True)
     await _run_worker(db_session, monkeypatch, notifier)
 
-    result_after = await list_notifications(db_session)
+    result_after = await list_notifications(db_session, owner.id)
     assert len(result_after.notifications) == 1
     assert result_after.notifications[0].read is False
 
@@ -356,10 +359,10 @@ async def test_l_notification_center_sync_unaffected_by_telegram_being_disabled(
 # --- Read-only financial state, no dispatcher used means no side effect -----
 
 
-async def test_worker_never_uses_null_dispatcher_when_fully_configured(db_session, monkeypatch):
+async def test_worker_never_uses_null_dispatcher_when_fully_configured(db_session, monkeypatch, owner):
     """Confirms _build_notifier is genuinely wired -- a fully-configured
     deployment must not silently fall back to the no-op dispatcher."""
-    await _setup_breached_portfolio(db_session)
+    await _setup_breached_portfolio(db_session, owner)
     _enable_telegram_globally(monkeypatch)
 
     real_notifier = alert_notify._build_notifier()

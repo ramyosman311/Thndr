@@ -7,12 +7,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
-from app.core.database import get_db_session
-from app.main import app
 from app.models import (
     AllocationTarget,
     AssetType,
@@ -27,25 +23,13 @@ from app.services.recommendation_service import get_portfolio_recommendations
 from app.tests.conftest import make_asset, make_current_price, make_portfolio_config
 
 
-@pytest_asyncio.fixture
-async def client(db_session):
-    async def _override_get_db_session():
-        yield db_session
-
-    app.dependency_overrides[get_db_session] = _override_get_db_session
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-    app.dependency_overrides.pop(get_db_session, None)
-
-
-async def _setup_portfolio(session):
+async def _setup_portfolio(session, owner):
     """Same shape as test_rebalancing_service.py's fixture: an emergency
     SAVINGS asset (excluded, never touched), a real non-emergency CASH
     asset (contributes to `available_cash`), and one underweight Growth
     (STOCK) bucket with a target -- so a real BUY recommendation is
     always present to check no-mutation/determinism against."""
-    config = make_portfolio_config(emergency_excluded=True)
+    config = make_portfolio_config(user_id=owner.id, emergency_excluded=True)
     session.add(config)
     await session.flush()
 
@@ -56,7 +40,7 @@ async def _setup_portfolio(session):
     session.add(emergency_asset)
     await session.flush()
     config.emergency_asset_id = emergency_asset.id
-    session.add(Holding(asset_id=emergency_asset.id, quantity=Decimal("1")))
+    session.add(Holding(portfolio_config_id=config.id, asset_id=emergency_asset.id, quantity=Decimal("1")))
     await make_current_price(session, emergency_asset, Decimal("100000"))
 
     cash_bucket = StrategyBucket(portfolio_config_id=config.id, name="Free Cash")
@@ -72,7 +56,7 @@ async def _setup_portfolio(session):
     growth_asset = make_asset("RECGROWTH", strategy_bucket_id=growth_bucket.id)
     session.add(growth_asset)
     await session.flush()
-    session.add(Holding(asset_id=growth_asset.id, quantity=Decimal("10")))  # 1000
+    session.add(Holding(portfolio_config_id=config.id, asset_id=growth_asset.id, quantity=Decimal("10")))  # 1000
     await make_current_price(session, growth_asset, Decimal("100"))
     growth_target = AllocationTarget(
         portfolio_config_id=config.id, strategy_bucket_id=growth_bucket.id, target_percent=Decimal("50"), priority=1
@@ -83,15 +67,15 @@ async def _setup_portfolio(session):
     return config, cash_asset, growth_asset
 
 
-async def test_not_configured_raises(db_session):
+async def test_not_configured_raises(db_session, owner):
     with pytest.raises(RebalancingNotConfiguredError):
-        await get_portfolio_recommendations(db_session)
+        await get_portfolio_recommendations(db_session, owner.id)
 
 
-async def test_recommendations_use_the_same_amount_as_rebalancing(db_session):
-    config, cash_asset, growth_asset = await _setup_portfolio(db_session)
+async def test_recommendations_use_the_same_amount_as_rebalancing(db_session, owner):
+    config, cash_asset, growth_asset = await _setup_portfolio(db_session, owner)
     await transaction_service.create_transaction(
-        db_session,
+        db_session, owner.id,
         asset_id=cash_asset.id,
         transaction_type="DEPOSIT",
         quantity=Decimal("2000"),
@@ -101,7 +85,7 @@ async def test_recommendations_use_the_same_amount_as_rebalancing(db_session):
         notes=None,
     )
 
-    result = await get_portfolio_recommendations(db_session)
+    result = await get_portfolio_recommendations(db_session, owner.id)
     growth_rec = next(r for r in result.recommendations if r.target_category == "Growth")
     assert growth_rec.type == "CASH_DEPLOYMENT"
     assert growth_rec.suggested_action == "BUY"
@@ -112,10 +96,10 @@ async def test_recommendations_use_the_same_amount_as_rebalancing(db_session):
     assert all(r.target_category != "Emergency Reserve" for r in result.recommendations)
 
 
-async def test_j_calling_the_endpoint_never_mutates_financial_state_and_is_deterministic(db_session, client):
-    config, cash_asset, growth_asset = await _setup_portfolio(db_session)
+async def test_j_calling_the_endpoint_never_mutates_financial_state_and_is_deterministic(db_session, client, owner):
+    config, cash_asset, growth_asset = await _setup_portfolio(db_session, owner)
     await transaction_service.create_transaction(
-        db_session,
+        db_session, owner.id,
         asset_id=cash_asset.id,
         transaction_type="DEPOSIT",
         quantity=Decimal("2000"),

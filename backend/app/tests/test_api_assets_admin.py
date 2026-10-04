@@ -3,28 +3,12 @@ deactivate/delete, duplicate prevention, and the safe-deletion policy."""
 
 from decimal import Decimal
 
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_db_session
-from app.main import app
 from app.models import Holding, StrategyBucket
 from app.tests.conftest import make_asset, make_current_price, make_portfolio_config
 
 
-@pytest_asyncio.fixture
-async def client(db_session):
-    async def _override_get_db_session():
-        yield db_session
-
-    app.dependency_overrides[get_db_session] = _override_get_db_session
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-    app.dependency_overrides.pop(get_db_session, None)
-
-
-async def test_create_asset_succeeds_with_valid_data(db_session, client):
+async def test_create_asset_succeeds_with_valid_data(db_session, client, owner):
     response = await client.post(
         "/api/assets",
         json={"symbol": "NEWCO", "name": "New Co", "asset_type": "STOCK", "currency": "EGP"},
@@ -37,7 +21,7 @@ async def test_create_asset_succeeds_with_valid_data(db_session, client):
     assert body["strategy_bucket_id"] is None
 
 
-async def test_create_asset_rejects_duplicate_symbol(db_session, client):
+async def test_create_asset_rejects_duplicate_symbol(db_session, client, owner):
     db_session.add(make_asset("DUPCO"))
     await db_session.commit()
 
@@ -47,21 +31,21 @@ async def test_create_asset_rejects_duplicate_symbol(db_session, client):
     assert response.status_code == 409
 
 
-async def test_create_asset_rejects_invalid_asset_type(db_session, client):
+async def test_create_asset_rejects_invalid_asset_type(db_session, client, owner):
     response = await client.post(
         "/api/assets", json={"symbol": "BADTYPE", "name": "Bad Type", "asset_type": "CRYPTO", "currency": "EGP"}
     )
     assert response.status_code == 422
 
 
-async def test_create_asset_rejects_invalid_currency(db_session, client):
+async def test_create_asset_rejects_invalid_currency(db_session, client, owner):
     response = await client.post(
         "/api/assets", json={"symbol": "BADCUR", "name": "Bad Currency", "asset_type": "STOCK", "currency": "1"}
     )
     assert response.status_code == 422
 
 
-async def test_create_asset_rejects_unknown_strategy_bucket(db_session, client):
+async def test_create_asset_rejects_unknown_strategy_bucket(db_session, client, owner):
     response = await client.post(
         "/api/assets",
         json={
@@ -75,7 +59,7 @@ async def test_create_asset_rejects_unknown_strategy_bucket(db_session, client):
     assert response.status_code == 400
 
 
-async def test_update_asset_edits_name_and_market(db_session, client):
+async def test_update_asset_edits_name_and_market(db_session, client, owner):
     asset = make_asset("EDITCO")
     db_session.add(asset)
     await db_session.commit()
@@ -87,8 +71,8 @@ async def test_update_asset_edits_name_and_market(db_session, client):
     assert body["market"] == "EGX"
 
 
-async def test_update_asset_reassigns_strategy_bucket(db_session, client):
-    config = make_portfolio_config()
+async def test_update_asset_reassigns_strategy_bucket(db_session, client, owner):
+    config = make_portfolio_config(user_id=owner.id)
     db_session.add(config)
     await db_session.flush()
     bucket = StrategyBucket(portfolio_config_id=config.id, name="Growth")
@@ -106,7 +90,7 @@ async def test_update_asset_reassigns_strategy_bucket(db_session, client):
     assert clear_response.json()["strategy_bucket_id"] is None
 
 
-async def test_update_asset_currency_allowed_with_no_history(db_session, client):
+async def test_update_asset_currency_allowed_with_no_history(db_session, client, owner):
     asset = make_asset("FREECUR", currency="EGP")
     db_session.add(asset)
     await db_session.commit()
@@ -116,7 +100,7 @@ async def test_update_asset_currency_allowed_with_no_history(db_session, client)
     assert response.json()["currency"] == "USD"
 
 
-async def test_update_asset_currency_blocked_when_price_history_exists(db_session, client):
+async def test_update_asset_currency_blocked_when_price_history_exists(db_session, client, owner):
     asset = make_asset("PRICEDCUR", currency="EGP")
     db_session.add(asset)
     await db_session.flush()
@@ -130,7 +114,7 @@ async def test_update_asset_currency_blocked_when_price_history_exists(db_sessio
     assert unchanged.json()["currency"] == "EGP"
 
 
-async def test_update_asset_currency_blocked_when_transaction_history_exists(db_session, client):
+async def test_update_asset_currency_blocked_when_transaction_history_exists(db_session, client, owner):
     from datetime import datetime, timezone
 
     from app.models import Transaction, TransactionType
@@ -150,7 +134,7 @@ async def test_update_asset_currency_blocked_when_transaction_history_exists(db_
     assert response.status_code == 409
 
 
-async def test_activate_and_deactivate_asset(db_session, client):
+async def test_activate_and_deactivate_asset(db_session, client, owner):
     asset = make_asset("TOGGLE", is_active=True)
     db_session.add(asset)
     await db_session.commit()
@@ -164,7 +148,7 @@ async def test_activate_and_deactivate_asset(db_session, client):
     assert reactivated.json()["is_active"] is True
 
 
-async def test_deactivated_asset_still_listed_with_include_inactive(db_session, client):
+async def test_deactivated_asset_still_listed_with_include_inactive(db_session, client, owner):
     asset = make_asset("STILLLISTED", is_active=False)
     db_session.add(asset)
     await db_session.commit()
@@ -176,7 +160,7 @@ async def test_deactivated_asset_still_listed_with_include_inactive(db_session, 
     assert any(a["symbol"] == "STILLLISTED" for a in full_listing.json())
 
 
-async def test_delete_asset_succeeds_with_no_historical_data(db_session, client):
+async def test_delete_asset_succeeds_with_no_historical_data(db_session, client, owner):
     asset = make_asset("DELETEME")
     db_session.add(asset)
     await db_session.commit()
@@ -188,11 +172,11 @@ async def test_delete_asset_succeeds_with_no_historical_data(db_session, client)
     assert follow_up.status_code == 404
 
 
-async def test_delete_asset_blocked_when_holding_exists(db_session, client):
+async def test_delete_asset_blocked_when_holding_exists(db_session, client, owner, portfolio):
     asset = make_asset("HASHOLDING")
     db_session.add(asset)
     await db_session.flush()
-    db_session.add(Holding(asset_id=asset.id, quantity=Decimal("1")))
+    db_session.add(Holding(portfolio_config_id=portfolio.id, asset_id=asset.id, quantity=Decimal("1")))
     await db_session.commit()
 
     response = await client.delete(f"/api/assets/{asset.id}")
@@ -202,7 +186,7 @@ async def test_delete_asset_blocked_when_holding_exists(db_session, client):
     assert still_there.status_code == 200
 
 
-async def test_delete_asset_blocked_when_price_history_exists(db_session, client):
+async def test_delete_asset_blocked_when_price_history_exists(db_session, client, owner):
     asset = make_asset("HASPRICEHIST")
     db_session.add(asset)
     await db_session.flush()
@@ -213,6 +197,6 @@ async def test_delete_asset_blocked_when_price_history_exists(db_session, client
     assert response.status_code == 409
 
 
-async def test_delete_asset_404_for_missing_asset(client):
+async def test_delete_asset_404_for_missing_asset(client, owner):
     response = await client.delete("/api/assets/00000000-0000-0000-0000-000000000000")
     assert response.status_code == 404

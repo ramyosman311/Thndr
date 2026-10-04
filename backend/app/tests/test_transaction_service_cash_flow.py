@@ -33,8 +33,8 @@ async def _make_cash_asset(session, symbol="CASHFLOW", asset_type=AssetType.CASH
     return asset
 
 
-async def _configure_portfolio(session):
-    config = make_portfolio_config()
+async def _configure_portfolio(session, owner):
+    config = make_portfolio_config(user_id=owner.id)
     session.add(config)
     await session.commit()
     return config
@@ -43,15 +43,15 @@ async def _configure_portfolio(session):
 # --- Restriction to CASH/SAVINGS assets -------------------------------------
 
 
-async def test_deposit_is_rejected_for_a_stock_asset(db_session):
-    await _configure_portfolio(db_session)
+async def test_deposit_is_rejected_for_a_stock_asset(db_session, owner):
+    await _configure_portfolio(db_session, owner)
     asset = make_asset("STOCKDEPOSIT", asset_type=AssetType.STOCK)
     db_session.add(asset)
     await db_session.commit()
 
     try:
         await transaction_service.create_transaction(
-            db_session, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("100"),
+            db_session, owner.id, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("100"),
             price=Decimal("1"), fees=Decimal("0"), transaction_date=_now(), notes=None,
         )
         assert False, "expected InvalidCashFlowAssetError"
@@ -59,11 +59,11 @@ async def test_deposit_is_rejected_for_a_stock_asset(db_session):
         pass
 
 
-async def test_deposit_is_allowed_for_a_savings_asset(db_session):
-    await _configure_portfolio(db_session)
+async def test_deposit_is_allowed_for_a_savings_asset(db_session, owner):
+    await _configure_portfolio(db_session, owner)
     asset = await _make_cash_asset(db_session, "SAVINGSDEPOSIT", AssetType.SAVINGS)
     result = await transaction_service.create_transaction(
-        db_session, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("100"),
+        db_session, owner.id, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("100"),
         price=Decimal("1"), fees=Decimal("0"), transaction_date=_now(), notes=None,
     )
     assert result.holding.quantity == Decimal("100")
@@ -72,11 +72,11 @@ async def test_deposit_is_allowed_for_a_savings_asset(db_session):
 # --- Pinned-at-1 average cost / no artificial P&L ---------------------------
 
 
-async def test_deposit_pins_average_cost_at_one_and_reports_no_realized_pnl(db_session):
-    await _configure_portfolio(db_session)
+async def test_deposit_pins_average_cost_at_one_and_reports_no_realized_pnl(db_session, owner):
+    await _configure_portfolio(db_session, owner)
     asset = await _make_cash_asset(db_session)
     result = await transaction_service.create_transaction(
-        db_session, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("5000"),
+        db_session, owner.id, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("5000"),
         price=Decimal("1"), fees=Decimal("0"), transaction_date=_now(), notes=None,
     )
     assert result.holding.quantity == Decimal("5000")
@@ -84,30 +84,30 @@ async def test_deposit_pins_average_cost_at_one_and_reports_no_realized_pnl(db_s
     assert result.realized_pnl is None
 
 
-async def test_second_deposit_onto_existing_cash_holding_accumulates(db_session):
-    await _configure_portfolio(db_session)
+async def test_second_deposit_onto_existing_cash_holding_accumulates(db_session, owner):
+    await _configure_portfolio(db_session, owner)
     asset = await _make_cash_asset(db_session)
     await transaction_service.create_transaction(
-        db_session, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("1000"),
+        db_session, owner.id, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("1000"),
         price=Decimal("1"), fees=Decimal("0"), transaction_date=_now(), notes=None,
     )
     result = await transaction_service.create_transaction(
-        db_session, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("500"),
+        db_session, owner.id, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("500"),
         price=Decimal("1"), fees=Decimal("0"), transaction_date=_now(), notes=None,
     )
     assert result.holding.quantity == Decimal("1500")
     assert result.holding.average_cost == Decimal("1")
 
 
-async def test_withdrawal_decreases_cash_balance_and_reports_no_realized_pnl(db_session):
-    await _configure_portfolio(db_session)
+async def test_withdrawal_decreases_cash_balance_and_reports_no_realized_pnl(db_session, owner):
+    await _configure_portfolio(db_session, owner)
     asset = await _make_cash_asset(db_session)
     await transaction_service.create_transaction(
-        db_session, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("1000"),
+        db_session, owner.id, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("1000"),
         price=Decimal("1"), fees=Decimal("0"), transaction_date=_now(), notes=None,
     )
     result = await transaction_service.create_transaction(
-        db_session, asset_id=asset.id, transaction_type="WITHDRAWAL", quantity=Decimal("300"),
+        db_session, owner.id, asset_id=asset.id, transaction_type="WITHDRAWAL", quantity=Decimal("300"),
         price=Decimal("1"), fees=Decimal("0"), transaction_date=_now(), notes=None,
     )
     assert result.holding.quantity == Decimal("700")
@@ -115,16 +115,16 @@ async def test_withdrawal_decreases_cash_balance_and_reports_no_realized_pnl(db_
     assert result.realized_pnl is None
 
 
-async def test_withdrawal_exceeding_balance_is_rejected_and_does_not_change_holding(db_session):
-    await _configure_portfolio(db_session)
+async def test_withdrawal_exceeding_balance_is_rejected_and_does_not_change_holding(db_session, owner):
+    await _configure_portfolio(db_session, owner)
     asset = await _make_cash_asset(db_session)
     await transaction_service.create_transaction(
-        db_session, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("100"),
+        db_session, owner.id, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("100"),
         price=Decimal("1"), fees=Decimal("0"), transaction_date=_now(), notes=None,
     )
     try:
         await transaction_service.create_transaction(
-            db_session, asset_id=asset.id, transaction_type="WITHDRAWAL", quantity=Decimal("500"),
+            db_session, owner.id, asset_id=asset.id, transaction_type="WITHDRAWAL", quantity=Decimal("500"),
             price=Decimal("1"), fees=Decimal("0"), transaction_date=_now(), notes=None,
         )
         assert False, "expected InsufficientCashError"
@@ -135,12 +135,12 @@ async def test_withdrawal_exceeding_balance_is_rejected_and_does_not_change_hold
     assert holding_row.quantity == Decimal("100")
 
 
-async def test_withdrawal_from_asset_with_no_holding_at_all_is_rejected(db_session):
-    await _configure_portfolio(db_session)
+async def test_withdrawal_from_asset_with_no_holding_at_all_is_rejected(db_session, owner):
+    await _configure_portfolio(db_session, owner)
     asset = await _make_cash_asset(db_session, "NOHOLDINGCASH")
     try:
         await transaction_service.create_transaction(
-            db_session, asset_id=asset.id, transaction_type="WITHDRAWAL", quantity=Decimal("1"),
+            db_session, owner.id, asset_id=asset.id, transaction_type="WITHDRAWAL", quantity=Decimal("1"),
             price=Decimal("1"), fees=Decimal("0"), transaction_date=_now(), notes=None,
         )
         assert False, "expected InsufficientCashError"
@@ -151,12 +151,12 @@ async def test_withdrawal_from_asset_with_no_holding_at_all_is_rejected(db_sessi
 # --- Fixed 1:1 unit convention -----------------------------------------------
 
 
-async def test_deposit_with_non_unit_price_is_rejected(db_session):
-    await _configure_portfolio(db_session)
+async def test_deposit_with_non_unit_price_is_rejected(db_session, owner):
+    await _configure_portfolio(db_session, owner)
     asset = await _make_cash_asset(db_session)
     try:
         await transaction_service.create_transaction(
-            db_session, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("100"),
+            db_session, owner.id, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("100"),
             price=Decimal("1.5"), fees=Decimal("0"), transaction_date=_now(), notes=None,
         )
         assert False, "expected InvalidCashFlowAmountError"
@@ -164,12 +164,12 @@ async def test_deposit_with_non_unit_price_is_rejected(db_session):
         pass
 
 
-async def test_deposit_with_nonzero_fees_is_rejected(db_session):
-    await _configure_portfolio(db_session)
+async def test_deposit_with_nonzero_fees_is_rejected(db_session, owner):
+    await _configure_portfolio(db_session, owner)
     asset = await _make_cash_asset(db_session)
     try:
         await transaction_service.create_transaction(
-            db_session, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("100"),
+            db_session, owner.id, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("100"),
             price=Decimal("1"), fees=Decimal("5"), transaction_date=_now(), notes=None,
         )
         assert False, "expected InvalidCashFlowAmountError"
@@ -180,11 +180,11 @@ async def test_deposit_with_nonzero_fees_is_rejected(db_session):
 # --- Post-transaction snapshot side effect ----------------------------------
 
 
-async def test_deposit_creates_exactly_one_transaction_scoped_snapshot(db_session):
-    await _configure_portfolio(db_session)
+async def test_deposit_creates_exactly_one_transaction_scoped_snapshot(db_session, owner):
+    await _configure_portfolio(db_session, owner)
     asset = await _make_cash_asset(db_session)
     result = await transaction_service.create_transaction(
-        db_session, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("2500"),
+        db_session, owner.id, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("2500"),
         price=Decimal("1"), fees=Decimal("0"), transaction_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
         notes=None,
     )
@@ -200,15 +200,15 @@ async def test_deposit_creates_exactly_one_transaction_scoped_snapshot(db_sessio
     assert snapshot.snapshot_at == datetime(2026, 3, 1, tzinfo=timezone.utc)
 
 
-async def test_withdrawal_reduces_invested_capital_on_its_snapshot(db_session):
-    await _configure_portfolio(db_session)
+async def test_withdrawal_reduces_invested_capital_on_its_snapshot(db_session, owner):
+    await _configure_portfolio(db_session, owner)
     asset = await _make_cash_asset(db_session)
     await transaction_service.create_transaction(
-        db_session, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("1000"),
+        db_session, owner.id, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("1000"),
         price=Decimal("1"), fees=Decimal("0"), transaction_date=_now(), notes=None,
     )
     result = await transaction_service.create_transaction(
-        db_session, asset_id=asset.id, transaction_type="WITHDRAWAL", quantity=Decimal("400"),
+        db_session, owner.id, asset_id=asset.id, transaction_type="WITHDRAWAL", quantity=Decimal("400"),
         price=Decimal("1"), fees=Decimal("0"), transaction_date=_now(), notes=None,
     )
     snapshot = (
@@ -219,7 +219,7 @@ async def test_withdrawal_reduces_invested_capital_on_its_snapshot(db_session):
     assert snapshot.invested_capital == Decimal("600.00")
 
 
-async def test_deposit_without_portfolio_configured_is_rejected(db_session):
+async def test_deposit_without_portfolio_configured_is_rejected(db_session, owner):
     """No portfolio_configs row exists -- the deposit must be rejected
     rather than silently skipping its snapshot. The service only reaches
     this check after `flush()` (not `commit()`); the FastAPI route's own
@@ -231,7 +231,7 @@ async def test_deposit_without_portfolio_configured_is_rejected(db_session):
     asset = await _make_cash_asset(db_session, "NOCONFIGCASH")
     try:
         await transaction_service.create_transaction(
-            db_session, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("100"),
+            db_session, owner.id, asset_id=asset.id, transaction_type="DEPOSIT", quantity=Decimal("100"),
             price=Decimal("1"), fees=Decimal("0"), transaction_date=_now(), notes=None,
         )
         assert False, "expected PortfolioNotConfiguredError"
@@ -242,8 +242,8 @@ async def test_deposit_without_portfolio_configured_is_rejected(db_session):
 # --- Financial integrity: no side effects on unrelated tables ---------------
 
 
-async def test_deposit_does_not_touch_strategy_buckets_or_other_assets(db_session):
-    config = await _configure_portfolio(db_session)
+async def test_deposit_does_not_touch_strategy_buckets_or_other_assets(db_session, owner):
+    config = await _configure_portfolio(db_session, owner)
     bucket = StrategyBucket(portfolio_config_id=config.id, name="Untouched Bucket")
     db_session.add(bucket)
     other_asset = make_asset("UNTOUCHEDASSET", strategy_bucket_id=None)
@@ -253,7 +253,7 @@ async def test_deposit_does_not_touch_strategy_buckets_or_other_assets(db_sessio
 
     cash_asset = await _make_cash_asset(db_session, "DEPOSITSIDEEFFECT")
     await transaction_service.create_transaction(
-        db_session, asset_id=cash_asset.id, transaction_type="DEPOSIT", quantity=Decimal("100"),
+        db_session, owner.id, asset_id=cash_asset.id, transaction_type="DEPOSIT", quantity=Decimal("100"),
         price=Decimal("1"), fees=Decimal("0"), transaction_date=_now(), notes=None,
     )
 

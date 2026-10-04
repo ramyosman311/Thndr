@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user
 from app.core.database import get_db_session
+from app.models import User
 from app.schemas.transaction import TransactionCreateRequest, TransactionOut, TransactionResultOut
 from app.services import transaction_service
 from app.services.transaction_service import (
@@ -18,7 +20,9 @@ router = APIRouter(prefix="/transactions", tags=["transactions"])
 
 @router.post("", response_model=TransactionResultOut, status_code=status.HTTP_201_CREATED)
 async def create_transaction(
-    request: TransactionCreateRequest, session: AsyncSession = Depends(get_db_session)
+    request: TransactionCreateRequest,
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
 ) -> TransactionResultOut:
     """Records an executed BUY/SELL/DEPOSIT/WITHDRAWAL transaction and
     atomically updates the resulting holding (average-cost accounting for
@@ -34,6 +38,7 @@ async def create_transaction(
     try:
         return await transaction_service.create_transaction(
             session,
+            user.id,
             asset_id=request.asset_id,
             transaction_type=request.transaction_type,
             quantity=request.quantity,
@@ -53,6 +58,8 @@ async def create_transaction(
 
 
 @router.get("", response_model=list[TransactionOut])
-async def list_transactions(session: AsyncSession = Depends(get_db_session)) -> list[TransactionOut]:
+async def list_transactions(
+    session: AsyncSession = Depends(get_db_session), user: User = Depends(get_current_user)
+) -> list[TransactionOut]:
     """Read-only transaction history, most recent first."""
-    return await transaction_service.list_transactions(session)
+    return await transaction_service.list_transactions(session, user.id)

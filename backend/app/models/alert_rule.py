@@ -25,8 +25,9 @@ class AlertRule(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     `portfolio_config_id` (P0-3A): a direct FK, in addition to the existing
     `watchlist_id` FK, even though ownership is also derivable transitively
     via watchlist -- added directly per the ownership model so alert rules
-    can be scoped without a join. Nullable for now, deliberately; see
-    DECISIONS.md, "P0-3A/B — Identity, Ownership, JWT Verification".
+    can be scoped without a join. Nullable only for rows that predate
+    ownership; every application read/write is scoped to it AND to the
+    watchlist entry's own portfolio (see DECISIONS.md, "P0-3C").
     """
 
     __tablename__ = "alert_rules"
@@ -45,7 +46,7 @@ class AlertRule(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
 
     portfolio_config_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("portfolio_configs.id", ondelete="CASCADE"), nullable=True
+        UUID(as_uuid=True), ForeignKey("portfolio_configs.id", ondelete="CASCADE"), nullable=True, index=True
     )
     watchlist_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("watchlist.id", ondelete="CASCADE"), nullable=False

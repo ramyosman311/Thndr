@@ -18,8 +18,8 @@ def _now():
     return datetime.now(timezone.utc)
 
 
-async def _configure_portfolio(session):
-    config = make_portfolio_config()
+async def _configure_portfolio(session, owner):
+    config = make_portfolio_config(user_id=owner.id)
     session.add(config)
     await session.commit()
     return config
@@ -28,16 +28,16 @@ async def _configure_portfolio(session):
 # --- EOD idempotency ---------------------------------------------------------
 
 
-async def test_eod_snapshot_is_created_when_none_exists_for_today(db_session):
-    config = await _configure_portfolio(db_session)
+async def test_eod_snapshot_is_created_when_none_exists_for_today(db_session, owner):
+    config = await _configure_portfolio(db_session, owner)
     snapshot = await snapshot_service.create_eod_snapshot_if_missing(db_session, config=config)
     assert snapshot is not None
     assert snapshot.trigger_source == "EOD"
     assert snapshot.snapshot_at.date() == datetime.now(timezone.utc).date()
 
 
-async def test_eod_snapshot_second_call_same_day_is_a_no_op(db_session):
-    config = await _configure_portfolio(db_session)
+async def test_eod_snapshot_second_call_same_day_is_a_no_op(db_session, owner):
+    config = await _configure_portfolio(db_session, owner)
     first = await snapshot_service.create_eod_snapshot_if_missing(db_session, config=config)
     second = await snapshot_service.create_eod_snapshot_if_missing(db_session, config=config)
     assert first is not None
@@ -56,8 +56,8 @@ async def test_eod_snapshot_second_call_same_day_is_a_no_op(db_session):
 # --- Post-transaction snapshot financial computation ------------------------
 
 
-async def test_post_transaction_snapshot_reflects_multiple_assets(db_session):
-    await _configure_portfolio(db_session)
+async def test_post_transaction_snapshot_reflects_multiple_assets(db_session, owner):
+    config = await _configure_portfolio(db_session, owner)
     stock = make_asset("SNAPSTOCK", asset_type=AssetType.STOCK)
     cash = make_asset("SNAPCASH", asset_type=AssetType.CASH)
     db_session.add_all([stock, cash])
@@ -69,13 +69,13 @@ async def test_post_transaction_snapshot_reflects_multiple_assets(db_session):
     # for CASH/SAVINGS assets -- see DECISIONS.md, "Phase 15 Known
     # Limitations": a real deployment sets this once via the existing
     # Phase 11 manual-price endpoint, same as any other asset).
-    db_session.add(Holding(asset_id=stock.id, quantity=Decimal("10"), average_cost=Decimal("50")))
+    db_session.add(Holding(portfolio_config_id=config.id, asset_id=stock.id, quantity=Decimal("10"), average_cost=Decimal("50")))
     await make_current_price(db_session, stock, Decimal("60"))
     await make_current_price(db_session, cash, Decimal("1"))
     await db_session.commit()
 
     result = await transaction_service.create_transaction(
-        db_session, asset_id=cash.id, transaction_type="DEPOSIT", quantity=Decimal("1000"),
+        db_session, owner.id, asset_id=cash.id, transaction_type="DEPOSIT", quantity=Decimal("1000"),
         price=Decimal("1"), fees=Decimal("0"), transaction_date=_now(), notes=None,
     )
 
@@ -97,7 +97,7 @@ async def test_post_transaction_snapshot_reflects_multiple_assets(db_session):
     assert values[cash.id] == Decimal("1000.00")
 
 
-async def test_post_transaction_snapshot_uses_average_cost_fallback_for_a_held_but_unpriced_asset(db_session):
+async def test_post_transaction_snapshot_uses_average_cost_fallback_for_a_held_but_unpriced_asset(db_session, owner):
     """Phase 16: a held asset with no live/stale price observation but a
     genuine (same-currency) average cost is now valued via the average-
     cost fallback rather than excluded — see
@@ -106,22 +106,22 @@ async def test_post_transaction_snapshot_uses_average_cost_fallback_for_a_held_b
     here) shares, so both agree on the same number for the same holding
     (FINANCIAL_RULES.md, "Portfolio Aggregation Consistency"). Cost
     basis (which never depended on price) is unaffected either way."""
-    await _configure_portfolio(db_session)
+    config = await _configure_portfolio(db_session, owner)
     fallback_priced = make_asset("SNAPFALLBACK", asset_type=AssetType.FUND)
     genuinely_unpriced = make_asset("SNAPNOFALLBACK", asset_type=AssetType.FUND)
     cash = make_asset("SNAPUNPRICEDCASH", asset_type=AssetType.CASH)
     db_session.add_all([fallback_priced, genuinely_unpriced, cash])
     await db_session.commit()
-    db_session.add(Holding(asset_id=fallback_priced.id, quantity=Decimal("5"), average_cost=Decimal("20")))
+    db_session.add(Holding(portfolio_config_id=config.id, asset_id=fallback_priced.id, quantity=Decimal("5"), average_cost=Decimal("20")))
     # No average_cost given -- defaults to 0, so there is genuinely no
     # safe fallback price for this one either (see "if neither is
     # available" in FINANCIAL_RULES.md, "Missing-Price Fallback").
-    db_session.add(Holding(asset_id=genuinely_unpriced.id, quantity=Decimal("3")))
+    db_session.add(Holding(portfolio_config_id=config.id, asset_id=genuinely_unpriced.id, quantity=Decimal("3")))
     await make_current_price(db_session, cash, Decimal("1"))
     await db_session.commit()
 
     result = await transaction_service.create_transaction(
-        db_session, asset_id=cash.id, transaction_type="DEPOSIT", quantity=Decimal("200"),
+        db_session, owner.id, asset_id=cash.id, transaction_type="DEPOSIT", quantity=Decimal("200"),
         price=Decimal("1"), fees=Decimal("0"), transaction_date=_now(), notes=None,
     )
 
@@ -143,25 +143,25 @@ async def test_post_transaction_snapshot_uses_average_cost_fallback_for_a_held_b
 # --- Cumulative realized P/L replay ------------------------------------------
 
 
-async def test_realized_pnl_cumulative_reflects_prior_sells_not_just_the_triggering_deposit(db_session):
-    await _configure_portfolio(db_session)
+async def test_realized_pnl_cumulative_reflects_prior_sells_not_just_the_triggering_deposit(db_session, owner):
+    await _configure_portfolio(db_session, owner)
     stock = make_asset("SNAPREALIZED", asset_type=AssetType.STOCK)
     cash = make_asset("SNAPREALIZEDCASH", asset_type=AssetType.CASH)
     db_session.add_all([stock, cash])
     await db_session.commit()
 
     await transaction_service.create_transaction(
-        db_session, asset_id=stock.id, transaction_type="BUY", quantity=Decimal("10"),
+        db_session, owner.id, asset_id=stock.id, transaction_type="BUY", quantity=Decimal("10"),
         price=Decimal("100"), fees=Decimal("0"), transaction_date=datetime(2026, 1, 1, tzinfo=timezone.utc), notes=None,
     )
     await transaction_service.create_transaction(
-        db_session, asset_id=stock.id, transaction_type="SELL", quantity=Decimal("4"),
+        db_session, owner.id, asset_id=stock.id, transaction_type="SELL", quantity=Decimal("4"),
         price=Decimal("120"), fees=Decimal("0"), transaction_date=datetime(2026, 1, 5, tzinfo=timezone.utc), notes=None,
     )
     # realized_pnl from that sell = (4*120) - (4*100) = 80
 
     result = await transaction_service.create_transaction(
-        db_session, asset_id=cash.id, transaction_type="DEPOSIT", quantity=Decimal("500"),
+        db_session, owner.id, asset_id=cash.id, transaction_type="DEPOSIT", quantity=Decimal("500"),
         price=Decimal("1"), fees=Decimal("0"), transaction_date=datetime(2026, 1, 10, tzinfo=timezone.utc), notes=None,
     )
 
@@ -175,29 +175,29 @@ async def test_realized_pnl_cumulative_reflects_prior_sells_not_just_the_trigger
     assert snapshot.realized_pnl_cumulative == Decimal("80")
 
 
-async def test_realized_pnl_cumulative_never_double_counts_across_two_deposits(db_session):
-    await _configure_portfolio(db_session)
+async def test_realized_pnl_cumulative_never_double_counts_across_two_deposits(db_session, owner):
+    await _configure_portfolio(db_session, owner)
     stock = make_asset("SNAPNODUP", asset_type=AssetType.STOCK)
     cash = make_asset("SNAPNODUPCASH", asset_type=AssetType.CASH)
     db_session.add_all([stock, cash])
     await db_session.commit()
 
     await transaction_service.create_transaction(
-        db_session, asset_id=stock.id, transaction_type="BUY", quantity=Decimal("10"),
+        db_session, owner.id, asset_id=stock.id, transaction_type="BUY", quantity=Decimal("10"),
         price=Decimal("10"), fees=Decimal("0"), transaction_date=datetime(2026, 2, 1, tzinfo=timezone.utc), notes=None,
     )
     await transaction_service.create_transaction(
-        db_session, asset_id=stock.id, transaction_type="SELL", quantity=Decimal("10"),
+        db_session, owner.id, asset_id=stock.id, transaction_type="SELL", quantity=Decimal("10"),
         price=Decimal("15"), fees=Decimal("0"), transaction_date=datetime(2026, 2, 2, tzinfo=timezone.utc), notes=None,
     )
     # realized_pnl = (10*15)-(10*10) = 50, from ONE sell event only
 
     first = await transaction_service.create_transaction(
-        db_session, asset_id=cash.id, transaction_type="DEPOSIT", quantity=Decimal("100"),
+        db_session, owner.id, asset_id=cash.id, transaction_type="DEPOSIT", quantity=Decimal("100"),
         price=Decimal("1"), fees=Decimal("0"), transaction_date=datetime(2026, 2, 3, tzinfo=timezone.utc), notes=None,
     )
     second = await transaction_service.create_transaction(
-        db_session, asset_id=cash.id, transaction_type="DEPOSIT", quantity=Decimal("50"),
+        db_session, owner.id, asset_id=cash.id, transaction_type="DEPOSIT", quantity=Decimal("50"),
         price=Decimal("1"), fees=Decimal("0"), transaction_date=datetime(2026, 2, 4, tzinfo=timezone.utc), notes=None,
     )
 
@@ -214,12 +214,12 @@ async def test_realized_pnl_cumulative_never_double_counts_across_two_deposits(d
 # --- Timezone: EOD boundary is UTC calendar day, not local/server time ------
 
 
-async def test_eod_lookup_treats_two_utc_hours_of_the_same_day_as_one_day(db_session):
+async def test_eod_lookup_treats_two_utc_hours_of_the_same_day_as_one_day(db_session, owner):
     """23:00 and 01:00 UTC on the SAME calendar date must be found as the
     same EOD day -- proves the boundary is a UTC calendar date, not a
     24-hour rolling window or a local-server-time boundary (see
     DECISIONS.md, "Phase 15 EOD Convention")."""
-    config = await _configure_portfolio(db_session)
+    config = await _configure_portfolio(db_session, owner)
     same_day_morning = datetime(2026, 6, 15, 1, 0, tzinfo=timezone.utc)
     same_day_night = datetime(2026, 6, 15, 23, 0, tzinfo=timezone.utc)
 
@@ -232,8 +232,8 @@ async def test_eod_lookup_treats_two_utc_hours_of_the_same_day_as_one_day(db_ses
     assert found is not None
 
 
-async def test_eod_lookup_treats_adjacent_utc_days_as_different(db_session):
-    config = await _configure_portfolio(db_session)
+async def test_eod_lookup_treats_adjacent_utc_days_as_different(db_session, owner):
+    config = await _configure_portfolio(db_session, owner)
     end_of_day_1 = datetime(2026, 6, 15, 23, 59, tzinfo=timezone.utc)
 
     db_session.add(PortfolioSnapshot(portfolio_config_id=config.id, snapshot_at=end_of_day_1, trigger_source="EOD"))
@@ -247,14 +247,14 @@ async def test_eod_lookup_treats_adjacent_utc_days_as_different(db_session):
 # --- Financial integrity: EOD snapshot creation is purely observational ----
 
 
-async def test_eod_snapshot_creation_does_not_touch_strategy_buckets_or_holdings(db_session):
-    config = await _configure_portfolio(db_session)
+async def test_eod_snapshot_creation_does_not_touch_strategy_buckets_or_holdings(db_session, owner):
+    config = await _configure_portfolio(db_session, owner)
     bucket = StrategyBucket(portfolio_config_id=config.id, name="EOD Untouched Bucket")
     db_session.add(bucket)
     stock = make_asset("EODINTEGRITY", asset_type=AssetType.STOCK)
     db_session.add(stock)
     await db_session.commit()
-    db_session.add(Holding(asset_id=stock.id, quantity=Decimal("3"), average_cost=Decimal("10")))
+    db_session.add(Holding(portfolio_config_id=config.id, asset_id=stock.id, quantity=Decimal("3"), average_cost=Decimal("10")))
     await db_session.commit()
     bucket_updated_at_before = bucket.updated_at
 

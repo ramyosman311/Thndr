@@ -2,24 +2,8 @@
 invalid provider, valid/invalid stale threshold, manual lock, automated
 fetching toggle."""
 
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_db_session
-from app.main import app
 from app.tests.conftest import make_asset
-
-
-@pytest_asyncio.fixture
-async def client(db_session):
-    async def _override_get_db_session():
-        yield db_session
-
-    app.dependency_overrides[get_db_session] = _override_get_db_session
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-    app.dependency_overrides.pop(get_db_session, None)
 
 
 async def _create_asset(session, symbol="PXCFG"):

@@ -354,59 +354,70 @@ platform health checks. See `backend/app/core/auth.py` for the
 dependency itself and `backend/app/api/router.py` for where it's
 attached (once, at router-mounting level — never per-route).
 
-- **Mechanism**: `Authorization: Bearer <API_AUTH_TOKEN>`, compared with
-  `hmac.compare_digest` (constant-time). Not a session, not a JWT, not
-  per-user — a single shared secret, matching this project's current
-  single-user architecture. Missing or wrong token → `401`.
-- **`DEV_MODE=true`** bypasses this entirely (the pre-existing contract
-  already documented in `.env.example` before P0-2 implemented it) — no
-  token is needed for local development.
-- **`DEV_MODE=false`** (required in production) makes `API_AUTH_TOKEN`
-  mandatory: the backend calls `ensure_auth_configured()` during startup
-  (`app/main.py`'s `lifespan`) and refuses to boot — `sys.exit(1)`, no
-  partial/unauthenticated startup — if the token isn't set. There is no
-  production fallback to unauthenticated mode.
-- **The frontend never holds the secret.** `frontend/lib/api.ts` is
-  unchanged and still calls relative `/api/...` paths on the browser's
-  own origin. `frontend/app/api/[...path]/route.ts` is a Next.js Route
-  Handler that runs only on Vercel's server, reads `API_AUTH_TOKEN` and
-  `BACKEND_API_URL` from server-side (non-`NEXT_PUBLIC_`) environment
-  variables, and attaches the `Authorization` header itself when
-  forwarding to the real backend. Neither variable is ever read by
-  client-bundled code — enforced by a dedicated test,
-  `frontend/tests/capacitor.test.tsx`'s "keeps API_AUTH_TOKEN reads
-  confined to a server-only route handler".
-- **Local development**: both `BACKEND_API_URL` and `API_AUTH_TOKEN` are
-  typically unset. The proxy then falls back to
-  `http://127.0.0.1:8000/api`, and since the local backend runs with
-  `DEV_MODE=true`, no token is required there either.
-- **Capacitor is the one exception**: it ships as a static export with
-  no server of its own (see "Capacitor Production Configuration" below),
-  so it cannot use this proxy — `app/api/[...path]/route.ts` is
-  physically excluded from that build by
-  `frontend/scripts/build-capacitor.mjs` (Next.js does not support a
-  Route Handler that relies on the Request object under
-  `output: "export"`). The native app instead calls the backend directly
-  via `NEXT_PUBLIC_API_BASE_URL`, exactly as before P0-2. How (or
-  whether) that direct connection gets its own credential is a decision
-  for whenever the Capacitor app is actually distributed — it isn't
-  live/store-distributed today, so P0-2 didn't need to solve it.
+- **Mechanism (P0-3C, supersedes the P0-2 shared-token check)**: every
+  non-health route requires a verified Supabase JWT in
+  `Authorization: Bearer <Supabase JWT>` (signature via the project's JWKS,
+  issuer, audience, expiry — see `app/core/auth.py`,
+  `require_supabase_user`), and resolves the local user from its `sub`.
+  Everything user-owned is then scoped by that verified `user.id`, never by
+  an id the client supplied (DECISIONS.md, "P0-3C"). Missing/malformed/
+  invalid/expired JWT → `401`. `API_AUTH_TOKEN` is **no longer an
+  `Authorization` credential** — presenting it as one is rejected.
+- **`X-Internal-Proxy-Token: <API_AUTH_TOKEN>`** is a separate,
+  server-to-server trust signal added only by the Vercel proxy. It is NOT
+  identity and never substitutes for the JWT: absent → allowed (native
+  clients never send it), correct → allowed, incorrect → `401`; a valid
+  JWT is required in every case.
+- **`DEV_MODE` is not an authentication or ownership bypass.** There is no
+  development shortcut around JWT verification or ownership scoping.
+  (`DEV_MODE=false` still makes `API_AUTH_TOKEN` mandatory at startup:
+  `ensure_auth_configured()` refuses to boot without it, so the web
+  proxy's internal token can always be verified.)
+- **The frontend never holds the secret.** `frontend/app/api/[...path]/route.ts`
+  is a Next.js Route Handler that runs only on Vercel's server. It forwards
+  the browser's `Authorization` (the user's JWT) unchanged, adds
+  `X-Internal-Proxy-Token` from the server-side `API_AUTH_TOKEN`, drops any
+  `X-Internal-Proxy-Token` a browser sends, and reads `BACKEND_API_URL`
+  server-side. None of these is ever read by client-bundled code — enforced
+  by `frontend/tests/capacitor.test.tsx` ("keeps API_AUTH_TOKEN reads
+  confined to a server-only route handler") and `frontend/tests/api-proxy.test.ts`.
+- **Capacitor** ships as a static export with no server of its own, so it
+  cannot use this proxy (`app/api/[...path]/route.ts` is excluded from that
+  build by `frontend/scripts/build-capacitor.mjs`). The native app calls the
+  backend directly with only `Authorization: Bearer <Supabase JWT>` — it
+  never has, and must never have, `API_AUTH_TOKEN`.
 - **Required environment variables**:
-  - Render (backend): `API_AUTH_TOKEN` (a strong random secret, e.g.
-    `openssl rand -hex 32`) and `DEV_MODE=false`.
+  - Render (backend): `SUPABASE_URL` (the project URL — issuer and JWKS URL
+    are derived from it; unset ⇒ every request is rejected, fail-closed),
+    `API_AUTH_TOKEN` (a strong random secret, e.g. `openssl rand -hex 32`),
+    and `DEV_MODE=false`. `SUPABASE_JWT_AUDIENCE` defaults to
+    `authenticated`.
   - Vercel (frontend), both server-side/non-`NEXT_PUBLIC_`: `API_AUTH_TOKEN`
     (the exact same value as Render's) and `BACKEND_API_URL` (e.g.
     `https://mizan-backend-5e7b.onrender.com/api`).
   - Vercel's `NEXT_PUBLIC_API_BASE_URL` should be unset for the web/PWA
     build — the frontend already defaults to relative `/api`, which is
     what routes through the proxy.
-- **Migrating to Supabase Auth later**: only `require_api_token`'s body
-  (verify a Supabase-issued JWT instead of comparing a static secret)
-  and the proxy's header-injection logic (forward the signed-in user's
-  real session token instead of a shared secret) need to change — the
-  router wiring and the browser-to-proxy-to-backend request shape stay
-  identical. See ARCHITECTURE.md, "Authentication Boundary" for the
-  schema-level compatibility this depends on.
+- **Rollout consequences of P0-3C (read before deploying)**:
+  1. The frontend has no login yet, so a deployed P0-3C backend answers
+     every non-health request `401` until a login/session phase forwards a
+     real Supabase JWT. Health checks are unaffected.
+  2. Every pre-existing row has no owner (`user_id`/`portfolio_config_id`
+     are NULL) and is therefore invisible to every authenticated request —
+     intentionally; nothing is adopted by whoever calls first. A verified,
+     human-approved backfill is a separate, later step (it is not part of
+     any migration or code here).
+  3. Migration `e7b2e4551df5` (per-portfolio uniqueness) is schema-only and
+     safe against existing rows, but must be applied (Actions → "Migrate
+     Production Database") before any user writes a holding/watchlist
+     entry: until then the old global one-per-asset constraints are still
+     in force.
+  4. The EOD snapshot worker skips unowned portfolios and exits non-zero
+     when no owned portfolio exists; the Telegram worker only acts on owned,
+     opted-in portfolios.
+- Local development needs a Supabase project (or a locally signed JWT, as the
+  test-suite does) and `SEED_OWNER_USER_ID=<a user's uuid>` when running
+  `python -m app.seed`, so the seeded portfolio is owned by that user.
 
 ## Health & Readiness
 

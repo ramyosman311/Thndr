@@ -5,7 +5,6 @@ two sources, verifying only the NEW persistence/dedup/read-state layer
 this phase adds on top of them.
 """
 
-from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -19,7 +18,7 @@ from app.models import (
     StrategyBucket,
     Transaction,
 )
-from app.services import notification_service, watchlist_service
+from app.services import watchlist_service
 from app.services import alert_service
 from app.services.notification_service import (
     NotificationNotFoundError,
@@ -30,12 +29,12 @@ from app.services.notification_service import (
 from app.tests.conftest import make_asset, make_current_price, make_portfolio_config
 
 
-async def _setup_recommendation_portfolio(session):
+async def _setup_recommendation_portfolio(session, owner):
     """Same shape as test_recommendation_service.py's fixture: an
     emergency SAVINGS asset (excluded), a real non-emergency CASH asset
     (free cash, no target -- NO_TARGET), and one underweight Growth
     (STOCK) bucket with a target."""
-    config = make_portfolio_config(emergency_excluded=True)
+    config = make_portfolio_config(user_id=owner.id, emergency_excluded=True)
     session.add(config)
     await session.flush()
 
@@ -46,7 +45,7 @@ async def _setup_recommendation_portfolio(session):
     session.add(emergency_asset)
     await session.flush()
     config.emergency_asset_id = emergency_asset.id
-    session.add(Holding(asset_id=emergency_asset.id, quantity=Decimal("1")))
+    session.add(Holding(portfolio_config_id=config.id, asset_id=emergency_asset.id, quantity=Decimal("1")))
     await make_current_price(session, emergency_asset, Decimal("100000"))
 
     cash_bucket = StrategyBucket(portfolio_config_id=config.id, name="Free Cash")
@@ -68,7 +67,7 @@ async def _setup_recommendation_portfolio(session):
     other_asset = make_asset("NOTOTHER", strategy_bucket_id=other_bucket.id)
     session.add(other_asset)
     await session.flush()
-    session.add(Holding(asset_id=other_asset.id, quantity=Decimal("30")))  # 3000
+    session.add(Holding(portfolio_config_id=config.id, asset_id=other_asset.id, quantity=Decimal("30")))  # 3000
     await make_current_price(session, other_asset, Decimal("100"))
 
     growth_bucket = StrategyBucket(portfolio_config_id=config.id, name="Growth")
@@ -77,7 +76,7 @@ async def _setup_recommendation_portfolio(session):
     growth_asset = make_asset("NOTGROWTH", strategy_bucket_id=growth_bucket.id)
     session.add(growth_asset)
     await session.flush()
-    session.add(Holding(asset_id=growth_asset.id, quantity=Decimal("10")))  # 1000
+    session.add(Holding(portfolio_config_id=config.id, asset_id=growth_asset.id, quantity=Decimal("10")))  # 1000
     await make_current_price(session, growth_asset, Decimal("100"))
     # investable = 1000 (growth) + 3000 (other) + 0 (free cash) = 4000;
     # target 50% = 2000, actual 1000 -> underweight, gap 1000. With zero
@@ -92,8 +91,8 @@ async def _setup_recommendation_portfolio(session):
     return config, cash_asset, growth_asset
 
 
-async def _setup_breached_portfolio(session):
-    config = make_portfolio_config(emergency_excluded=False)
+async def _setup_breached_portfolio(session, owner):
+    config = make_portfolio_config(user_id=owner.id, emergency_excluded=False)
     session.add(config)
     await session.flush()
 
@@ -103,7 +102,7 @@ async def _setup_breached_portfolio(session):
     asset = make_asset("NOTOVER", strategy_bucket_id=bucket.id)
     session.add(asset)
     await session.flush()
-    session.add(Holding(asset_id=asset.id, quantity=Decimal("100")))  # 10000
+    session.add(Holding(portfolio_config_id=config.id, asset_id=asset.id, quantity=Decimal("100")))  # 10000
     await make_current_price(session, asset, Decimal("100"))
     target = AllocationTarget(
         portfolio_config_id=config.id, strategy_bucket_id=bucket.id, maximum_percent=Decimal("15"), priority=1
@@ -113,20 +112,20 @@ async def _setup_breached_portfolio(session):
     return config, bucket, asset
 
 
-async def _setup_watched_price_asset(session, *, current_price=Decimal("150")):
-    config = make_portfolio_config()
+async def _setup_watched_price_asset(session, owner, *, current_price=Decimal("150")):
+    config = make_portfolio_config(user_id=owner.id)
     session.add(config)
     await session.flush()
     asset = make_asset("NOTPRICE")
     session.add(asset)
     await session.flush()
-    session.add(Holding(asset_id=asset.id, quantity=Decimal("1")))
+    session.add(Holding(portfolio_config_id=config.id, asset_id=asset.id, quantity=Decimal("1")))
     await make_current_price(session, asset, current_price)
     await session.commit()
 
-    entry = await watchlist_service.add_to_watchlist(session, asset.id)
+    entry = await watchlist_service.add_to_watchlist(session, owner.id, asset.id)
     rule = await alert_service.create_alert_rule(
-        session, entry.id, price_target_enabled=True, price_target=Decimal("150")
+        session, owner.id, entry.id, price_target_enabled=True, price_target=Decimal("150")
     )
     return config, asset, entry, rule
 
@@ -142,10 +141,10 @@ async def _financial_counts(session):
 # --- A: Maximum breach alert -------------------------------------------------
 
 
-async def test_a_maximum_breach_generates_recommendation_alert_critical(db_session):
-    await _setup_breached_portfolio(db_session)
+async def test_a_maximum_breach_generates_recommendation_alert_critical(db_session, owner):
+    await _setup_breached_portfolio(db_session, owner)
 
-    result = await list_notifications(db_session)
+    result = await list_notifications(db_session, owner.id)
     breach = next(n for n in result.notifications if n.target_category == "Overweight Stocks")
     assert breach.category == "RECOMMENDATION_ALERT"
     assert breach.severity == "CRITICAL"
@@ -156,10 +155,10 @@ async def test_a_maximum_breach_generates_recommendation_alert_critical(db_sessi
 # --- B: Recommendation alert (restricted action, non-breach) ----------------
 
 
-async def test_b_restricted_action_recommendation_generates_warning_notification(db_session):
-    await _setup_recommendation_portfolio(db_session)
+async def test_b_restricted_action_recommendation_generates_warning_notification(db_session, owner):
+    await _setup_recommendation_portfolio(db_session, owner)
 
-    result = await list_notifications(db_session)
+    result = await list_notifications(db_session, owner.id)
     growth_notif = next(n for n in result.notifications if n.target_category == "Growth")
     assert growth_notif.category == "RECOMMENDATION_ALERT"
     assert growth_notif.severity == "WARNING"  # underweight + zero available cash -> RESTRICTED_ACTION
@@ -168,10 +167,10 @@ async def test_b_restricted_action_recommendation_generates_warning_notification
 # --- C: Price alert -----------------------------------------------------------
 
 
-async def test_c_price_target_reached_generates_price_alert(db_session):
-    _, asset, _, _ = await _setup_watched_price_asset(db_session, current_price=Decimal("150"))
+async def test_c_price_target_reached_generates_price_alert(db_session, owner):
+    _, asset, _, _ = await _setup_watched_price_asset(db_session, owner, current_price=Decimal("150"))
 
-    result = await list_notifications(db_session)
+    result = await list_notifications(db_session, owner.id)
     price_notif = next(n for n in result.notifications if n.target_asset == "NOTPRICE")
     assert price_notif.category == "PRICE_ALERT"
     assert price_notif.action == "OPEN_ASSET"
@@ -181,10 +180,10 @@ async def test_c_price_target_reached_generates_price_alert(db_session):
 # --- D: Zero cash never produces a false BUY --------------------------------
 
 
-async def test_d_zero_cash_underweight_never_produces_a_buy_notification(db_session):
-    await _setup_recommendation_portfolio(db_session)
+async def test_d_zero_cash_underweight_never_produces_a_buy_notification(db_session, owner):
+    await _setup_recommendation_portfolio(db_session, owner)
 
-    result = await list_notifications(db_session)
+    result = await list_notifications(db_session, owner.id)
     growth_notif = next(n for n in result.notifications if n.target_category == "Growth")
     # Zero available cash -> RESTRICTED_ACTION (WARNING), never the INFO-
     # severity CASH_DEPLOYMENT a fundable BUY would produce -- and
@@ -198,8 +197,8 @@ async def test_d_zero_cash_underweight_never_produces_a_buy_notification(db_sess
 # --- E: Allow New Buy false ---------------------------------------------------
 
 
-async def test_e_allow_new_buy_false_never_produces_a_buy_notification(db_session):
-    config = make_portfolio_config(emergency_excluded=False)
+async def test_e_allow_new_buy_false_never_produces_a_buy_notification(db_session, owner):
+    config = make_portfolio_config(user_id=owner.id, emergency_excluded=False)
     db_session.add(config)
     await db_session.flush()
     bucket = StrategyBucket(portfolio_config_id=config.id, name="Gold")
@@ -208,7 +207,7 @@ async def test_e_allow_new_buy_false_never_produces_a_buy_notification(db_sessio
     asset = make_asset("NOTGOLD", strategy_bucket_id=bucket.id)
     db_session.add(asset)
     await db_session.flush()
-    session_asset_holding = Holding(asset_id=asset.id, quantity=Decimal("0"))
+    session_asset_holding = Holding(portfolio_config_id=config.id, asset_id=asset.id, quantity=Decimal("0"))
     db_session.add(session_asset_holding)
     await make_current_price(db_session, asset, Decimal("100"))
     target = AllocationTarget(
@@ -221,7 +220,7 @@ async def test_e_allow_new_buy_false_never_produces_a_buy_notification(db_sessio
     db_session.add(target)
     await db_session.commit()
 
-    result = await list_notifications(db_session)
+    result = await list_notifications(db_session, owner.id)
     gold_notifs = [n for n in result.notifications if n.target_category == "Gold"]
     assert len(gold_notifs) == 1
     assert gold_notifs[0].category == "RECOMMENDATION_ALERT"
@@ -231,32 +230,32 @@ async def test_e_allow_new_buy_false_never_produces_a_buy_notification(db_sessio
 # --- F: Emergency Cash protected ----------------------------------------------
 
 
-async def test_f_emergency_cash_never_generates_a_notification(db_session):
-    await _setup_recommendation_portfolio(db_session)
+async def test_f_emergency_cash_never_generates_a_notification(db_session, owner):
+    await _setup_recommendation_portfolio(db_session, owner)
 
-    result = await list_notifications(db_session)
+    result = await list_notifications(db_session, owner.id)
     assert all(n.target_category != "Emergency Reserve" for n in result.notifications)
 
 
 # --- G: No Target preserved ---------------------------------------------------
 
 
-async def test_g_no_target_never_generates_a_target_driven_notification(db_session):
-    await _setup_recommendation_portfolio(db_session)
+async def test_g_no_target_never_generates_a_target_driven_notification(db_session, owner):
+    await _setup_recommendation_portfolio(db_session, owner)
 
-    result = await list_notifications(db_session)
+    result = await list_notifications(db_session, owner.id)
     assert all(n.target_category != "Free Cash" for n in result.notifications)
 
 
 # --- H: Duplicate protection ---------------------------------------------------
 
 
-async def test_h_repeated_evaluation_never_creates_duplicate_notifications(db_session):
-    await _setup_breached_portfolio(db_session)
+async def test_h_repeated_evaluation_never_creates_duplicate_notifications(db_session, owner):
+    await _setup_breached_portfolio(db_session, owner)
 
-    first = await list_notifications(db_session)
-    second = await list_notifications(db_session)
-    third = await list_notifications(db_session)
+    first = await list_notifications(db_session, owner.id)
+    second = await list_notifications(db_session, owner.id)
+    third = await list_notifications(db_session, owner.id)
 
     assert len(first.notifications) == len(second.notifications) == len(third.notifications)
     assert {n.id for n in first.notifications} == {n.id for n in second.notifications} == {
@@ -267,11 +266,11 @@ async def test_h_repeated_evaluation_never_creates_duplicate_notifications(db_se
     assert count == len(first.notifications)
 
 
-async def test_h_price_alert_dedup_across_repeated_evaluation(db_session):
-    await _setup_watched_price_asset(db_session, current_price=Decimal("150"))
+async def test_h_price_alert_dedup_across_repeated_evaluation(db_session, owner):
+    await _setup_watched_price_asset(db_session, owner, current_price=Decimal("150"))
 
-    await list_notifications(db_session)
-    await list_notifications(db_session)
+    await list_notifications(db_session, owner.id)
+    await list_notifications(db_session, owner.id)
 
     count = (
         await db_session.execute(
@@ -284,13 +283,13 @@ async def test_h_price_alert_dedup_across_repeated_evaluation(db_session):
 # --- I: Read-only financial state ----------------------------------------------
 
 
-async def test_i_notification_sync_never_mutates_financial_state(db_session):
-    await _setup_breached_portfolio(db_session)
-    await _setup_watched_price_asset(db_session, current_price=Decimal("150"))
+async def test_i_notification_sync_never_mutates_financial_state(db_session, owner):
+    await _setup_breached_portfolio(db_session, owner)
+    await _setup_watched_price_asset(db_session, owner, current_price=Decimal("150"))
 
     before = await _financial_counts(db_session)
-    await list_notifications(db_session)
-    await list_notifications(db_session)
+    await list_notifications(db_session, owner.id)
+    await list_notifications(db_session, owner.id)
     after = await _financial_counts(db_session)
 
     assert before == after
@@ -299,21 +298,21 @@ async def test_i_notification_sync_never_mutates_financial_state(db_session):
 # --- J: Notification read state ------------------------------------------------
 
 
-async def test_j_marking_one_notification_read_changes_only_that_row(db_session):
-    await _setup_breached_portfolio(db_session)
+async def test_j_marking_one_notification_read_changes_only_that_row(db_session, owner):
+    await _setup_breached_portfolio(db_session, owner)
 
-    result = await list_notifications(db_session)
+    result = await list_notifications(db_session, owner.id)
     target = result.notifications[0]
     assert target.read is False
 
     before = await _financial_counts(db_session)
-    updated = await mark_notification_read(db_session, target.id)
+    updated = await mark_notification_read(db_session, owner.id, target.id)
     after = await _financial_counts(db_session)
 
     assert updated.read is True
     assert before == after
 
-    refreshed = await list_notifications(db_session)
+    refreshed = await list_notifications(db_session, owner.id)
     refreshed_target = next(n for n in refreshed.notifications if n.id == target.id)
     assert refreshed_target.read is True
     # Untouched notifications remain unread.
@@ -322,23 +321,23 @@ async def test_j_marking_one_notification_read_changes_only_that_row(db_session)
             assert other.read is False
 
 
-async def test_j_mark_notification_read_rejects_missing_id(db_session):
+async def test_j_mark_notification_read_rejects_missing_id(db_session, owner):
     import uuid
 
     try:
-        await mark_notification_read(db_session, uuid.uuid4())
+        await mark_notification_read(db_session, owner.id, uuid.uuid4())
         assert False, "expected NotificationNotFoundError"
     except NotificationNotFoundError:
         pass
 
 
-async def test_j_mark_all_read_clears_unread_count(db_session):
-    await _setup_breached_portfolio(db_session)
-    await _setup_watched_price_asset(db_session, current_price=Decimal("150"))
+async def test_j_mark_all_read_clears_unread_count(db_session, owner):
+    await _setup_breached_portfolio(db_session, owner)
+    await _setup_watched_price_asset(db_session, owner, current_price=Decimal("150"))
 
-    before_result = await list_notifications(db_session)
+    before_result = await list_notifications(db_session, owner.id)
     assert before_result.unread_count > 0
 
-    result = await mark_all_notifications_read(db_session)
+    result = await mark_all_notifications_read(db_session, owner.id)
     assert result.unread_count == 0
     assert all(n.read is True for n in result.notifications)

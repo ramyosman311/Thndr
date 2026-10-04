@@ -14,8 +14,8 @@ from app.services.strategy_service import PortfolioNotConfiguredError, get_strat
 from app.tests.conftest import make_asset
 
 
-async def _setup_two_bucket_portfolio(session, *, emergency_excluded=True):
-    config = PortfolioConfig(name="Strategy Test Portfolio", base_currency="EGP", emergency_excluded=emergency_excluded)
+async def _setup_two_bucket_portfolio(session, owner, *, emergency_excluded=True):
+    config = PortfolioConfig(user_id=owner.id, name="Strategy Test Portfolio", base_currency="EGP", emergency_excluded=emergency_excluded)
     session.add(config)
     await session.flush()
 
@@ -41,13 +41,13 @@ async def _setup_two_bucket_portfolio(session, *, emergency_excluded=True):
     return config, bucket_a, emergency_bucket
 
 
-async def test_current_seeded_configuration_returns_85_percent_incomplete(db_session):
+async def test_current_seeded_configuration_returns_85_percent_incomplete(db_session, owner):
     """Uses the real Phase 4 seed data (not a hand-built substitute) to
     verify the engine reports exactly what the Phase 6 approval demands:
     85% total, INCOMPLETE_TARGET_ALLOCATION — never silently rewritten."""
-    await run_seed(db_session)
+    await run_seed(db_session, owner.id)
 
-    result = await get_strategy_validation(db_session)
+    result = await get_strategy_validation(db_session, owner.id)
 
     assert result.status == StrategyValidationStatus.INCOMPLETE_TARGET_ALLOCATION.value
     assert result.total_target_percent == Decimal("85.00")
@@ -62,8 +62,8 @@ async def test_current_seeded_configuration_returns_85_percent_incomplete(db_ses
     assert "Emergency Cash" not in target_names
 
 
-async def test_inactive_allocation_target_does_not_contribute(db_session):
-    config, bucket_a, _ = await _setup_two_bucket_portfolio(db_session, emergency_excluded=False)
+async def test_inactive_allocation_target_does_not_contribute(db_session, owner):
+    config, bucket_a, _ = await _setup_two_bucket_portfolio(db_session, owner, emergency_excluded=False)
 
     bucket_b = StrategyBucket(portfolio_config_id=config.id, name="Bucket B")
     db_session.add(bucket_b)
@@ -77,13 +77,13 @@ async def test_inactive_allocation_target_does_not_contribute(db_session):
     db_session.add(inactive_target)
     await db_session.commit()
 
-    result = await get_strategy_validation(db_session)
+    result = await get_strategy_validation(db_session, owner.id)
     assert result.total_target_percent == Decimal("100.00")
     assert result.status == StrategyValidationStatus.VALID.value
 
 
-async def test_emergency_exclusion_changes_validation_dynamically(db_session):
-    config, bucket_a, emergency_bucket = await _setup_two_bucket_portfolio(db_session, emergency_excluded=True)
+async def test_emergency_exclusion_changes_validation_dynamically(db_session, owner):
+    config, bucket_a, emergency_bucket = await _setup_two_bucket_portfolio(db_session, owner, emergency_excluded=True)
 
     emergency_target = AllocationTarget(
         portfolio_config_id=config.id,
@@ -93,7 +93,7 @@ async def test_emergency_exclusion_changes_validation_dynamically(db_session):
     db_session.add(emergency_target)
     await db_session.commit()
 
-    excluded_result = await get_strategy_validation(db_session)
+    excluded_result = await get_strategy_validation(db_session, owner.id)
     assert excluded_result.total_target_percent == Decimal("100.00")
     assert excluded_result.status == StrategyValidationStatus.VALID.value
     assert any(r.bucket_name == "Emergency Cash" for r in excluded_result.excluded_emergency_rows)
@@ -103,13 +103,13 @@ async def test_emergency_exclusion_changes_validation_dynamically(db_session):
     config.emergency_excluded = False
     await db_session.commit()
 
-    included_result = await get_strategy_validation(db_session)
+    included_result = await get_strategy_validation(db_session, owner.id)
     assert included_result.total_target_percent == Decimal("150.00")
     assert included_result.status == StrategyValidationStatus.OVERALLOCATED_TARGET_ALLOCATION.value
 
 
-async def test_dynamic_new_bucket_and_target_are_recognized_without_code_change(db_session):
-    config, bucket_a, _ = await _setup_two_bucket_portfolio(db_session, emergency_excluded=False)
+async def test_dynamic_new_bucket_and_target_are_recognized_without_code_change(db_session, owner):
+    config, bucket_a, _ = await _setup_two_bucket_portfolio(db_session, owner, emergency_excluded=False)
 
     new_bucket = StrategyBucket(portfolio_config_id=config.id, name="Freshly Created Category")
     db_session.add(new_bucket)
@@ -123,15 +123,15 @@ async def test_dynamic_new_bucket_and_target_are_recognized_without_code_change(
     )
     await db_session.commit()
 
-    result_after = await get_strategy_validation(db_session)
+    result_after = await get_strategy_validation(db_session, owner.id)
     assert "Freshly Created Category" in {r.bucket_name for r in result_after.target_rows}
     # bucket_a=100 + new bucket=0 => still 100, VALID
     assert result_after.total_target_percent == Decimal("100.00")
     assert result_after.status == StrategyValidationStatus.VALID.value
 
 
-async def test_changing_maximum_percent_does_not_change_target_sum(db_session):
-    config, bucket_a, _ = await _setup_two_bucket_portfolio(db_session, emergency_excluded=False)
+async def test_changing_maximum_percent_does_not_change_target_sum(db_session, owner):
+    config, bucket_a, _ = await _setup_two_bucket_portfolio(db_session, owner, emergency_excluded=False)
 
     bucket_b = StrategyBucket(portfolio_config_id=config.id, name="Max Only Bucket")
     db_session.add(bucket_b)
@@ -142,19 +142,19 @@ async def test_changing_maximum_percent_does_not_change_target_sum(db_session):
     db_session.add(target_b)
     await db_session.commit()
 
-    before = await get_strategy_validation(db_session)
+    before = await get_strategy_validation(db_session, owner.id)
     assert before.total_target_percent == Decimal("100.00")
 
     target_b.maximum_percent = Decimal("40")
     await db_session.commit()
 
-    after = await get_strategy_validation(db_session)
+    after = await get_strategy_validation(db_session, owner.id)
     assert after.total_target_percent == Decimal("100.00")
     assert before.status == after.status == StrategyValidationStatus.VALID.value
 
 
-async def test_changing_allow_new_buy_does_not_change_target_sum(db_session):
-    config, bucket_a, _ = await _setup_two_bucket_portfolio(db_session, emergency_excluded=False)
+async def test_changing_allow_new_buy_does_not_change_target_sum(db_session, owner):
+    config, bucket_a, _ = await _setup_two_bucket_portfolio(db_session, owner, emergency_excluded=False)
 
     target_a = (
         await db_session.execute(
@@ -163,24 +163,24 @@ async def test_changing_allow_new_buy_does_not_change_target_sum(db_session):
     ).scalar_one()
     assert target_a.allow_new_buy is True
 
-    before = await get_strategy_validation(db_session)
+    before = await get_strategy_validation(db_session, owner.id)
     target_a.allow_new_buy = False
     await db_session.commit()
-    after = await get_strategy_validation(db_session)
+    after = await get_strategy_validation(db_session, owner.id)
 
     assert before.total_target_percent == after.total_target_percent == Decimal("100.00")
 
 
-async def test_missing_portfolio_configuration_raises_explicit_error(db_session):
+async def test_missing_portfolio_configuration_raises_explicit_error(db_session, owner):
     try:
-        await get_strategy_validation(db_session)
+        await get_strategy_validation(db_session, owner.id)
         assert False, "expected PortfolioNotConfiguredError"
     except PortfolioNotConfiguredError:
         pass
 
 
-async def test_strategy_engine_has_no_side_effects(db_session):
-    await run_seed(db_session)
+async def test_strategy_engine_has_no_side_effects(db_session, owner):
+    await run_seed(db_session, owner.id)
 
     async def count_all():
         counts = {}
@@ -190,8 +190,8 @@ async def test_strategy_engine_has_no_side_effects(db_session):
         return counts
 
     before = await count_all()
-    await get_strategy_validation(db_session)
-    await get_strategy_validation(db_session)
+    await get_strategy_validation(db_session, owner.id)
+    await get_strategy_validation(db_session, owner.id)
     after = await count_all()
 
     assert before == after

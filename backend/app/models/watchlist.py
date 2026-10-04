@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, ForeignKey, TIMESTAMP, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, ForeignKey, Index, TIMESTAMP, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -23,15 +23,22 @@ class Watchlist(UUIDPrimaryKeyMixin, Base):
     One row per asset: re-adding a previously removed asset re-enables its
     existing row instead of creating a duplicate.
 
-    `portfolio_config_id` (P0-3A): nullable for now, deliberately, and
-    `uq_watchlist_asset_id` is deliberately left as `UniqueConstraint
-    ("asset_id")` rather than widened to `(portfolio_config_id, asset_id)`
-    in this phase -- same NULL-is-distinct reasoning as Holding, see
-    DECISIONS.md, "P0-3A/B — Identity, Ownership, JWT Verification".
+    `portfolio_config_id` (P0-3A/P0-3C): the owning portfolio -- one row per
+    asset PER PORTFOLIO (`uq_watchlist_portfolio_asset`), with the partial
+    `uq_watchlist_asset_id_unowned` preserving the original one-row-per-
+    asset guarantee for legacy unowned rows (see DECISIONS.md, "P0-3C").
     """
 
     __tablename__ = "watchlist"
-    __table_args__ = (UniqueConstraint("asset_id", name="uq_watchlist_asset_id"),)
+    __table_args__ = (
+        UniqueConstraint("portfolio_config_id", "asset_id", name="uq_watchlist_portfolio_asset"),
+        Index(
+            "uq_watchlist_asset_id_unowned",
+            "asset_id",
+            unique=True,
+            postgresql_where=text("portfolio_config_id IS NULL"),
+        ),
+    )
 
     portfolio_config_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("portfolio_configs.id", ondelete="CASCADE"), nullable=True

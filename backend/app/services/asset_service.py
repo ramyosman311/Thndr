@@ -9,6 +9,17 @@ or price observation on record; a hard delete is rejected outright once
 the asset has ANY historical data at all (holdings, transactions,
 watchlist entries, snapshot items, or price observations) -- deactivate
 is the only path once history exists.
+
+P0-3C: assets are shared market/reference data, but `assets.strategy_bucket_id`
+points into ONE portfolio's strategy buckets. So that a user can neither read
+nor overwrite another user's bucket assignment, the bucket id is masked to
+null in responses unless it is one of the caller's own buckets, a bucket may
+only be assigned if it belongs to the caller's portfolio, and an asset that
+sits in another owned portfolio's bucket cannot be re-pointed from here. A
+true per-portfolio asset-to-bucket association is a follow-up (see
+DECISIONS.md, "P0-3C"). Who may mutate the shared asset rows themselves
+(create/edit/activate/delete) is a separate authorization decision that is
+not made here.
 """
 
 from uuid import UUID
@@ -17,7 +28,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories import asset_repository
-from app.repositories.portfolio_repository import get_active_assets
+from app.repositories.portfolio_repository import get_portfolio_config_for_user
 from app.schemas.asset import AssetCreateRequest, AssetOut, AssetUpdateRequest
 
 
@@ -33,6 +44,12 @@ class InvalidStrategyBucketError(Exception):
     """Raised when strategy_bucket_id does not reference an existing bucket."""
 
 
+class StrategyBucketAssignmentLockedError(Exception):
+    """Raised when changing the strategy bucket of an asset that is
+    currently assigned into another user's portfolio (P0-3C). Deliberately
+    says nothing about whose or which."""
+
+
 class CurrencyChangeNotAllowedError(Exception):
     """Raised when changing currency on an asset that has transaction or
     price history -- see FINANCIAL_RULES.md, "Asset Edit Safety"."""
@@ -43,7 +60,17 @@ class AssetHasHistoricalDataError(Exception):
     history -- see FINANCIAL_RULES.md, "Asset Deletion Policy"."""
 
 
-def _to_asset_out(asset) -> AssetOut:
+async def _caller_bucket_ids(session: AsyncSession, user_id: UUID) -> tuple[UUID | None, set[UUID]]:
+    """The caller's portfolio id (None if they have none) and the ids of
+    that portfolio's strategy buckets."""
+    config = await get_portfolio_config_for_user(session, user_id)
+    if config is None:
+        return None, set()
+    return config.id, await asset_repository.list_strategy_bucket_ids_for_portfolio(session, config.id)
+
+
+def _to_asset_out(asset, visible_bucket_ids: set[UUID]) -> AssetOut:
+    bucket_id = asset.strategy_bucket_id if asset.strategy_bucket_id in visible_bucket_ids else None
     return AssetOut(
         id=asset.id,
         symbol=asset.symbol,
@@ -51,45 +78,49 @@ def _to_asset_out(asset) -> AssetOut:
         asset_type=asset.asset_type.value,
         market=asset.market,
         currency=asset.currency,
-        strategy_bucket_id=asset.strategy_bucket_id,
+        strategy_bucket_id=bucket_id,
         is_active=asset.is_active,
     )
 
 
-async def list_active_assets(session: AsyncSession) -> list[AssetOut]:
-    """Reuses the exact repository query the Portfolio Engine already
-    uses (Phase 9 contract) -- never a separate/duplicated query."""
-    assets = await get_active_assets(session)
-    return [_to_asset_out(asset) for asset in assets]
-
-
-async def list_assets(session: AsyncSession, *, include_inactive: bool = False) -> list[AssetOut]:
-    """The admin listing (Phase 12) -- unlike `list_active_assets`, this
-    can include inactive assets so they remain visible/reactivatable."""
+async def list_assets(
+    session: AsyncSession, user_id: UUID, *, include_inactive: bool = False
+) -> list[AssetOut]:
+    """The admin listing (Phase 12) -- active-only by default, but can
+    include inactive assets so they remain visible/reactivatable."""
     assets = await asset_repository.list_assets(session, include_inactive=include_inactive)
-    return [_to_asset_out(asset) for asset in assets]
+    _, visible = await _caller_bucket_ids(session, user_id)
+    return [_to_asset_out(asset, visible) for asset in assets]
 
 
-async def get_asset(session: AsyncSession, asset_id: UUID) -> AssetOut:
+async def get_asset(session: AsyncSession, user_id: UUID, asset_id: UUID) -> AssetOut:
     asset = await asset_repository.get_asset_by_id(session, asset_id)
     if asset is None:
         raise AssetNotFoundError(f"Asset {asset_id} does not exist.")
-    return _to_asset_out(asset)
+    _, visible = await _caller_bucket_ids(session, user_id)
+    return _to_asset_out(asset, visible)
 
 
-async def _validate_strategy_bucket(session: AsyncSession, strategy_bucket_id: UUID | None) -> None:
+async def _validate_strategy_bucket(
+    session: AsyncSession, portfolio_config_id: UUID | None, strategy_bucket_id: UUID | None
+) -> None:
+    """A bucket may only be assigned if it is one of the CALLER's own -- the
+    client-supplied id is never trusted as proof of ownership."""
     if strategy_bucket_id is None:
         return
-    if not await asset_repository.strategy_bucket_exists(session, strategy_bucket_id):
+    if portfolio_config_id is None or not await asset_repository.strategy_bucket_belongs_to_portfolio(
+        session, strategy_bucket_id, portfolio_config_id
+    ):
         raise InvalidStrategyBucketError(f"Strategy bucket {strategy_bucket_id} does not exist.")
 
 
-async def create_asset(session: AsyncSession, request: AssetCreateRequest) -> AssetOut:
+async def create_asset(session: AsyncSession, user_id: UUID, request: AssetCreateRequest) -> AssetOut:
     from app.models import Asset
 
     if await asset_repository.get_asset_by_symbol(session, request.symbol) is not None:
         raise DuplicateAssetSymbolError(f"Asset symbol {request.symbol!r} is already in use.")
-    await _validate_strategy_bucket(session, request.strategy_bucket_id)
+    portfolio_config_id, visible = await _caller_bucket_ids(session, user_id)
+    await _validate_strategy_bucket(session, portfolio_config_id, request.strategy_bucket_id)
 
     asset = Asset(
         symbol=request.symbol,
@@ -105,10 +136,12 @@ async def create_asset(session: AsyncSession, request: AssetCreateRequest) -> As
     except IntegrityError as exc:
         await session.rollback()
         raise DuplicateAssetSymbolError(f"Asset symbol {request.symbol!r} is already in use.") from exc
-    return _to_asset_out(asset)
+    return _to_asset_out(asset, visible)
 
 
-async def update_asset(session: AsyncSession, asset_id: UUID, request: AssetUpdateRequest) -> AssetOut:
+async def update_asset(
+    session: AsyncSession, user_id: UUID, asset_id: UUID, request: AssetUpdateRequest
+) -> AssetOut:
     asset = await asset_repository.get_asset_by_id(session, asset_id)
     if asset is None:
         raise AssetNotFoundError(f"Asset {asset_id} does not exist.")
@@ -129,26 +162,39 @@ async def update_asset(session: AsyncSession, asset_id: UUID, request: AssetUpda
         asset.asset_type = request.asset_type
     if request.market is not None:
         asset.market = request.market
-    if request.clear_strategy_bucket:
-        asset.strategy_bucket_id = None
-    elif request.strategy_bucket_id is not None:
-        await _validate_strategy_bucket(session, request.strategy_bucket_id)
-        asset.strategy_bucket_id = request.strategy_bucket_id
+    portfolio_config_id, visible = await _caller_bucket_ids(session, user_id)
+    if request.clear_strategy_bucket or request.strategy_bucket_id is not None:
+        current_bucket_id = asset.strategy_bucket_id
+        if (
+            current_bucket_id is not None
+            and current_bucket_id not in visible
+            and portfolio_config_id is not None
+            and await asset_repository.bucket_belongs_to_another_owned_portfolio(
+                session, current_bucket_id, portfolio_config_id
+            )
+        ):
+            raise StrategyBucketAssignmentLockedError("This asset's strategy bucket cannot be changed.")
+        if request.clear_strategy_bucket:
+            asset.strategy_bucket_id = None
+        else:
+            await _validate_strategy_bucket(session, portfolio_config_id, request.strategy_bucket_id)
+            asset.strategy_bucket_id = request.strategy_bucket_id
 
     await session.commit()
-    return _to_asset_out(asset)
+    return _to_asset_out(asset, visible)
 
 
-async def activate_asset(session: AsyncSession, asset_id: UUID) -> AssetOut:
+async def activate_asset(session: AsyncSession, user_id: UUID, asset_id: UUID) -> AssetOut:
     asset = await asset_repository.get_asset_by_id(session, asset_id)
     if asset is None:
         raise AssetNotFoundError(f"Asset {asset_id} does not exist.")
     asset.is_active = True
     await session.commit()
-    return _to_asset_out(asset)
+    _, visible = await _caller_bucket_ids(session, user_id)
+    return _to_asset_out(asset, visible)
 
 
-async def deactivate_asset(session: AsyncSession, asset_id: UUID) -> AssetOut:
+async def deactivate_asset(session: AsyncSession, user_id: UUID, asset_id: UUID) -> AssetOut:
     """Deactivation is always safe and always available, regardless of
     historical data -- it never deletes anything (see FINANCIAL_RULES.md,
     "Asset Deletion Policy")."""
@@ -157,7 +203,8 @@ async def deactivate_asset(session: AsyncSession, asset_id: UUID) -> AssetOut:
         raise AssetNotFoundError(f"Asset {asset_id} does not exist.")
     asset.is_active = False
     await session.commit()
-    return _to_asset_out(asset)
+    _, visible = await _caller_bucket_ids(session, user_id)
+    return _to_asset_out(asset, visible)
 
 
 async def delete_asset(session: AsyncSession, asset_id: UUID) -> None:

@@ -28,7 +28,7 @@ from app.domain.transaction_engine import (
     apply_withdrawal,
 )
 from app.models import AssetType, Holding, Transaction
-from app.repositories.portfolio_repository import get_portfolio_config
+from app.repositories.portfolio_repository import get_portfolio_config_for_user
 from app.repositories.transaction_repository import (
     get_asset_by_id,
     get_holding_by_asset_id_for_update,
@@ -70,11 +70,12 @@ class InvalidCashFlowAmountError(Exception):
 
 
 class PortfolioNotConfiguredError(Exception):
-    """Raised when a DEPOSIT/WITHDRAWAL is attempted before any
-    portfolio_configs row exists yet (mirrors the same-named exception
-    already defined independently in portfolio_service.py/
-    inflow_service.py -- each service raises its own per this codebase's
-    established convention)."""
+    """Raised when the caller has no portfolio_configs row yet. Every
+    transaction and holding belongs to a portfolio (P0-3C), so none can be
+    recorded before one exists (mirrors the same-named exception already
+    defined independently in portfolio_service.py/inflow_service.py --
+    each service raises its own per this codebase's established
+    convention)."""
 
 
 def _round(value: Decimal) -> Decimal:
@@ -98,6 +99,7 @@ def _transaction_out(transaction: Transaction, asset_symbol: str) -> Transaction
 
 async def create_transaction(
     session: AsyncSession,
+    user_id: UUID,
     *,
     asset_id: UUID,
     transaction_type: str,
@@ -107,14 +109,22 @@ async def create_transaction(
     transaction_date: datetime,
     notes: str | None,
 ) -> TransactionResultOut:
+    # The record is always created inside the CALLER's own portfolio,
+    # derived server-side from the verified identity -- never from
+    # anything the client supplied (P0-3C).
+    config = await get_portfolio_config_for_user(session, user_id)
+    if config is None:
+        raise PortfolioNotConfiguredError("No portfolio configuration exists yet.")
+
     asset = await get_asset_by_id(session, asset_id)
     if asset is None:
         raise AssetNotFoundError(f"Asset {asset_id} does not exist.")
 
     # Row-locked for the duration of this DB transaction so a concurrent
-    # BUY/SELL on the same asset serializes rather than both reading a
-    # stale quantity (see FINANCIAL_RULES.md, "Transaction Concurrency").
-    holding = await get_holding_by_asset_id_for_update(session, asset_id)
+    # BUY/SELL on the same asset in this portfolio serializes rather than
+    # both reading a stale quantity (see FINANCIAL_RULES.md, "Transaction
+    # Concurrency").
+    holding = await get_holding_by_asset_id_for_update(session, asset_id, config.id)
     current_quantity = holding.quantity if holding is not None else Decimal("0")
     current_average_cost = holding.average_cost if holding is not None else Decimal("0")
 
@@ -165,7 +175,12 @@ async def create_transaction(
         snapshot_pending = True
 
     if holding is None:
-        holding = Holding(asset_id=asset_id, quantity=result.quantity, average_cost=result.average_cost)
+        holding = Holding(
+            portfolio_config_id=config.id,
+            asset_id=asset_id,
+            quantity=result.quantity,
+            average_cost=result.average_cost,
+        )
         session.add(holding)
         # Also wire the in-memory relationship, not just the FK column:
         # `asset` may already be identity-mapped with `.holding` cached as
@@ -181,6 +196,7 @@ async def create_transaction(
         holding.average_cost = result.average_cost
 
     transaction = Transaction(
+        portfolio_config_id=config.id,
         asset_id=asset_id,
         transaction_type=transaction_type,
         quantity=quantity,
@@ -198,9 +214,6 @@ async def create_transaction(
         # commits atomically with the transaction/holding write below (see
         # services/snapshot_service.py's module docstring).
         await session.flush()
-        config = await get_portfolio_config(session)
-        if config is None:
-            raise PortfolioNotConfiguredError("No portfolio configuration exists yet.")
         snapshot = await build_post_transaction_snapshot(session, config=config, transaction=transaction)
         session.add(snapshot)
 
@@ -229,6 +242,11 @@ async def create_transaction(
     )
 
 
-async def list_transactions(session: AsyncSession) -> list[TransactionOut]:
-    transactions = await repo_list_transactions(session)
+async def list_transactions(session: AsyncSession, user_id: UUID) -> list[TransactionOut]:
+    """The caller's own transaction history. With no portfolio there is no
+    history to show -- an empty list, never another user's."""
+    config = await get_portfolio_config_for_user(session, user_id)
+    if config is None:
+        return []
+    transactions = await repo_list_transactions(session, config.id)
     return [_transaction_out(t, t.asset.symbol) for t in transactions]

@@ -1,31 +1,15 @@
 from decimal import Decimal
 
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
-from app.core.database import get_db_session
-from app.main import app
 from app.models import Holding, PortfolioConfig, StrategyBucket, Transaction
 from app.tests.conftest import make_asset, make_current_price
 
 
-@pytest_asyncio.fixture
-async def client(db_session):
-    async def _override_get_db_session():
-        yield db_session
-
-    app.dependency_overrides[get_db_session] = _override_get_db_session
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-    app.dependency_overrides.pop(get_db_session, None)
-
-
-async def _setup_simple_portfolio(session, *, emergency_excluded=False):
+async def _setup_simple_portfolio(session, owner, *, emergency_excluded=False):
     from app.models import AllocationTarget
 
-    config = PortfolioConfig(name="API Inflow Portfolio", base_currency="EGP", emergency_excluded=emergency_excluded)
+    config = PortfolioConfig(user_id=owner.id, name="API Inflow Portfolio", base_currency="EGP", emergency_excluded=emergency_excluded)
     session.add(config)
     await session.flush()
 
@@ -35,7 +19,7 @@ async def _setup_simple_portfolio(session, *, emergency_excluded=False):
     asset = make_asset("APIINFLOW", strategy_bucket_id=bucket.id)
     session.add(asset)
     await session.flush()
-    session.add(Holding(asset_id=asset.id, quantity=Decimal("10")))  # value 100
+    session.add(Holding(portfolio_config_id=config.id, asset_id=asset.id, quantity=Decimal("10")))  # value 100
     await make_current_price(session, asset, Decimal("10"))
     session.add(
         AllocationTarget(portfolio_config_id=config.id, strategy_bucket_id=bucket.id, target_percent=Decimal("50"), priority=1)
@@ -51,15 +35,15 @@ async def _setup_simple_portfolio(session, *, emergency_excluded=False):
     other_asset = make_asset("APIOTHER", strategy_bucket_id=other_bucket.id)
     session.add(other_asset)
     await session.flush()
-    session.add(Holding(asset_id=other_asset.id, quantity=Decimal("90")))  # value 900
+    session.add(Holding(portfolio_config_id=config.id, asset_id=other_asset.id, quantity=Decimal("90")))  # value 900
     await make_current_price(session, other_asset, Decimal("10"))
 
     await session.commit()
     return config, bucket, asset
 
 
-async def test_cash_flow_allocate_returns_expected_structure(db_session, client):
-    await _setup_simple_portfolio(db_session)
+async def test_cash_flow_allocate_returns_expected_structure(db_session, client, owner):
+    await _setup_simple_portfolio(db_session, owner)
 
     response = await client.post("/api/cash-flow/allocate", json={"amount": "50.00"})
     assert response.status_code == 200
@@ -77,26 +61,26 @@ async def test_cash_flow_allocate_returns_expected_structure(db_session, client)
     assert rec["status"] == "ELIGIBLE"
 
 
-async def test_cash_flow_allocate_rejects_zero_amount(db_session, client):
-    await _setup_simple_portfolio(db_session)
+async def test_cash_flow_allocate_rejects_zero_amount(db_session, client, owner):
+    await _setup_simple_portfolio(db_session, owner)
     response = await client.post("/api/cash-flow/allocate", json={"amount": "0"})
     assert response.status_code == 422
 
 
-async def test_cash_flow_allocate_rejects_negative_amount(db_session, client):
-    await _setup_simple_portfolio(db_session)
+async def test_cash_flow_allocate_rejects_negative_amount(db_session, client, owner):
+    await _setup_simple_portfolio(db_session, owner)
     response = await client.post("/api/cash-flow/allocate", json={"amount": "-100"})
     assert response.status_code == 422
 
 
-async def test_cash_flow_allocate_returns_404_when_not_configured(client):
+async def test_cash_flow_allocate_returns_404_when_not_configured(client, owner):
     response = await client.post("/api/cash-flow/allocate", json={"amount": "100"})
     assert response.status_code == 404
 
 
-async def test_cash_flow_allocate_is_read_only(db_session, client):
+async def test_cash_flow_allocate_is_read_only(db_session, client, owner):
     """The endpoint must never create a transaction or modify holdings."""
-    config, bucket, asset = await _setup_simple_portfolio(db_session)
+    config, bucket, asset = await _setup_simple_portfolio(db_session, owner)
 
     async def counts():
         result = {}

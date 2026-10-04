@@ -8,7 +8,16 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Asset, AssetPrice, Holding, PortfolioSnapshotItem, StrategyBucket, Transaction, Watchlist
+from app.models import (
+    Asset,
+    AssetPrice,
+    Holding,
+    PortfolioConfig,
+    PortfolioSnapshotItem,
+    StrategyBucket,
+    Transaction,
+    Watchlist,
+)
 
 
 async def get_asset_by_id(session: AsyncSession, asset_id: UUID) -> Asset | None:
@@ -29,8 +38,42 @@ async def list_assets(session: AsyncSession, *, include_inactive: bool = False) 
     return list(result.scalars().all())
 
 
-async def strategy_bucket_exists(session: AsyncSession, strategy_bucket_id: UUID) -> bool:
-    result = await session.execute(select(StrategyBucket.id).where(StrategyBucket.id == strategy_bucket_id))
+async def strategy_bucket_belongs_to_portfolio(
+    session: AsyncSession, strategy_bucket_id: UUID, portfolio_config_id: UUID
+) -> bool:
+    """Whether the bucket exists AND belongs to this portfolio (P0-3C). A
+    bucket in any other portfolio is indistinguishable from a missing one."""
+    result = await session.execute(
+        select(StrategyBucket.id).where(
+            StrategyBucket.id == strategy_bucket_id, StrategyBucket.portfolio_config_id == portfolio_config_id
+        )
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def list_strategy_bucket_ids_for_portfolio(session: AsyncSession, portfolio_config_id: UUID) -> set[UUID]:
+    result = await session.execute(
+        select(StrategyBucket.id).where(StrategyBucket.portfolio_config_id == portfolio_config_id)
+    )
+    return set(result.scalars().all())
+
+
+async def bucket_belongs_to_another_owned_portfolio(
+    session: AsyncSession, strategy_bucket_id: UUID, portfolio_config_id: UUID
+) -> bool:
+    """Whether the bucket belongs to a DIFFERENT portfolio that has an
+    owner. (A bucket of an unowned legacy portfolio harms nobody by being
+    reassigned.) Used to stop one user re-pointing the shared asset row away
+    from another user's bucket (P0-3C)."""
+    result = await session.execute(
+        select(StrategyBucket.id)
+        .join(PortfolioConfig, StrategyBucket.portfolio_config_id == PortfolioConfig.id)
+        .where(
+            StrategyBucket.id == strategy_bucket_id,
+            PortfolioConfig.id != portfolio_config_id,
+            PortfolioConfig.user_id.is_not(None),
+        )
+    )
     return result.scalar_one_or_none() is not None
 
 

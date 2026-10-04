@@ -1,25 +1,9 @@
 import uuid
 from decimal import Decimal
 
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_db_session
-from app.main import app
 from app.models import PortfolioConfig
 from app.tests.conftest import make_asset
-
-
-@pytest_asyncio.fixture
-async def client(db_session):
-    async def _override_get_db_session():
-        yield db_session
-
-    app.dependency_overrides[get_db_session] = _override_get_db_session
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-    app.dependency_overrides.pop(get_db_session, None)
 
 
 async def _create_asset(session, symbol="APITXN"):
@@ -29,7 +13,7 @@ async def _create_asset(session, symbol="APITXN"):
     return asset
 
 
-async def test_post_transaction_buy_returns_201_with_holding_snapshot(db_session, client):
+async def test_post_transaction_buy_returns_201_with_holding_snapshot(db_session, client, owner, portfolio):
     asset = await _create_asset(db_session)
     response = await client.post(
         "/api/transactions",
@@ -52,7 +36,7 @@ async def test_post_transaction_buy_returns_201_with_holding_snapshot(db_session
     assert body["realized_pnl"] is None
 
 
-async def test_post_transaction_rejects_missing_asset(client):
+async def test_post_transaction_rejects_missing_asset(client, owner, portfolio):
     response = await client.post(
         "/api/transactions",
         json={
@@ -66,7 +50,7 @@ async def test_post_transaction_rejects_missing_asset(client):
     assert response.status_code == 404
 
 
-async def test_post_transaction_rejects_negative_quantity(db_session, client):
+async def test_post_transaction_rejects_negative_quantity(db_session, client, owner, portfolio):
     asset = await _create_asset(db_session, "APITXNNEG")
     response = await client.post(
         "/api/transactions",
@@ -81,7 +65,7 @@ async def test_post_transaction_rejects_negative_quantity(db_session, client):
     assert response.status_code == 422
 
 
-async def test_post_transaction_rejects_zero_quantity(db_session, client):
+async def test_post_transaction_rejects_zero_quantity(db_session, client, owner, portfolio):
     asset = await _create_asset(db_session, "APITXNZERO")
     response = await client.post(
         "/api/transactions",
@@ -96,7 +80,7 @@ async def test_post_transaction_rejects_zero_quantity(db_session, client):
     assert response.status_code == 422
 
 
-async def test_post_transaction_rejects_negative_price(db_session, client):
+async def test_post_transaction_rejects_negative_price(db_session, client, owner, portfolio):
     asset = await _create_asset(db_session, "APITXNNEGPRICE")
     response = await client.post(
         "/api/transactions",
@@ -111,7 +95,7 @@ async def test_post_transaction_rejects_negative_price(db_session, client):
     assert response.status_code == 422
 
 
-async def test_post_transaction_rejects_negative_fees(db_session, client):
+async def test_post_transaction_rejects_negative_fees(db_session, client, owner, portfolio):
     asset = await _create_asset(db_session, "APITXNNEGFEES")
     response = await client.post(
         "/api/transactions",
@@ -127,7 +111,7 @@ async def test_post_transaction_rejects_negative_fees(db_session, client):
     assert response.status_code == 422
 
 
-async def test_post_transaction_rejects_unsupported_transaction_type(db_session, client):
+async def test_post_transaction_rejects_unsupported_transaction_type(db_session, client, owner, portfolio):
     asset = await _create_asset(db_session, "APITXNTYPE")
     response = await client.post(
         "/api/transactions",
@@ -142,7 +126,7 @@ async def test_post_transaction_rejects_unsupported_transaction_type(db_session,
     assert response.status_code == 422
 
 
-async def test_post_transaction_oversell_returns_409(db_session, client):
+async def test_post_transaction_oversell_returns_409(db_session, client, owner, portfolio):
     asset = await _create_asset(db_session, "APITXNOVERSELL")
     await client.post(
         "/api/transactions",
@@ -161,7 +145,7 @@ async def test_post_transaction_oversell_returns_409(db_session, client):
     assert response.status_code == 409
 
 
-async def test_get_transactions_returns_history_most_recent_first(db_session, client):
+async def test_get_transactions_returns_history_most_recent_first(db_session, client, owner, portfolio):
     asset = await _create_asset(db_session, "APITXNHISTORY")
     await client.post(
         "/api/transactions",
@@ -185,8 +169,8 @@ async def test_get_transactions_returns_history_most_recent_first(db_session, cl
     assert ours[1]["notes"] == "oldest"
 
 
-async def test_portfolio_summary_reflects_transaction_after_post(db_session, client):
-    db_session.add(PortfolioConfig(name="API Txn Portfolio", base_currency="EGP"))
+async def test_portfolio_summary_reflects_transaction_after_post(db_session, client, owner, portfolio):
+    db_session.add(PortfolioConfig(user_id=owner.id, name="API Txn Portfolio", base_currency="EGP"))
     await db_session.commit()
     asset = await _create_asset(db_session, "APITXNREFLECT")
     await client.post(
@@ -204,7 +188,7 @@ async def test_portfolio_summary_reflects_transaction_after_post(db_session, cli
     assert Decimal(row["average_cost"]) == Decimal("50")
 
 
-async def test_transaction_endpoint_does_not_leak_internal_error_details(db_session, client):
+async def test_transaction_endpoint_does_not_leak_internal_error_details(db_session, client, owner, portfolio):
     """A 422 from Pydantic validation must never include a raw stack
     trace — only a structured validation error."""
     asset = await _create_asset(db_session, "APITXNNOLEAK")

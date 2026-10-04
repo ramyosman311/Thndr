@@ -1,33 +1,12 @@
 from decimal import Decimal
 
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_db_session
-from app.main import app
 from app.models import AssetType, Holding, PortfolioConfig, StrategyBucket
 from app.tests.conftest import make_asset, make_current_price
 
 
-@pytest_asyncio.fixture
-async def client(db_session):
-    """An httpx client for `app`, wired to use the exact same test-database
-    session/transaction as `db_session` — so data written directly via the
-    ORM in a test is immediately visible to the HTTP call, and everything
-    rolls back together at teardown."""
-
-    async def _override_get_db_session():
-        yield db_session
-
-    app.dependency_overrides[get_db_session] = _override_get_db_session
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-    app.dependency_overrides.pop(get_db_session, None)
-
-
-async def test_portfolio_summary_endpoint_returns_calculated_values(db_session, client):
-    config = PortfolioConfig(name="API Test Portfolio", base_currency="EGP", emergency_excluded=True)
+async def test_portfolio_summary_endpoint_returns_calculated_values(db_session, client, owner):
+    config = PortfolioConfig(user_id=owner.id, name="API Test Portfolio", base_currency="EGP", emergency_excluded=True)
     db_session.add(config)
     await db_session.flush()
 
@@ -35,13 +14,13 @@ async def test_portfolio_summary_endpoint_returns_calculated_values(db_session, 
     db_session.add(emergency_asset)
     await db_session.flush()
     config.emergency_asset_id = emergency_asset.id
-    db_session.add(Holding(asset_id=emergency_asset.id, quantity=Decimal("1")))
+    db_session.add(Holding(portfolio_config_id=config.id, asset_id=emergency_asset.id, quantity=Decimal("1")))
     await make_current_price(db_session, emergency_asset, Decimal("100000"))
 
     stock_asset = make_asset("APISTK")
     db_session.add(stock_asset)
     await db_session.flush()
-    db_session.add(Holding(asset_id=stock_asset.id, quantity=Decimal("100")))
+    db_session.add(Holding(portfolio_config_id=config.id, asset_id=stock_asset.id, quantity=Decimal("100")))
     await make_current_price(db_session, stock_asset, Decimal("100"))
     await db_session.commit()
 
@@ -68,24 +47,24 @@ async def test_portfolio_summary_endpoint_returns_calculated_values(db_session, 
     assert body["total_unrealized_pnl_percent"] is None
 
 
-async def test_portfolio_summary_total_unrealized_pnl_percent_uses_total_cost_basis(db_session, client):
+async def test_portfolio_summary_total_unrealized_pnl_percent_uses_total_cost_basis(db_session, client, owner):
     """Phase 9: the dashboard's headline P/L% aggregates already-computed
     per-holding P/L (never re-derives it) against the portfolio's total
     cost basis — verified end-to-end through the real API."""
-    config = PortfolioConfig(name="API PnL Portfolio", base_currency="EGP", emergency_excluded=False)
+    config = PortfolioConfig(user_id=owner.id, name="API PnL Portfolio", base_currency="EGP", emergency_excluded=False)
     db_session.add(config)
     await db_session.flush()
 
     asset_a = make_asset("APIPNLA")
     db_session.add(asset_a)
     await db_session.flush()
-    db_session.add(Holding(asset_id=asset_a.id, quantity=Decimal("10"), average_cost=Decimal("50")))
+    db_session.add(Holding(portfolio_config_id=config.id, asset_id=asset_a.id, quantity=Decimal("10"), average_cost=Decimal("50")))
     await make_current_price(db_session, asset_a, Decimal("60"))  # cost basis 500, market value 600, pnl +100
 
     asset_b = make_asset("APIPNLB")
     db_session.add(asset_b)
     await db_session.flush()
-    db_session.add(Holding(asset_id=asset_b.id, quantity=Decimal("5"), average_cost=Decimal("100")))
+    db_session.add(Holding(portfolio_config_id=config.id, asset_id=asset_b.id, quantity=Decimal("5"), average_cost=Decimal("100")))
     await make_current_price(db_session, asset_b, Decimal("90"))  # cost basis 500, market value 450, pnl -50
     await db_session.commit()
 
@@ -98,8 +77,8 @@ async def test_portfolio_summary_total_unrealized_pnl_percent_uses_total_cost_ba
     assert Decimal(body["total_unrealized_pnl_percent"]) == expected_percent.quantize(Decimal("0.01"))
 
 
-async def test_portfolio_allocation_endpoint_returns_calculated_percentages(db_session, client):
-    config = PortfolioConfig(name="API Alloc Portfolio", base_currency="EGP", emergency_excluded=False)
+async def test_portfolio_allocation_endpoint_returns_calculated_percentages(db_session, client, owner):
+    config = PortfolioConfig(user_id=owner.id, name="API Alloc Portfolio", base_currency="EGP", emergency_excluded=False)
     db_session.add(config)
     await db_session.flush()
 
@@ -110,7 +89,7 @@ async def test_portfolio_allocation_endpoint_returns_calculated_percentages(db_s
     asset = make_asset("APIALLOC", strategy_bucket_id=bucket.id)
     db_session.add(asset)
     await db_session.flush()
-    db_session.add(Holding(asset_id=asset.id, quantity=Decimal("10")))  # value 100
+    db_session.add(Holding(portfolio_config_id=config.id, asset_id=asset.id, quantity=Decimal("10")))  # value 100
     await make_current_price(db_session, asset, Decimal("10"))
     await db_session.commit()
 
@@ -127,11 +106,11 @@ async def test_portfolio_allocation_endpoint_returns_calculated_percentages(db_s
     assert bucket_out["excluded_from_risk_allocation"] is False
 
 
-async def test_excluded_emergency_bucket_has_null_risk_allocation_percent_via_api(db_session, client):
+async def test_excluded_emergency_bucket_has_null_risk_allocation_percent_via_api(db_session, client, owner):
     """Resolves the Phase 5 caveat at the API boundary: the bucket holding
     the emergency asset must never show a misleading (e.g. >100%) risk
     allocation percentage when excluded from risk allocation."""
-    config = PortfolioConfig(name="Emergency Caveat Portfolio", base_currency="EGP", emergency_excluded=True)
+    config = PortfolioConfig(user_id=owner.id, name="Emergency Caveat Portfolio", base_currency="EGP", emergency_excluded=True)
     db_session.add(config)
     await db_session.flush()
 
@@ -143,13 +122,13 @@ async def test_excluded_emergency_bucket_has_null_risk_allocation_percent_via_ap
     db_session.add(emergency_asset)
     await db_session.flush()
     config.emergency_asset_id = emergency_asset.id
-    db_session.add(Holding(asset_id=emergency_asset.id, quantity=Decimal("1")))
+    db_session.add(Holding(portfolio_config_id=config.id, asset_id=emergency_asset.id, quantity=Decimal("1")))
     await make_current_price(db_session, emergency_asset, Decimal("100000"))
 
     stock_asset = make_asset("CAVEATSTK")
     db_session.add(stock_asset)
     await db_session.flush()
-    db_session.add(Holding(asset_id=stock_asset.id, quantity=Decimal("100")))
+    db_session.add(Holding(portfolio_config_id=config.id, asset_id=stock_asset.id, quantity=Decimal("100")))
     await make_current_price(db_session, stock_asset, Decimal("100"))
     await db_session.commit()
 
@@ -164,25 +143,25 @@ async def test_excluded_emergency_bucket_has_null_risk_allocation_percent_via_ap
     assert Decimal(emergency_out["total_portfolio_percent"]) == Decimal("90.91")
 
 
-async def test_portfolio_summary_returns_404_when_not_configured(client):
+async def test_portfolio_summary_returns_404_when_not_configured(client, owner):
     response = await client.get("/api/portfolio/summary")
     assert response.status_code == 404
     assert "detail" in response.json()
 
 
-async def test_portfolio_allocation_returns_404_when_not_configured(client):
+async def test_portfolio_allocation_returns_404_when_not_configured(client, owner):
     response = await client.get("/api/portfolio/allocation")
     assert response.status_code == 404
 
 
-async def test_api_calls_do_not_mutate_database(db_session, client):
-    config = PortfolioConfig(name="No Mutation Portfolio", base_currency="EGP", emergency_excluded=False)
+async def test_api_calls_do_not_mutate_database(db_session, client, owner):
+    config = PortfolioConfig(user_id=owner.id, name="No Mutation Portfolio", base_currency="EGP", emergency_excluded=False)
     db_session.add(config)
     await db_session.flush()
     asset = make_asset("NOMUT")
     db_session.add(asset)
     await db_session.flush()
-    db_session.add(Holding(asset_id=asset.id, quantity=Decimal("1")))
+    db_session.add(Holding(portfolio_config_id=config.id, asset_id=asset.id, quantity=Decimal("1")))
     await make_current_price(db_session, asset, Decimal("42"))
     await db_session.commit()
 

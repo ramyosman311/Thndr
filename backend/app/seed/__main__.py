@@ -13,11 +13,17 @@ assets/config into a real production portfolio by an operator's mistake
 ALLOW_SEED_IN_PRODUCTION=1 to override for a deliberate case (seeding a
 fresh environment that is flagged APP_ENV=production for other reasons,
 e.g. a pre-launch demo instance).
+
+P0-3C: set SEED_OWNER_USER_ID to a Supabase Auth user UUID to make the
+newly-seeded portfolio owned by that user; otherwise it is unowned and no
+authenticated request can see it. Nothing here ever reassigns an existing
+portfolio.
 """
 
 import asyncio
 import os
 import sys
+from uuid import UUID
 
 from app.core.config import get_settings
 from app.core.database import async_session_factory
@@ -34,8 +40,16 @@ async def main() -> None:
         )
         sys.exit(1)
 
+    owner_user_id = UUID(os.environ["SEED_OWNER_USER_ID"]) if os.environ.get("SEED_OWNER_USER_ID") else None
+    if owner_user_id is None:
+        print(
+            "SEED_OWNER_USER_ID is not set: the seeded portfolio will be unowned and invisible "
+            "to every authenticated request.",
+            file=sys.stderr,
+        )
+
     async with async_session_factory() as session:
-        await run_seed(session)
+        await run_seed(session, owner_user_id)
     print("Seed completed.")
 
 

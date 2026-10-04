@@ -12,8 +12,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import AllocationTarget, StrategyBucket
 
 
-async def get_strategy_bucket_by_id(session: AsyncSession, bucket_id: UUID) -> StrategyBucket | None:
-    result = await session.execute(select(StrategyBucket).where(StrategyBucket.id == bucket_id))
+async def get_strategy_bucket_by_id(
+    session: AsyncSession, bucket_id: UUID, portfolio_config_id: UUID
+) -> StrategyBucket | None:
+    """Scoped to the caller's portfolio (P0-3C): a bucket id belonging to
+    any other portfolio is indistinguishable from one that doesn't exist."""
+    result = await session.execute(
+        select(StrategyBucket).where(
+            StrategyBucket.id == bucket_id, StrategyBucket.portfolio_config_id == portfolio_config_id
+        )
+    )
     return result.scalar_one_or_none()
 
 
@@ -31,8 +39,15 @@ async def list_strategy_buckets(
     return list(result.scalars().all())
 
 
-async def get_allocation_target_by_id(session: AsyncSession, target_id: UUID) -> AllocationTarget | None:
-    result = await session.execute(select(AllocationTarget).where(AllocationTarget.id == target_id))
+async def get_allocation_target_by_id(
+    session: AsyncSession, target_id: UUID, portfolio_config_id: UUID
+) -> AllocationTarget | None:
+    """Scoped to the caller's portfolio (P0-3C)."""
+    result = await session.execute(
+        select(AllocationTarget).where(
+            AllocationTarget.id == target_id, AllocationTarget.portfolio_config_id == portfolio_config_id
+        )
+    )
     return result.scalar_one_or_none()
 
 

@@ -13,12 +13,13 @@ interpolated, extrapolated, or backfilled to make a chart look complete.
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.twr_engine import TWRPoint, cumulative_returns
 from app.models import PortfolioSnapshot
-from app.repositories.portfolio_repository import get_portfolio_config
+from app.repositories.portfolio_repository import get_portfolio_config_for_user
 from app.repositories.snapshot_repository import list_snapshots_ordered
 from app.schemas.analytics import AnalyticsPointOut, PortfolioAnalyticsHistoryOut
 
@@ -90,12 +91,12 @@ def _build_twr_points(eligible: list[_Eligible]) -> list[TWRPoint]:
 
 
 async def get_portfolio_analytics_history(
-    session: AsyncSession, *, range_key: str, now: datetime | None = None
+    session: AsyncSession, user_id: UUID, *, range_key: str, now: datetime | None = None
 ) -> PortfolioAnalyticsHistoryOut:
     if range_key not in _VALID_RANGES:
         raise InvalidRangeError(f"Unsupported range: {range_key}. Must be one of {sorted(_VALID_RANGES)}.")
 
-    config = await get_portfolio_config(session)
+    config = await get_portfolio_config_for_user(session, user_id)
     if config is None:
         raise PortfolioNotConfiguredError("No portfolio configuration exists yet.")
 

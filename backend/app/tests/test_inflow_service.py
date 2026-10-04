@@ -16,11 +16,11 @@ from app.models import (
 from app.seed.seed import run_seed
 from app.services.inflow_service import PortfolioNotConfiguredError, get_inflow_allocation
 from app.services.strategy_service import get_strategy_validation
-from app.tests.conftest import make_asset, make_current_price
+from app.tests.conftest import make_asset, make_current_price, owned_config
 
 
-async def _setup_portfolio(session, *, emergency_excluded=True):
-    config = PortfolioConfig(name="Inflow Test Portfolio", base_currency="EGP", emergency_excluded=emergency_excluded)
+async def _setup_portfolio(session, owner, *, emergency_excluded=True):
+    config = PortfolioConfig(user_id=owner.id, name="Inflow Test Portfolio", base_currency="EGP", emergency_excluded=emergency_excluded)
     session.add(config)
     await session.flush()
 
@@ -33,7 +33,7 @@ async def _setup_portfolio(session, *, emergency_excluded=True):
     session.add(emergency_bucket)
     await session.flush()
     emergency_asset.strategy_bucket_id = emergency_bucket.id
-    session.add(Holding(asset_id=emergency_asset.id, quantity=Decimal("1")))
+    session.add(Holding(portfolio_config_id=config.id, asset_id=emergency_asset.id, quantity=Decimal("1")))
     await make_current_price(session, emergency_asset, Decimal("100000"))
 
     growth_bucket = StrategyBucket(portfolio_config_id=config.id, name="Growth")
@@ -42,7 +42,7 @@ async def _setup_portfolio(session, *, emergency_excluded=True):
     growth_asset = make_asset("INGROWTH", strategy_bucket_id=growth_bucket.id)
     session.add(growth_asset)
     await session.flush()
-    session.add(Holding(asset_id=growth_asset.id, quantity=Decimal("40")))  # 4000
+    session.add(Holding(portfolio_config_id=config.id, asset_id=growth_asset.id, quantity=Decimal("40")))  # 4000
     await make_current_price(session, growth_asset, Decimal("100"))
     growth_target = AllocationTarget(
         portfolio_config_id=config.id, strategy_bucket_id=growth_bucket.id, target_percent=Decimal("55"), priority=1
@@ -55,7 +55,7 @@ async def _setup_portfolio(session, *, emergency_excluded=True):
     defensive_asset = make_asset("INDEFENSE", strategy_bucket_id=defensive_bucket.id)
     session.add(defensive_asset)
     await session.flush()
-    session.add(Holding(asset_id=defensive_asset.id, quantity=Decimal("10")))  # 1000
+    session.add(Holding(portfolio_config_id=config.id, asset_id=defensive_asset.id, quantity=Decimal("10")))  # 1000
     await make_current_price(session, defensive_asset, Decimal("100"))
     defensive_target = AllocationTarget(
         portfolio_config_id=config.id, strategy_bucket_id=defensive_bucket.id, target_percent=Decimal("25"), priority=2
@@ -66,12 +66,12 @@ async def _setup_portfolio(session, *, emergency_excluded=True):
     return config, growth_bucket, defensive_bucket, emergency_bucket, growth_target, defensive_target
 
 
-async def test_emergency_exclusion_never_receives_inflow(db_session):
+async def test_emergency_exclusion_never_receives_inflow(db_session, owner):
     """I. investable value = 4000 + 1000 = 5000 (emergency's 100000 is
     excluded from the denominator entirely)."""
-    await _setup_portfolio(db_session, emergency_excluded=True)
+    await _setup_portfolio(db_session, owner, emergency_excluded=True)
 
-    result = await get_inflow_allocation(db_session, Decimal("100"))
+    result = await get_inflow_allocation(db_session, owner.id, Decimal("100"))
 
     emergency_rec = next(r for r in result.recommendations if r.bucket_name == "Emergency Cash")
     assert emergency_rec.allocated_amount == Decimal("0.00")
@@ -84,14 +84,14 @@ async def test_emergency_exclusion_never_receives_inflow(db_session):
     assert growth_rec.allocated_amount == Decimal("0.00")
 
 
-async def test_emergency_toggle_changes_behavior_dynamically(db_session):
+async def test_emergency_toggle_changes_behavior_dynamically(db_session, owner):
     """J. Flipping emergency_excluded in the DB changes the investable
     denominator used for target-gap math, with no code change."""
     config, growth_bucket, defensive_bucket, emergency_bucket, *_ = await _setup_portfolio(
-        db_session, emergency_excluded=True
+        db_session, owner, emergency_excluded=True
     )
 
-    excluded_result = await get_inflow_allocation(db_session, Decimal("100"))
+    excluded_result = await get_inflow_allocation(db_session, owner.id, Decimal("100"))
     growth_excluded = next(r for r in excluded_result.recommendations if r.bucket_name == "Growth")
     # investable = 5000, target 55% = 2750, current 4000 -> OVER_TARGET
     assert growth_excluded.status == InflowStatus.OVER_TARGET.value
@@ -99,14 +99,14 @@ async def test_emergency_toggle_changes_behavior_dynamically(db_session):
     config.emergency_excluded = False
     await db_session.commit()
 
-    included_result = await get_inflow_allocation(db_session, Decimal("100"))
+    included_result = await get_inflow_allocation(db_session, owner.id, Decimal("100"))
     growth_included = next(r for r in included_result.recommendations if r.bucket_name == "Growth")
     # investable = 105000 (total, emergency now included), target 55% = 57750, current 4000 -> huge gap
     assert growth_included.status == InflowStatus.ELIGIBLE
     assert growth_included.allocated_amount == Decimal("100.00")
 
 
-async def test_seeded_85_percent_strategy_reported_and_not_invented(db_session):
+async def test_seeded_85_percent_strategy_reported_and_not_invented(db_session, owner):
     """K. Uses the real Phase 4 seed. strategy_status must be
     INCOMPLETE_TARGET_ALLOCATION, and Individual Stocks (maximum-only)
     must never receive a share of the inflow even though it's the
@@ -117,14 +117,15 @@ async def test_seeded_85_percent_strategy_reported_and_not_invented(db_session):
     nonzero investable value — otherwise every bucket would report
     NO_CAPACITY rather than exercising the specific behaviors under test.
     """
-    await run_seed(db_session)
+    await run_seed(db_session, owner.id)
+    config = await owned_config(db_session, owner)
 
     tmgh = (await db_session.execute(select(Asset).where(Asset.symbol == "TMGH"))).scalar_one()
-    db_session.add(Holding(asset_id=tmgh.id, quantity=Decimal("10")))  # value 1000
+    db_session.add(Holding(portfolio_config_id=config.id, asset_id=tmgh.id, quantity=Decimal("10")))  # value 1000
     await make_current_price(db_session, tmgh, Decimal("100"))
     await db_session.commit()
 
-    result = await get_inflow_allocation(db_session, Decimal("1000"))
+    result = await get_inflow_allocation(db_session, owner.id, Decimal("1000"))
 
     assert result.strategy_status == StrategyValidationStatus.INCOMPLETE_TARGET_ALLOCATION.value
     assert result.strategy_is_valid is False
@@ -150,23 +151,23 @@ async def test_seeded_85_percent_strategy_reported_and_not_invented(db_session):
     assert growth_rec.status == InflowStatus.ELIGIBLE.value
 
 
-async def test_strategy_engine_is_reused_not_duplicated(db_session):
+async def test_strategy_engine_is_reused_not_duplicated(db_session, owner):
     """T. The strategy_status reported by the inflow allocator must match
     the Strategy Engine's own validation for the identical DB state —
     proving it's the same computation, not a re-implementation."""
-    await run_seed(db_session)
+    await run_seed(db_session, owner.id)
 
-    inflow_result = await get_inflow_allocation(db_session, Decimal("500"))
-    strategy_result = await get_strategy_validation(db_session)
+    inflow_result = await get_inflow_allocation(db_session, owner.id, Decimal("500"))
+    strategy_result = await get_strategy_validation(db_session, owner.id)
 
     assert inflow_result.strategy_status == strategy_result.status
     assert inflow_result.strategy_is_valid == strategy_result.is_valid
 
 
-async def test_dynamic_asset_and_target_recognized_without_code_change(db_session):
+async def test_dynamic_asset_and_target_recognized_without_code_change(db_session, owner):
     """P + Q. Adding a brand-new asset/bucket/target, and changing an
     existing target's percent, both take effect with no code change."""
-    config, growth_bucket, defensive_bucket, *_ = await _setup_portfolio(db_session, emergency_excluded=False)
+    config, growth_bucket, defensive_bucket, *_ = await _setup_portfolio(db_session, owner, emergency_excluded=False)
 
     new_bucket = StrategyBucket(portfolio_config_id=config.id, name="Freshly Added")
     db_session.add(new_bucket)
@@ -174,7 +175,7 @@ async def test_dynamic_asset_and_target_recognized_without_code_change(db_sessio
     new_asset = make_asset("INNEW", strategy_bucket_id=new_bucket.id)
     db_session.add(new_asset)
     await db_session.flush()
-    db_session.add(Holding(asset_id=new_asset.id, quantity=Decimal("0"), current_price=Decimal("0")))
+    db_session.add(Holding(portfolio_config_id=config.id, asset_id=new_asset.id, quantity=Decimal("0"), current_price=Decimal("0")))
     db_session.add(
         AllocationTarget(
             portfolio_config_id=config.id, strategy_bucket_id=new_bucket.id, target_percent=Decimal("10"), priority=5
@@ -182,7 +183,7 @@ async def test_dynamic_asset_and_target_recognized_without_code_change(db_sessio
     )
     await db_session.commit()
 
-    result = await get_inflow_allocation(db_session, Decimal("10"))
+    result = await get_inflow_allocation(db_session, owner.id, Decimal("10"))
     new_rec = next(r for r in result.recommendations if r.bucket_name == "Freshly Added")
     assert new_rec.target_gap is not None  # engine recognized the dynamic bucket/target automatically
 
@@ -195,16 +196,16 @@ async def test_dynamic_asset_and_target_recognized_without_code_change(db_sessio
     before_gap = next(r for r in result.recommendations if r.bucket_name == "Growth").target_gap
     target.target_percent = Decimal("10")
     await db_session.commit()
-    after_result = await get_inflow_allocation(db_session, Decimal("10"))
+    after_result = await get_inflow_allocation(db_session, owner.id, Decimal("10"))
     after_gap = next(r for r in after_result.recommendations if r.bucket_name == "Growth").target_gap
     assert after_gap != before_gap
 
 
-async def test_dynamic_allow_new_buy_toggle_changes_result(db_session):
+async def test_dynamic_allow_new_buy_toggle_changes_result(db_session, owner):
     """R."""
-    config, growth_bucket, *_ = await _setup_portfolio(db_session, emergency_excluded=False)
+    config, growth_bucket, *_ = await _setup_portfolio(db_session, owner, emergency_excluded=False)
 
-    before = await get_inflow_allocation(db_session, Decimal("50"))
+    before = await get_inflow_allocation(db_session, owner.id, Decimal("50"))
     growth_before = next(r for r in before.recommendations if r.bucket_name == "Growth")
     assert growth_before.allocated_amount == Decimal("50.00")
 
@@ -216,32 +217,32 @@ async def test_dynamic_allow_new_buy_toggle_changes_result(db_session):
     target.allow_new_buy = False
     await db_session.commit()
 
-    after = await get_inflow_allocation(db_session, Decimal("50"))
+    after = await get_inflow_allocation(db_session, owner.id, Decimal("50"))
     growth_after = next(r for r in after.recommendations if r.bucket_name == "Growth")
     assert growth_after.allocated_amount == Decimal("0.00")
     assert growth_after.status == InflowStatus.BUY_DISABLED.value
 
 
-async def test_missing_portfolio_configuration_raises_explicit_error(db_session):
+async def test_missing_portfolio_configuration_raises_explicit_error(db_session, owner):
     try:
-        await get_inflow_allocation(db_session, Decimal("100"))
+        await get_inflow_allocation(db_session, owner.id, Decimal("100"))
         assert False, "expected PortfolioNotConfiguredError"
     except PortfolioNotConfiguredError:
         pass
 
 
-async def test_zero_amount_is_rejected_at_service_layer(db_session):
-    await _setup_portfolio(db_session, emergency_excluded=False)
+async def test_zero_amount_is_rejected_at_service_layer(db_session, owner):
+    await _setup_portfolio(db_session, owner, emergency_excluded=False)
     try:
-        await get_inflow_allocation(db_session, Decimal("0"))
+        await get_inflow_allocation(db_session, owner.id, Decimal("0"))
         assert False, "expected ValueError"
     except ValueError:
         pass
 
 
-async def test_inflow_allocator_has_no_side_effects(db_session):
+async def test_inflow_allocator_has_no_side_effects(db_session, owner):
     """O. Calling the allocator repeatedly must never write to the DB."""
-    await run_seed(db_session)
+    await run_seed(db_session, owner.id)
 
     async def counts():
         result = {}
@@ -251,8 +252,8 @@ async def test_inflow_allocator_has_no_side_effects(db_session):
         return result
 
     before = await counts()
-    await get_inflow_allocation(db_session, Decimal("1000"))
-    await get_inflow_allocation(db_session, Decimal("5000"))
+    await get_inflow_allocation(db_session, owner.id, Decimal("1000"))
+    await get_inflow_allocation(db_session, owner.id, Decimal("5000"))
     after = await counts()
 
     assert before == after

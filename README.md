@@ -39,12 +39,13 @@ functionally by apps like Thndr, but an independent, standalone product.
 > live architecture then found every non-health API route completely
 > unauthenticated (`ARCHITECTURE.md`'s own documented "Authentication
 > Boundary" gap, never previously enforced in code). **P0-2 — Secure the
-> Public Backend** closes that gap: every route except `/api/health` and
-> `/api/health/ready` now requires `API_AUTH_TOKEN`
-> (`Authorization: Bearer <token>`, `hmac.compare_digest`), the backend
-> fails closed at startup if `DEV_MODE=false` and the token is unset, and
-> the token is never shipped to the browser — a new Next.js server-side
-> proxy (`frontend/app/api/[...path]/route.ts`) holds it instead. See
+> Public Backend** closed that gap with a shared token; **P0-3C — Ownership
+> Enforcement** has since replaced it: every route except `/api/health` and
+> `/api/health/ready` now requires a verified Supabase JWT
+> (`Authorization: Bearer <JWT>`), all user-owned data is scoped to that
+> verified user, and `API_AUTH_TOKEN` survives only as the server-to-server
+> `X-Internal-Proxy-Token` the Vercel proxy adds (never shipped to the
+> browser). See
 > [DEPLOYMENT.md](./DEPLOYMENT.md), "Authentication" and
 > [DECISIONS.md](./DECISIONS.md), "P0-2 — Secure the Public Backend" for
 > the full design. This still requires the `API_AUTH_TOKEN`/

@@ -12,6 +12,13 @@ recommendation's own `severity`/`type` — it never recomputes an
 allocation percent, a price condition, or a BUY/REDUCE amount (see
 FINANCIAL_RULES.md, "Notification Layer Rules").
 
+P0-3C: notifications are user-owned. Every function takes the verified
+`user_id`, resolves that user's portfolio server-side, and only ever
+creates, lists, or mutates notifications belonging to it -- another
+portfolio's notification id behaves exactly like one that doesn't exist.
+The owning portfolio on a new notification is always derived server-side
+from the evaluation that produced it, never from request input.
+
 Read-only w.r.t. financial state: the only writes here are to the new
 `notifications` table (non-financial, user-facing metadata) plus
 whatever `evaluate_alerts` itself already writes
@@ -31,6 +38,7 @@ from app.domain.notification_engine import (
 )
 from app.models import Notification
 from app.models.enums import NotificationCategory
+from app.repositories.portfolio_repository import get_portfolio_config_for_user
 from app.repositories.notification_repository import (
     get_active_notification_by_source_id,
     get_notification_by_id,
@@ -45,7 +53,8 @@ from app.services.recommendation_service import get_portfolio_recommendations
 
 
 class NotificationNotFoundError(Exception):
-    """Raised when the referenced notification_id does not exist."""
+    """Raised when the referenced notification_id does not exist (in the
+    caller's portfolio)."""
 
 
 def _to_out(notification: Notification) -> NotificationOut:
@@ -63,7 +72,7 @@ def _to_out(notification: Notification) -> NotificationOut:
     )
 
 
-async def _sync_alert_notifications(session: AsyncSession) -> None:
+async def _sync_alert_notifications(session: AsyncSession, user_id: UUID, portfolio_config_id: UUID) -> None:
     """Reuses `alert_service.evaluate_alerts` (unchanged, including its
     Telegram-dispatch gating, which this call always bypasses by passing
     no notifier — in-app visibility is independent of the Telegram
@@ -72,7 +81,7 @@ async def _sync_alert_notifications(session: AsyncSession) -> None:
     are ALREADY edge-detected by alert_engine.py — this function only
     mirrors that decision into the notifications table, never
     re-derives it."""
-    evaluation = await evaluate_alerts(session)
+    evaluation = await evaluate_alerts(session, user_id)
 
     for entry in evaluation.results:
         content = build_alert_notification_content(
@@ -85,10 +94,11 @@ async def _sync_alert_notifications(session: AsyncSession) -> None:
             continue
 
         if entry.is_new_trigger:
-            existing = await get_active_notification_by_source_id(session, content.source_id)
+            existing = await get_active_notification_by_source_id(session, content.source_id, portfolio_config_id)
             if existing is None:
                 session.add(
                     Notification(
+                        portfolio_config_id=portfolio_config_id,
                         source_id=content.source_id,
                         category=content.category,
                         severity=content.severity,
@@ -100,7 +110,7 @@ async def _sync_alert_notifications(session: AsyncSession) -> None:
                     )
                 )
         elif entry.should_clear:
-            existing = await get_active_notification_by_source_id(session, content.source_id)
+            existing = await get_active_notification_by_source_id(session, content.source_id, portfolio_config_id)
             if existing is not None:
                 existing.resolved_at = datetime.now(timezone.utc)
 
@@ -121,7 +131,9 @@ class _EntryAsCheckResult:
         self.reason = entry.reason
 
 
-async def _sync_recommendation_notifications(session: AsyncSession) -> None:
+async def _sync_recommendation_notifications(
+    session: AsyncSession, user_id: UUID, portfolio_config_id: UUID
+) -> None:
     """Reuses `recommendation_service.get_portfolio_recommendations`
     (Phase 18, unchanged) — never recomputes a recommendation. Since
     recommendations are pure/stateless (recomputed fresh every call,
@@ -133,7 +145,7 @@ async def _sync_recommendation_notifications(session: AsyncSession) -> None:
     instead of duplicating a new stateful field onto the recommendation
     engine itself."""
     try:
-        recommendations = await get_portfolio_recommendations(session)
+        recommendations = await get_portfolio_recommendations(session, user_id)
     except RebalancingNotConfiguredError:
         return
 
@@ -151,10 +163,11 @@ async def _sync_recommendation_notifications(session: AsyncSession) -> None:
             continue
         current_source_ids.add(content.source_id)
 
-        existing = await get_active_notification_by_source_id(session, content.source_id)
+        existing = await get_active_notification_by_source_id(session, content.source_id, portfolio_config_id)
         if existing is None:
             session.add(
                 Notification(
+                    portfolio_config_id=portfolio_config_id,
                     source_id=content.source_id,
                     category=content.category,
                     severity=content.severity,
@@ -166,31 +179,48 @@ async def _sync_recommendation_notifications(session: AsyncSession) -> None:
                 )
             )
 
-    previously_active = await list_active_source_ids(session, NotificationCategory.RECOMMENDATION_ALERT)
+    previously_active = await list_active_source_ids(
+        session, NotificationCategory.RECOMMENDATION_ALERT, portfolio_config_id
+    )
     for stale_source_id in previously_active - current_source_ids:
-        existing = await get_active_notification_by_source_id(session, stale_source_id)
+        existing = await get_active_notification_by_source_id(session, stale_source_id, portfolio_config_id)
         if existing is not None:
             existing.resolved_at = datetime.now(timezone.utc)
 
 
-async def sync_notifications(session: AsyncSession) -> None:
-    await _sync_alert_notifications(session)
-    await _sync_recommendation_notifications(session)
+async def sync_notifications(session: AsyncSession, user_id: UUID) -> None:
+    """Evaluate and persist notifications for THIS user's portfolio only. A
+    user with no portfolio has nothing to notify about."""
+    config = await get_portfolio_config_for_user(session, user_id)
+    if config is None:
+        return
+    await _sync_alert_notifications(session, user_id, config.id)
+    await _sync_recommendation_notifications(session, user_id, config.id)
     await session.commit()
 
 
-async def list_notifications(session: AsyncSession) -> NotificationsOut:
-    await sync_notifications(session)
-    notifications = await repo_list_notifications(session)
-    unread = await list_unread_notifications(session)
+def _empty() -> NotificationsOut:
+    return NotificationsOut(unread_count=0, notifications=[])
+
+
+async def list_notifications(session: AsyncSession, user_id: UUID) -> NotificationsOut:
+    await sync_notifications(session, user_id)
+    config = await get_portfolio_config_for_user(session, user_id)
+    if config is None:
+        return _empty()
+    notifications = await repo_list_notifications(session, config.id)
+    unread = await list_unread_notifications(session, config.id)
     return NotificationsOut(
         unread_count=len(unread),
         notifications=[_to_out(n) for n in notifications],
     )
 
 
-async def mark_notification_read(session: AsyncSession, notification_id: UUID) -> NotificationOut:
-    notification = await get_notification_by_id(session, notification_id)
+async def mark_notification_read(session: AsyncSession, user_id: UUID, notification_id: UUID) -> NotificationOut:
+    config = await get_portfolio_config_for_user(session, user_id)
+    notification = (
+        await get_notification_by_id(session, notification_id, config.id) if config is not None else None
+    )
     if notification is None:
         raise NotificationNotFoundError(f"Notification {notification_id} does not exist.")
     if notification.read_at is None:
@@ -199,11 +229,14 @@ async def mark_notification_read(session: AsyncSession, notification_id: UUID) -
     return _to_out(notification)
 
 
-async def mark_all_notifications_read(session: AsyncSession) -> NotificationsOut:
-    unread = await list_unread_notifications(session)
+async def mark_all_notifications_read(session: AsyncSession, user_id: UUID) -> NotificationsOut:
+    config = await get_portfolio_config_for_user(session, user_id)
+    if config is None:
+        return _empty()
+    unread = await list_unread_notifications(session, config.id)
     now = datetime.now(timezone.utc)
     for notification in unread:
         notification.read_at = now
     await session.commit()
-    notifications = await repo_list_notifications(session)
+    notifications = await repo_list_notifications(session, config.id)
     return NotificationsOut(unread_count=0, notifications=[_to_out(n) for n in notifications])

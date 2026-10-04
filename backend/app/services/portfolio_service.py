@@ -11,6 +11,7 @@ never via float conversion (see FINANCIAL_RULES.md, "Precision").
 """
 
 from decimal import ROUND_HALF_UP, Decimal
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,7 +22,7 @@ from app.repositories.portfolio_repository import (
     get_active_allocation_targets,
     get_active_assets,
     get_active_strategy_buckets,
-    get_portfolio_config,
+    get_portfolio_config_for_user,
 )
 from app.schemas.portfolio import BucketAllocationOut, HoldingPnLOut, PortfolioAllocationOut, PortfolioSummaryOut
 from app.services import price_service
@@ -41,12 +42,12 @@ def _round(value: Decimal) -> Decimal:
     return value.quantize(_PRESENTATION_QUANT, rounding=ROUND_HALF_UP)
 
 
-async def get_portfolio_summary(session: AsyncSession) -> PortfolioSummaryOut:
-    config = await get_portfolio_config(session)
+async def get_portfolio_summary(session: AsyncSession, user_id: UUID) -> PortfolioSummaryOut:
+    config = await get_portfolio_config_for_user(session, user_id)
     if config is None:
         raise PortfolioNotConfiguredError("No portfolio configuration exists yet.")
 
-    assets = await get_active_assets(session)
+    assets = await get_active_assets(session, config.id)
     prices = await price_service.get_prices_for_assets_in_base_currency(session, assets, config.base_currency)
     positions = build_positions(assets, config.emergency_asset_id, prices, config.base_currency)
     totals = calculate_portfolio_totals(positions, emergency_excluded=config.emergency_excluded)
@@ -135,12 +136,12 @@ async def get_portfolio_summary(session: AsyncSession) -> PortfolioSummaryOut:
     )
 
 
-async def get_portfolio_allocation(session: AsyncSession) -> PortfolioAllocationOut:
-    config = await get_portfolio_config(session)
+async def get_portfolio_allocation(session: AsyncSession, user_id: UUID) -> PortfolioAllocationOut:
+    config = await get_portfolio_config_for_user(session, user_id)
     if config is None:
         raise PortfolioNotConfiguredError("No portfolio configuration exists yet.")
 
-    assets = await get_active_assets(session)
+    assets = await get_active_assets(session, config.id)
     prices = await price_service.get_prices_for_assets_in_base_currency(session, assets, config.base_currency)
     positions = build_positions(assets, config.emergency_asset_id, prices, config.base_currency)
     totals = calculate_portfolio_totals(positions, emergency_excluded=config.emergency_excluded)

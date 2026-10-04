@@ -42,8 +42,8 @@ def _forbid_any_live_provider_call(monkeypatch):
     monkeypatch.setattr(provider_registry, "get_provider", _fail)
 
 
-async def _seed_priced_portfolio(session):
-    config = PortfolioConfig(name="Non-Blocking Test Portfolio", base_currency="EGP", emergency_excluded=False)
+async def _seed_priced_portfolio(session, owner):
+    config = PortfolioConfig(user_id=owner.id, name="Non-Blocking Test Portfolio", base_currency="EGP", emergency_excluded=False)
     session.add(config)
     await session.flush()
 
@@ -54,7 +54,7 @@ async def _seed_priced_portfolio(session):
     asset = make_asset("NOBLOCK", strategy_bucket_id=bucket.id)
     session.add(asset)
     await session.flush()
-    session.add(Holding(asset_id=asset.id, quantity=Decimal("10")))
+    session.add(Holding(portfolio_config_id=config.id, asset_id=asset.id, quantity=Decimal("10")))
     await make_current_price(session, asset, Decimal("100"))
     session.add(
         AllocationTarget(portfolio_config_id=config.id, strategy_bucket_id=bucket.id, target_percent=Decimal("100"))
@@ -63,32 +63,32 @@ async def _seed_priced_portfolio(session):
     return config, asset
 
 
-async def test_portfolio_summary_never_calls_a_live_provider(db_session):
-    await _seed_priced_portfolio(db_session)
-    summary = await portfolio_service.get_portfolio_summary(db_session)
+async def test_portfolio_summary_never_calls_a_live_provider(db_session, owner):
+    await _seed_priced_portfolio(db_session, owner)
+    summary = await portfolio_service.get_portfolio_summary(db_session, owner.id)
     assert summary.total_value == Decimal("1000.00")
 
 
-async def test_portfolio_allocation_never_calls_a_live_provider(db_session):
-    await _seed_priced_portfolio(db_session)
-    allocation = await portfolio_service.get_portfolio_allocation(db_session)
+async def test_portfolio_allocation_never_calls_a_live_provider(db_session, owner):
+    await _seed_priced_portfolio(db_session, owner)
+    allocation = await portfolio_service.get_portfolio_allocation(db_session, owner.id)
     assert allocation.total_portfolio_value == Decimal("1000.00")
 
 
-async def test_alert_evaluation_never_calls_a_live_provider(db_session):
-    _, asset = await _seed_priced_portfolio(db_session)
-    entry = await watchlist_service.add_to_watchlist(db_session, asset.id)
-    await alert_service.create_alert_rule(db_session, entry.id, price_target_enabled=True, price_target=Decimal("50"))
+async def test_alert_evaluation_never_calls_a_live_provider(db_session, owner):
+    _, asset = await _seed_priced_portfolio(db_session, owner)
+    entry = await watchlist_service.add_to_watchlist(db_session, owner.id, asset.id)
+    await alert_service.create_alert_rule(db_session, owner.id, entry.id, price_target_enabled=True, price_target=Decimal("50"))
 
-    evaluation = await alert_service.evaluate_alerts(db_session)
+    evaluation = await alert_service.evaluate_alerts(db_session, owner.id)
     price_check = next(r for r in evaluation.results if r.alert_type == "PRICE_TARGET")
     assert price_check.condition_met is True  # 100 >= 50, computed from the DB observation alone
 
 
-async def test_transaction_creation_never_calls_a_live_provider(db_session):
-    _, asset = await _seed_priced_portfolio(db_session)
+async def test_transaction_creation_never_calls_a_live_provider(db_session, owner):
+    _, asset = await _seed_priced_portfolio(db_session, owner)
     result = await transaction_service.create_transaction(
-        db_session,
+        db_session, owner.id,
         asset_id=asset.id,
         transaction_type="BUY",
         quantity=Decimal("1"),

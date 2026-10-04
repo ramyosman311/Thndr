@@ -667,3 +667,119 @@ async def test_ownership_columns_are_additive_existing_rows_unaffected(db_sessio
 
     await db_session.refresh(watchlist_entry)
     assert watchlist_entry.portfolio_config_id is None
+
+
+# --- P0-3C: per-portfolio uniqueness (holdings / watchlist / notifications) --
+# See DECISIONS.md, "P0-3C". The ownership boundary only works if two users can
+# each hold/watch the same global asset and have the same notification active;
+# the partial "unowned" indexes keep the original guarantee for legacy rows.
+
+
+async def _two_portfolios_and_an_asset(db_session, symbol):
+    first, second = make_portfolio_config(name="P-one"), make_portfolio_config(name="P-two")
+    asset = make_asset(symbol=symbol)
+    db_session.add_all([first, second, asset])
+    await db_session.flush()
+    return first, second, asset
+
+
+async def test_two_portfolios_can_each_hold_the_same_global_asset(db_session):
+    first, second, asset = await _two_portfolios_and_an_asset(db_session, "PERPORTH")
+    db_session.add_all(
+        [
+            Holding(portfolio_config_id=first.id, asset_id=asset.id, quantity=Decimal("1")),
+            Holding(portfolio_config_id=second.id, asset_id=asset.id, quantity=Decimal("2")),
+        ]
+    )
+    await db_session.commit()  # must not raise
+
+
+async def test_one_portfolio_cannot_hold_the_same_asset_twice(db_session):
+    first, _, asset = await _two_portfolios_and_an_asset(db_session, "DUPHOLD")
+    db_session.add(Holding(portfolio_config_id=first.id, asset_id=asset.id, quantity=Decimal("1")))
+    await db_session.commit()
+
+    db_session.add(Holding(portfolio_config_id=first.id, asset_id=asset.id, quantity=Decimal("2")))
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+
+async def test_unowned_legacy_holdings_still_cannot_duplicate_an_asset(db_session):
+    asset = make_asset(symbol="LEGACYHOLD")
+    db_session.add(asset)
+    await db_session.flush()
+    db_session.add(Holding(asset_id=asset.id, quantity=Decimal("1")))
+    await db_session.commit()
+
+    db_session.add(Holding(asset_id=asset.id, quantity=Decimal("2")))
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+
+async def test_two_portfolios_can_each_watch_the_same_global_asset(db_session):
+    first, second, asset = await _two_portfolios_and_an_asset(db_session, "PERPORTW")
+    db_session.add_all(
+        [Watchlist(portfolio_config_id=first.id, asset_id=asset.id), Watchlist(portfolio_config_id=second.id, asset_id=asset.id)]
+    )
+    await db_session.commit()  # must not raise
+
+
+async def test_one_portfolio_cannot_watch_the_same_asset_twice(db_session):
+    first, _, asset = await _two_portfolios_and_an_asset(db_session, "DUPWATCH")
+    db_session.add(Watchlist(portfolio_config_id=first.id, asset_id=asset.id))
+    await db_session.commit()
+
+    db_session.add(Watchlist(portfolio_config_id=first.id, asset_id=asset.id))
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+
+def _notification(portfolio_config_id, source_id="ALERT:same:PRICE_TARGET", **kwargs):
+    return Notification(
+        portfolio_config_id=portfolio_config_id,
+        source_id=source_id,
+        category=NotificationCategory.PRICE_ALERT,
+        severity=NotificationSeverity.INFO,
+        title="t",
+        message="m",
+        **kwargs,
+    )
+
+
+async def test_two_portfolios_can_have_the_same_notification_source_active(db_session):
+    first, second, _ = await _two_portfolios_and_an_asset(db_session, "PERPORTN")
+    db_session.add_all([_notification(first.id), _notification(second.id)])
+    await db_session.commit()  # must not raise
+
+
+async def test_one_portfolio_cannot_have_a_notification_source_active_twice(db_session):
+    first, _, _ = await _two_portfolios_and_an_asset(db_session, "DUPNOTIF")
+    db_session.add(_notification(first.id))
+    await db_session.commit()
+
+    db_session.add(_notification(first.id))
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+
+async def test_a_resolved_notification_frees_its_source_id_within_the_portfolio(db_session):
+    first, _, _ = await _two_portfolios_and_an_asset(db_session, "RESOLVEDN")
+    db_session.add(_notification(first.id, resolved_at=datetime.now(timezone.utc)))
+    await db_session.commit()
+
+    db_session.add(_notification(first.id))
+    await db_session.commit()  # must not raise
+
+
+async def test_unowned_legacy_notifications_still_cannot_duplicate_an_active_source(db_session):
+    db_session.add(_notification(None, source_id="LEGACY:dup"))
+    await db_session.commit()
+
+    db_session.add(_notification(None, source_id="LEGACY:dup"))
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()

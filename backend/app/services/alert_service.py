@@ -7,6 +7,14 @@ feature depends on) but never to holdings, transactions, snapshots,
 allocation_targets, or portfolio_configs (Phase 8 approval, "Side
 Effects").
 
+P0-3C: alert rules are user-owned. Every function takes the verified
+`user_id`, resolves that user's portfolio server-side, and only ever reads
+or writes rules (and watchlist entries) belonging to it. A rule is created
+with the portfolio derived from the watchlist entry it attaches to --
+never from anything the client supplied -- so a rule can't be attached to
+another user's watchlist or portfolio. An id from another portfolio behaves
+exactly like one that doesn't exist.
+
 Reuse, not duplication: allocation-related checks are driven entirely by
 `portfolio_service.get_portfolio_allocation()` (Phase 5/6) — this module
 never recomputes an allocation percentage itself.
@@ -27,7 +35,7 @@ from app.domain.alert_engine import (
     check_rebalance_suggestion,
 )
 from app.models import AlertRule
-from app.repositories.portfolio_repository import get_portfolio_config
+from app.repositories.portfolio_repository import get_portfolio_config_for_user
 from app.repositories.watchlist_repository import (
     get_alert_rule_by_id,
     get_alert_rule_by_watchlist_id,
@@ -55,6 +63,28 @@ class InvalidAlertRuleConfigurationError(Exception):
     """Raised when an enabled check is missing its required threshold."""
 
 
+# The only columns a caller may ever change on an existing rule. Ownership
+# columns (portfolio_config_id, watchlist_id) are deliberately absent: they
+# are set once at creation, server-side, and are never client-writable.
+_UPDATABLE_FIELDS = frozenset(
+    {
+        "enabled",
+        "allocation_alert_enabled",
+        "allocation_max_percent",
+        "price_target_enabled",
+        "price_target",
+        "dip_buy_enabled",
+        "dip_buy_price",
+        "telegram_enabled",
+    }
+)
+
+
+async def _owned_portfolio_id_or_none(session: AsyncSession, user_id: UUID) -> UUID | None:
+    config = await get_portfolio_config_for_user(session, user_id)
+    return config.id if config is not None else None
+
+
 def _validate_config(
     *,
     allocation_alert_enabled: bool,
@@ -75,12 +105,17 @@ def _validate_config(
         raise InvalidAlertRuleConfigurationError("; ".join(errors))
 
 
-async def create_alert_rule(session: AsyncSession, watchlist_id: UUID, **fields) -> AlertRuleOut:
-    watchlist = await get_watchlist_entry_by_id(session, watchlist_id)
+async def create_alert_rule(session: AsyncSession, user_id: UUID, watchlist_id: UUID, **fields) -> AlertRuleOut:
+    portfolio_config_id = await _owned_portfolio_id_or_none(session, user_id)
+    watchlist = (
+        await get_watchlist_entry_by_id(session, watchlist_id, portfolio_config_id)
+        if portfolio_config_id is not None
+        else None
+    )
     if watchlist is None:
         raise WatchlistEntryNotFoundError(f"Watchlist entry {watchlist_id} does not exist.")
 
-    existing = await get_alert_rule_by_watchlist_id(session, watchlist_id)
+    existing = await get_alert_rule_by_watchlist_id(session, watchlist_id, portfolio_config_id)
     if existing is not None:
         raise DuplicateAlertRuleError(f"Watchlist entry {watchlist_id} already has an alert rule.")
 
@@ -104,14 +139,21 @@ async def create_alert_rule(session: AsyncSession, watchlist_id: UUID, **fields)
         dip_buy_price=merged["dip_buy_price"],
     )
 
-    rule = AlertRule(watchlist_id=watchlist_id, **merged)
+    rule = AlertRule(portfolio_config_id=watchlist.portfolio_config_id, watchlist_id=watchlist.id, **merged)
     session.add(rule)
     await session.commit()
     return to_alert_rule_out(rule)
 
 
-async def update_alert_rule(session: AsyncSession, alert_rule_id: UUID, updates: dict) -> AlertRuleOut:
-    rule = await get_alert_rule_by_id(session, alert_rule_id)
+async def update_alert_rule(
+    session: AsyncSession, user_id: UUID, alert_rule_id: UUID, updates: dict
+) -> AlertRuleOut:
+    portfolio_config_id = await _owned_portfolio_id_or_none(session, user_id)
+    rule = (
+        await get_alert_rule_by_id(session, alert_rule_id, portfolio_config_id)
+        if portfolio_config_id is not None
+        else None
+    )
     if rule is None:
         raise AlertRuleNotFoundError(f"Alert rule {alert_rule_id} does not exist.")
 
@@ -126,30 +168,47 @@ async def update_alert_rule(session: AsyncSession, alert_rule_id: UUID, updates:
     _validate_config(**merged)
 
     for field_name, value in updates.items():
+        if field_name not in _UPDATABLE_FIELDS:
+            raise ValueError(f"{field_name!r} is not an updatable alert rule field.")
         setattr(rule, field_name, value)
     await session.commit()
     return to_alert_rule_out(rule)
 
 
-async def get_alert_rule(session: AsyncSession, alert_rule_id: UUID) -> AlertRuleOut:
-    rule = await get_alert_rule_by_id(session, alert_rule_id)
+async def get_alert_rule(session: AsyncSession, user_id: UUID, alert_rule_id: UUID) -> AlertRuleOut:
+    portfolio_config_id = await _owned_portfolio_id_or_none(session, user_id)
+    rule = (
+        await get_alert_rule_by_id(session, alert_rule_id, portfolio_config_id)
+        if portfolio_config_id is not None
+        else None
+    )
     if rule is None:
         raise AlertRuleNotFoundError(f"Alert rule {alert_rule_id} does not exist.")
     return to_alert_rule_out(rule)
 
 
-async def get_alert_rule_for_watchlist(session: AsyncSession, watchlist_id: UUID) -> AlertRuleOut:
-    watchlist = await get_watchlist_entry_by_id(session, watchlist_id)
+async def get_alert_rule_for_watchlist(session: AsyncSession, user_id: UUID, watchlist_id: UUID) -> AlertRuleOut:
+    portfolio_config_id = await _owned_portfolio_id_or_none(session, user_id)
+    watchlist = (
+        await get_watchlist_entry_by_id(session, watchlist_id, portfolio_config_id)
+        if portfolio_config_id is not None
+        else None
+    )
     if watchlist is None:
         raise WatchlistEntryNotFoundError(f"Watchlist entry {watchlist_id} does not exist.")
-    rule = await get_alert_rule_by_watchlist_id(session, watchlist_id)
+    rule = await get_alert_rule_by_watchlist_id(session, watchlist_id, portfolio_config_id)
     if rule is None:
         raise AlertRuleNotFoundError(f"Watchlist entry {watchlist_id} has no alert rule configured.")
     return to_alert_rule_out(rule)
 
 
-async def delete_alert_rule(session: AsyncSession, alert_rule_id: UUID) -> None:
-    rule = await get_alert_rule_by_id(session, alert_rule_id)
+async def delete_alert_rule(session: AsyncSession, user_id: UUID, alert_rule_id: UUID) -> None:
+    portfolio_config_id = await _owned_portfolio_id_or_none(session, user_id)
+    rule = (
+        await get_alert_rule_by_id(session, alert_rule_id, portfolio_config_id)
+        if portfolio_config_id is not None
+        else None
+    )
     if rule is None:
         raise AlertRuleNotFoundError(f"Alert rule {alert_rule_id} does not exist.")
     await session.delete(rule)
@@ -157,10 +216,11 @@ async def delete_alert_rule(session: AsyncSession, alert_rule_id: UUID) -> None:
 
 
 async def evaluate_alerts(
-    session: AsyncSession, notifier: NotificationDispatcher | None = None
+    session: AsyncSession, user_id: UUID, notifier: NotificationDispatcher | None = None
 ) -> AlertEvaluationOut:
     """Evaluate every enabled alert rule on every enabled watchlist entry
-    whose asset is active. Returns one entry per check performed (not
+    of THE CALLER'S portfolio whose asset is active (P0-3C: never another
+    user's rules, and never a global/first portfolio). Returns one entry per check performed (not
     just new triggers) so the caller gets a full diagnostic response;
     `is_new_trigger` marks which ones are new events for a notifier to
     deliver.
@@ -195,16 +255,19 @@ async def evaluate_alerts(
     telegram_globally_configured = bool(
         settings.telegram_enabled and settings.telegram_bot_token and settings.telegram_chat_id
     )
-    portfolio_config = await get_portfolio_config(session)
-    portfolio_telegram_enabled = bool(portfolio_config and portfolio_config.telegram_enabled)
+    portfolio_config = await get_portfolio_config_for_user(session, user_id)
+    if portfolio_config is None:
+        # No portfolio means no watchlist and no rules to evaluate.
+        return AlertEvaluationOut(results=[])
+    portfolio_telegram_enabled = bool(portfolio_config.telegram_enabled)
 
     try:
-        allocation = await get_portfolio_allocation(session)
+        allocation = await get_portfolio_allocation(session, user_id)
         bucket_by_id = {str(b.strategy_bucket_id): b for b in allocation.buckets}
     except PortfolioNotConfiguredError:
         bucket_by_id = {}
 
-    candidates = await list_evaluation_candidates(session)
+    candidates = await list_evaluation_candidates(session, portfolio_config.id)
 
     # Batched, native-currency prices for every candidate asset (Phase
     # 11) -- price_target/dip_buy thresholds are configured in the

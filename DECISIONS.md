@@ -2205,6 +2205,8 @@ unrelated. No financial/domain logic touched.
 
 ## P0-3A/B — Identity, Ownership, JWT Verification
 
+> **Superseded in part by P0-3C (below):** the dependencies this phase built are now wired into every non-health route, `get_portfolio_config()` has been deleted, and the per-asset uniqueness rules this entry deliberately left global are now per-portfolio. The reasoning here is kept as the historical record.
+
 **Scope.** Two things, and only these two: (1) a local `users` table plus
 nullable ownership columns on the tables identified as user-owned
 (portfolio_configs.user_id; holdings/transactions/watchlist/alert_rules/
@@ -2361,3 +2363,159 @@ key outside of test fixtures (`test-project.supabase.co`, never resolved);
 `app/api/router.py` and `app/repositories/portfolio_repository.py`
 byte-for-byte unchanged from P0-2. No frontend files touched at all in
 this phase.
+
+## P0-3C — Ownership Enforcement
+
+**What this phase is.** P0-3A/B added the identity table, nullable ownership
+columns and JWT verification, but deliberately wired none of it into any route:
+every query still ran against "the" portfolio. P0-3C makes ownership an actual
+security boundary. Every user-owned read and write is now scoped, in the
+repository query itself, by the caller's verified Supabase identity
+(`get_current_user().id`). A request can no longer reach another user's data by
+changing an id in a URL, query string, body, header or frontend state — no such
+id is ever trusted as proof of ownership.
+
+**Identity and routing.** `app/api/router.py` now attaches
+`[verify_internal_proxy_token, get_current_user]` once, to every non-health
+router; user-owned routes also take `user: User = Depends(get_current_user)` and
+pass `user.id` down. The P0-2 `require_api_token` check is removed: the
+`Authorization` header now carries the user's JWT, so it could not also carry the
+shared secret, and a test asserts the legacy shared token is rejected as a
+credential. `API_AUTH_TOKEN` survives only as the optional-if-present
+`X-Internal-Proxy-Token` server-to-server signal (absent allowed for native,
+correct allowed, wrong → 401, never identity). **`DEV_MODE` is not a bypass of
+either authentication or ownership** — there is deliberately no development
+identity fallback; a test confirms an unauthenticated request is still 401 with
+`DEV_MODE=true`. The Vercel proxy (`frontend/app/api/[...path]/route.ts`) now
+forwards the browser's `Authorization` untouched, adds `X-Internal-Proxy-Token`
+from the server-only `API_AUTH_TOKEN`, and drops any `X-Internal-Proxy-Token` a
+browser sends (7 new tests). Capacitor sends only the JWT.
+
+**No "first portfolio" anywhere.** `get_portfolio_config()` — the one unscoped
+`LIMIT 1` lookup — is deleted, not wrapped. It is replaced by
+`get_portfolio_config_for_user(user_id)`, which filters on
+`portfolio_configs.user_id` and orders deterministically if a user ever has more
+than one. A caller with no portfolio gets the normal "not configured" 404 (or an
+empty list) — never someone else's — and a portfolio with a NULL owner (all
+pre-ownership data) is unreachable by every user. The product stays single-
+portfolio *per user* (a second `POST /portfolio/config` is still a 409), which is
+the existing documented behavior, not a new assumption; no database uniqueness
+on `user_id` was added so that remains a product decision rather than a schema
+commitment. Portfolio id is never an input to any route: it is always derived
+server-side.
+
+**What is scoped.** Portfolio config (get/create/update; base-currency gate is
+per portfolio), strategy buckets and allocation targets (by-id lookups filter on
+the caller's portfolio, so another portfolio's id is "not found"), holdings
+(`asset.holding` loads only the caller's row), transactions (list, create,
+snapshot replay, realized-P/L and invested-capital inputs), watchlist (list/add/
+update/remove), alert rules (create/get/update/delete/evaluate — see below),
+notifications (sync, list, mark-read, read-all), analytics/snapshots, the
+portfolio/allocation/strategy/inflow/rebalancing/recommendation read engines, and
+both background workers. Creates take the owning portfolio from the verified user
+(transactions, holdings, watchlist, notifications) or from an already-owned
+parent (an alert rule's portfolio is copied from the owned watchlist entry);
+body fields named `user_id` / `portfolio_config_id` are ignored. Error text only
+ever echoes the id the caller themselves supplied; responses never include
+another user's ids or content.
+
+**Alert rules: both ownership paths must agree.** A rule has its own
+`portfolio_config_id` *and* hangs off a watchlist entry. Lookups join the two and
+require both to name the caller's portfolio, so a rule whose two paths disagree is
+reachable by neither owner (tested), and the updatable fields are whitelisted so
+ownership columns can never be written through an update.
+
+**The one schema change, and why it was unavoidable** (migration
+`e7b2e4551df5`, schema-only, no data read or written, no backfill). P0-3A/B left
+three uniqueness rules global: one holding per asset, one watchlist row per
+asset, one active notification per `source_id`. With scoping in force that makes
+two users unable to hold or watch the same (global, shared) asset, or to have the
+same condition active, so they become per-portfolio:
+`UNIQUE(portfolio_config_id, asset_id)` on holdings and watchlist, and a partial
+unique `(portfolio_config_id, source_id)` for active notifications. Postgres
+treats NULL as distinct in a unique constraint, so each is paired with a partial
+unique index over the *unowned* rows — the original guarantee is preserved for
+legacy rows rather than silently dropped (P0-3A/B's stated reason for deferring
+this). Every existing row is unowned and was already unique on the old key, so
+every new constraint holds by construction; the three plain ownership-column
+indexes only add lookup speed. Upgrade, downgrade and re-upgrade verified against
+the real dev database; `alembic check` reports no drift. (A downgrade is only
+possible while no two portfolios hold/watch the same asset — inherent.)
+
+**A real cross-user bug the tests found.** `Asset` rows are shared, and
+`asset.holding` is a scalar relationship. A session that serves more than one
+portfolio — the EOD snapshot worker iterates portfolios in one session — kept each
+asset in its identity map with `holding` already loaded for the *first* portfolio,
+so the second portfolio's snapshot was silently valued from the first one's
+holdings (A's cost basis came out as B's). Per-request sessions never hit it, but
+workers do. `get_active_assets` now loads with `populate_existing`, and the
+workers also re-fetch each portfolio by id (a rollback after one portfolio's
+failure expires the session). Pinned by tests that call the loader back-to-back on
+one session and by the EOD test with two owned portfolios.
+
+**Background jobs.** `snapshot_eod` iterates `list_owned_portfolio_configs()`
+explicitly, snapshots each portfolio from its own data, skips unowned portfolios
+(their holdings/transactions carry no owner link, so a snapshot would be empty and
+would corrupt history), isolates a failure to its own portfolio, and still exits
+non-zero if any failed or none are owned. `alert_notify` iterates owned portfolios
+that opted in (`telegram_enabled`), syncing, selecting and marking notifications
+strictly per portfolio. `price_refresh` and the price service touch only global
+data and are unchanged.
+
+**Assets stay global, with one honest wrinkle.** Assets, prices, price config and
+FX are shared market data and gained no ownership; every authenticated user can
+read them. But `assets.strategy_bucket_id` points *into one portfolio's* strategy
+buckets, so a per-portfolio attribute lives on a shared row. Without care that
+would let user B read, reference, overwrite or detach user A's bucket assignment.
+Closed here: the bucket id is masked to null in responses unless it is one of the
+caller's own buckets; a bucket can only be assigned if it belongs to the caller's
+portfolio; an asset sitting in *another owned* portfolio's bucket cannot be
+re-pointed or cleared (409, generic message; a bucket of an unowned legacy
+portfolio can be reassigned — it harms nobody). The proper fix is a per-portfolio
+asset→bucket association table, which needs a data decision (see deferred).
+
+**Deferred — each needs a product/data decision, existing safe behavior preserved.**
+1. *Who may write global data.* Asset create/edit/activate/deactivate/delete, manual
+   prices and price configuration mutate shared rows; today any authenticated user
+   can. Harmless for a single operator, a hole before open sign-up. Needs an
+   admin/operator authorization decision (role claim or allow-list).
+2. *Per-portfolio asset→bucket association* (above), including how legacy
+   `assets.strategy_bucket_id` values map to it.
+3. *Per-user Telegram routing.* `TELEGRAM_CHAT_ID` is one operator-level chat; a
+   portfolio that opts in sends its notifications there. Notifications are never
+   shown to another user, but multi-user delivery needs a per-user destination.
+4. *Verified backfill* of existing production rows to a real owner (and then
+   `NOT NULL`) — still not performed; no mapping was inferred or invented.
+5. *Login/session UI and Supabase client wiring.* See rollout consequences below.
+
+**Rollout consequences — read before deploying.** (a) The frontend has no login, so
+a deployed P0-3C backend returns 401 on every non-health request until a login
+phase sends a real JWT; health checks are unaffected. (b) All existing production
+rows are unowned and therefore invisible to every authenticated request until the
+verified backfill; this is the intended fail-safe, not a bug. (c) Apply migration
+`e7b2e4551df5` through the manual production-migration workflow before any user
+writes a holding or watchlist entry. (d) The unowned EOD snapshot history simply
+stops accruing for the legacy portfolio until it is backfilled.
+
+**Test contract changes (stated plainly).** No assertion was weakened or removed.
+The P0-2 router tests ("`Authorization: Bearer <API_AUTH_TOKEN>` → 200") encoded a
+contract this phase replaces, so `test_auth.py` was rewritten as stronger JWT
+equivalents against the real app and test database (which also removes the three
+CI failures those tests had from hitting a non-existent database), including a
+test that every mounted non-health route returns 401 without credentials. Existing
+service/API tests were migrated to the ownership contract — rows now carry an owner
+and calls carry the user — with their original assertions intact. One test whose
+subject was "no portfolio configured" for price alerts now uses a portfolio with no
+strategy, because a watchlist can no longer exist without a portfolio.
+
+**Verification.** 49 new cross-user isolation tests
+(`test_ownership_isolation.py`: real signed JWTs for two users sharing one global
+asset, through the real router/service/repository stack; authentication,
+portfolio, holdings, transactions, watchlist, alert rules, notifications, global
+data, background jobs), 9 new DB-level uniqueness tests, 20 rewritten auth tests (11 before),
+7 proxy tests — backend 643 → 710, frontend 139 → 146. Full backend, frontend, TypeScript, ESLint, ruff, both Next.js
+builds, Capacitor sync and config tests pass; the built client bundles contain no
+`API_AUTH_TOKEN` or `X-Internal-Proxy-Token`; the remaining id-only lookups in
+non-test code are on the global `Asset` table, the verified-JWT user row, and a
+worker re-fetching its own previously listed portfolio. No production database,
+Render/Vercel/Supabase setting, secret or data was touched.

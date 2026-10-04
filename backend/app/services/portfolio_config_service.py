@@ -4,9 +4,12 @@ services/portfolio_service.py, which is deliberately read-only (never
 writes to configuration -- see its own module docstring).
 
 Base currency is financially critical (see FINANCIAL_RULES.md, "Base
-Currency Change Policy"): once any transaction exists anywhere,
+Currency Change Policy"): once any transaction exists in the portfolio,
 changing it is rejected outright rather than silently reinterpreting
 every historical valuation.
+
+P0-3C: every function takes the verified `user_id` and only ever touches
+that user's own portfolio -- there is no unscoped lookup.
 """
 
 from uuid import UUID
@@ -14,7 +17,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories import asset_repository
-from app.repositories.portfolio_repository import any_transaction_exists, get_portfolio_config
+from app.repositories.portfolio_repository import any_transaction_exists, get_portfolio_config_for_user
 from app.schemas.portfolio import (
     PortfolioConfigCreateRequest,
     PortfolioConfigOut,
@@ -27,9 +30,9 @@ class PortfolioConfigNotFoundError(Exception):
 
 
 class PortfolioConfigAlreadyExistsError(Exception):
-    """Raised on POST when a portfolio_configs row already exists -- the
-    application remains single-portfolio for now (see ARCHITECTURE.md,
-    "Domain Readiness Audit")."""
+    """Raised on POST when the caller already has a portfolio_configs row
+    -- the application remains single-portfolio per user for now (see
+    ARCHITECTURE.md, "Domain Readiness Audit")."""
 
 
 class InvalidEmergencyAssetError(Exception):
@@ -53,8 +56,8 @@ def _to_out(config) -> PortfolioConfigOut:
     )
 
 
-async def get_config(session: AsyncSession) -> PortfolioConfigOut:
-    config = await get_portfolio_config(session)
+async def get_config(session: AsyncSession, user_id: UUID) -> PortfolioConfigOut:
+    config = await get_portfolio_config_for_user(session, user_id)
     if config is None:
         raise PortfolioConfigNotFoundError("No portfolio configuration exists yet.")
     return _to_out(config)
@@ -67,10 +70,12 @@ async def _validate_emergency_asset(session: AsyncSession, emergency_asset_id: U
         raise InvalidEmergencyAssetError(f"Asset {emergency_asset_id} does not exist.")
 
 
-async def create_config(session: AsyncSession, request: PortfolioConfigCreateRequest) -> PortfolioConfigOut:
+async def create_config(
+    session: AsyncSession, user_id: UUID, request: PortfolioConfigCreateRequest
+) -> PortfolioConfigOut:
     from app.models import PortfolioConfig
 
-    if await get_portfolio_config(session) is not None:
+    if await get_portfolio_config_for_user(session, user_id) is not None:
         raise PortfolioConfigAlreadyExistsError(
             "A portfolio configuration already exists. The application is "
             "single-portfolio for now -- update the existing configuration "
@@ -79,6 +84,7 @@ async def create_config(session: AsyncSession, request: PortfolioConfigCreateReq
     await _validate_emergency_asset(session, request.emergency_asset_id)
 
     config = PortfolioConfig(
+        user_id=user_id,
         name=request.name,
         base_currency=request.base_currency,
         emergency_asset_id=request.emergency_asset_id,
@@ -89,13 +95,15 @@ async def create_config(session: AsyncSession, request: PortfolioConfigCreateReq
     return _to_out(config)
 
 
-async def update_config(session: AsyncSession, request: PortfolioConfigUpdateRequest) -> PortfolioConfigOut:
-    config = await get_portfolio_config(session)
+async def update_config(
+    session: AsyncSession, user_id: UUID, request: PortfolioConfigUpdateRequest
+) -> PortfolioConfigOut:
+    config = await get_portfolio_config_for_user(session, user_id)
     if config is None:
         raise PortfolioConfigNotFoundError("No portfolio configuration exists yet.")
 
     if request.base_currency is not None and request.base_currency != config.base_currency:
-        if await any_transaction_exists(session):
+        if await any_transaction_exists(session, config.id):
             raise BaseCurrencyChangeNotAllowedError(
                 f"Cannot change base_currency from {config.base_currency!r} to "
                 f"{request.base_currency!r}: transactions already exist, and every "

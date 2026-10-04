@@ -17,19 +17,26 @@ async def get_asset_by_id(session: AsyncSession, asset_id: UUID) -> Asset | None
     return result.scalar_one_or_none()
 
 
-async def get_holding_by_asset_id_for_update(session: AsyncSession, asset_id: UUID) -> Holding | None:
-    """Locks the holding row (`SELECT ... FOR UPDATE`) for the duration of
-    the caller's transaction, so two concurrent BUY/SELL requests against
-    the same asset serialize instead of both reading a stale quantity —
-    see FINANCIAL_RULES.md, "Transaction Concurrency"."""
+async def get_holding_by_asset_id_for_update(
+    session: AsyncSession, asset_id: UUID, portfolio_config_id: UUID
+) -> Holding | None:
+    """Locks THIS portfolio's holding row for the asset (`SELECT ... FOR
+    UPDATE`) for the duration of the caller's transaction, so two
+    concurrent BUY/SELL requests against the same asset in the same
+    portfolio serialize instead of both reading a stale quantity — see
+    FINANCIAL_RULES.md, "Transaction Concurrency". Scoped to the portfolio
+    (P0-3C): another portfolio's holding of the same global asset is
+    never read, locked, or modified."""
     result = await session.execute(
-        select(Holding).where(Holding.asset_id == asset_id).with_for_update()
+        select(Holding)
+        .where(Holding.asset_id == asset_id, Holding.portfolio_config_id == portfolio_config_id)
+        .with_for_update()
     )
     return result.scalar_one_or_none()
 
 
-async def list_transactions(session: AsyncSession) -> list[Transaction]:
-    """Newest first, by the actual transaction timestamp -- never DB
+async def list_transactions(session: AsyncSession, portfolio_config_id: UUID) -> list[Transaction]:
+    """This portfolio's transactions only (P0-3C). Newest first, by the actual transaction timestamp -- never DB
     insertion order (see FINANCIAL_RULES.md, "Transaction History Order").
     `created_at`/`id` are deterministic tie-breakers for transactions
     sharing the same `transaction_date` (e.g. two same-day backdated
@@ -37,6 +44,7 @@ async def list_transactions(session: AsyncSession) -> list[Transaction]:
     depending on the database's arbitrary tie-break for equal sort keys."""
     result = await session.execute(
         select(Transaction)
+        .where(Transaction.portfolio_config_id == portfolio_config_id)
         .options(selectinload(Transaction.asset))
         .order_by(Transaction.transaction_date.desc(), Transaction.created_at.desc(), Transaction.id.desc())
     )
