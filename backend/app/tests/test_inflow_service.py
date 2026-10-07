@@ -106,11 +106,11 @@ async def test_emergency_toggle_changes_behavior_dynamically(db_session, owner):
     assert growth_included.allocated_amount == Decimal("100.00")
 
 
-async def test_seeded_85_percent_strategy_reported_and_not_invented(db_session, owner):
+async def test_seeded_80_percent_strategy_reported_and_not_invented(db_session, owner):
     """K. Uses the real Phase 4 seed. strategy_status must be
     INCOMPLETE_TARGET_ALLOCATION, and Individual Stocks (maximum-only)
     must never receive a share of the inflow even though it's the
-    "missing" 15%.
+    "missing" 20%.
 
     The seed itself leaves all holdings empty (Phase 4 approval,
     "Holdings"), so a small holding is added here to give the portfolio a

@@ -132,6 +132,12 @@ SEED_STRATEGY_BUCKETS = {
 # bucket name -> AllocationTarget field values. Deliberately independent
 # fields per FINANCIAL_RULES.md: target != maximum != allow_new_buy.
 #
+# The explicit targets (Growth 55 + Defensive 25 + Free Cash 0 + Gold 0) sum
+# to 80% on purpose (Personal Beta strategy, confirmed by the owner): the
+# remaining 20% is deliberately unallocated, NOT normalised to 100% and not
+# auto-assigned to any bucket. The strategy validator reports it as
+# INCOMPLETE_TARGET_ALLOCATION at 80%, which is the intended, honest status.
+#
 # "Emergency Cash" intentionally has NO entry here: it is excluded from
 # allocation math entirely via portfolio_configs.emergency_asset_id /
 # emergency_excluded, not given a target weight.
@@ -151,12 +157,12 @@ SEED_ALLOCATION_TARGETS = {
         "priority": 2,
     },
     "Individual Stocks": {
-        # No target percent: only a hard maximum. This is NOT a 15% target
+        # No target percent: only a hard maximum. This is NOT a 20% target
         # — the future rebalancing engine must freeze new buys at/above
         # this maximum, and must never auto-sell to enforce it.
         "target_percent": None,
         "minimum_percent": None,
-        "maximum_percent": Decimal("15"),
+        "maximum_percent": Decimal("20"),
         "allow_new_buy": True,
         "priority": 3,
     },
@@ -170,7 +176,7 @@ SEED_ALLOCATION_TARGETS = {
         "priority": 4,
     },
     "Free Cash": {
-        "target_percent": Decimal("5"),
+        "target_percent": Decimal("0"),
         "minimum_percent": None,
         "maximum_percent": None,
         "allow_new_buy": True,

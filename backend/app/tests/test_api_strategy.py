@@ -45,7 +45,7 @@ async def test_strategy_validation_endpoint_reports_seeded_config_as_incomplete_
 
     assert body["status"] == "INCOMPLETE_TARGET_ALLOCATION"
     assert body["is_valid"] is False
-    assert Decimal(body["total_target_percent"]) == Decimal("85.00")
+    assert Decimal(body["total_target_percent"]) == Decimal("80.00")
     max_only_names = {r["bucket_name"] for r in body["maximum_only_rows"]}
     assert max_only_names == {"Individual Stocks"}
 

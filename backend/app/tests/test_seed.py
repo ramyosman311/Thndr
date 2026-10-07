@@ -88,7 +88,7 @@ async def test_seed_allocation_targets_persist_independently(db_session):
     assert defensive.target_percent == Decimal("25.00")
 
     free_cash = targets_by_bucket["Free Cash"]
-    assert free_cash.target_percent == Decimal("5.00")
+    assert free_cash.target_percent == Decimal("0.00")
 
     # "Emergency Cash" bucket has no allocation rule: excluded from
     # allocation math entirely via portfolio_configs, not given a weight.
@@ -106,7 +106,7 @@ async def test_seed_individual_stocks_maximum_is_not_a_target(db_session):
     target = result.scalar_one()
 
     assert target.target_percent is None
-    assert target.maximum_percent == Decimal("15.00")
+    assert target.maximum_percent == Decimal("20.00")
 
 
 async def test_seed_gold_new_buy_target_is_zero_and_disabled(db_session):

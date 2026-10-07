@@ -41,16 +41,16 @@ async def _setup_two_bucket_portfolio(session, owner, *, emergency_excluded=True
     return config, bucket_a, emergency_bucket
 
 
-async def test_current_seeded_configuration_returns_85_percent_incomplete(db_session, owner):
+async def test_current_seeded_configuration_returns_80_percent_incomplete(db_session, owner):
     """Uses the real Phase 4 seed data (not a hand-built substitute) to
     verify the engine reports exactly what the Phase 6 approval demands:
-    85% total, INCOMPLETE_TARGET_ALLOCATION — never silently rewritten."""
+    80% total (55+25+0+0, intentional), INCOMPLETE_TARGET_ALLOCATION — never silently rewritten."""
     await run_seed(db_session, owner.id)
 
     result = await get_strategy_validation(db_session, owner.id)
 
     assert result.status == StrategyValidationStatus.INCOMPLETE_TARGET_ALLOCATION.value
-    assert result.total_target_percent == Decimal("85.00")
+    assert result.total_target_percent == Decimal("80.00")
     assert result.is_valid is False
     max_only_names = {r.bucket_name for r in result.maximum_only_rows}
     assert max_only_names == {"Individual Stocks"}

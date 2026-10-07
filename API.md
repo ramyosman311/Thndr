@@ -219,9 +219,9 @@ mismatch:
 {
   "status": "INCOMPLETE_TARGET_ALLOCATION",
   "is_valid": false,
-  "total_target_percent": "85.00",
+  "total_target_percent": "80.00",
   "expected_target_percent": "100.00",
-  "explanation": "Configured target allocation totals 85.00%, which is below the expected 100%. ...",
+  "explanation": "Configured target allocation totals 80.00%, which is below the expected 100%. ...",
   "target_rows": [ /* buckets with a configured target_percent, e.g. Growth/Investment Funds, Gold (target=0) */ ],
   "maximum_only_rows": [ /* buckets with only a maximum_percent, e.g. Individual Stocks — never counted as a target */ ],
   "excluded_emergency_rows": [ /* would list the emergency bucket's rule if it had one; empty in the seeded config */ ],

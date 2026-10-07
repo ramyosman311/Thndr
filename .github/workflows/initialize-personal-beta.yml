@@ -1,0 +1,50 @@
+name: Initialize Personal Beta
+
+# Manual-only. Creates ONE empty portfolio owned by the operator's verified
+# Supabase user plus reference data and strategy configuration -- no holdings,
+# transactions, snapshots, prices or balances (see
+# backend/app/ops/init_personal_beta.py). Refuses unless the database is a
+# clean start. mode "inspect" (default) is a rolled-back dry run; "apply"
+# commits. The connection string lives only in the PRODUCTION_DATABASE_URL secret.
+
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: 'E-mail of the Supabase Auth user who will own the portfolio'
+        required: true
+      mode:
+        description: 'inspect (dry run, default) or apply (commit)'
+        required: true
+        default: inspect
+        type: choice
+        options: [inspect, apply]
+
+permissions:
+  contents: read
+
+jobs:
+  initialize:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Initialize personal beta (${{ github.event.inputs.mode }})
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          INIT_EMAIL: ${{ github.event.inputs.email }}
+          INIT_MODE: ${{ github.event.inputs.mode }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::PRODUCTION_DATABASE_URL secret is not set."
+            exit 1
+          fi
+          flag=""
+          if [ "$INIT_MODE" = "apply" ]; then flag="--apply"; fi
+          python -m app.ops.init_personal_beta --email "$INIT_EMAIL" $flag

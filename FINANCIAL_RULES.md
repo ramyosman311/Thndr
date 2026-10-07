@@ -79,11 +79,12 @@ be validated whenever settings are saved.
 - The engine **only ever reports** a validation status
   (`GET /api/portfolio/strategy/validation`, `200` even when invalid —
   see API.md). It never auto-corrects a configuration: it does not change
-  85% to 100%, does not convert a `maximum_percent` into a
+  80% to 100%, does not convert a `maximum_percent` into a
   `target_percent`, and does not invent a missing target. Example: the
-  seeded strategy (BWA 55% + AZN 25% + Free Cash 5% + Gold 0% = 85%,
-  Individual Stocks maximum=15% contributing nothing) is reported as
-  `INCOMPLETE_TARGET_ALLOCATION` at 85%, not silently treated as complete.
+  seeded Personal Beta strategy (BWA 55% + AZN 25% + Free Cash 0% + Gold 0% = 80%,
+  Individual Stocks maximum=20% contributing nothing; the remaining 20% is
+  intentionally unallocated) is reported as
+  `INCOMPLETE_TARGET_ALLOCATION` at 80%, not silently treated as complete.
 - A bucket holding the configured emergency asset is excluded from this
   validation entirely when `emergency_excluded=true` — determined via the
   `portfolio_configs.emergency_asset_id` → `assets.strategy_bucket_id`
@@ -188,7 +189,7 @@ join any bucket's total).
 2. Zero/negative investable portfolio value → `NO_CAPACITY` (nothing to
    compute a gap against).
 3. No `target_percent` configured at all → `NO_TARGET`. This is the
-   **maximum-only case** (e.g. Individual Stocks: maximum=15%, no
+   **maximum-only case** (e.g. Individual Stocks: maximum=20%, no
    target): it is treated purely as a constraint, never a destination —
    no target is ever invented for it, even when well under its maximum.
 4. `allow_new_buy = false` → `BUY_DISABLED`, regardless of any gap.
@@ -226,10 +227,10 @@ independently, so the visible total never drifts by a rounding cent).
 **Strategy validation is reused, not duplicated:** the allocator calls
 the Strategy Engine's `validate_strategy` (Phase 6) directly and reports
 its `status`/`is_valid` alongside the recommendations. The current seeded
-strategy (targets summing to 85%) is reported as
+strategy (targets summing to 80%) is reported as
 `INCOMPLETE_TARGET_ALLOCATION` in the same response that still correctly
-allocates cash to BWA, AZN, and Free Cash — the allocator never invents a
-destination for the missing 15%, and never waits for the strategy to be
+allocates cash to BWA and AZN (Free Cash and Gold have a 0% target) — the allocator never invents a
+destination for the missing 20%, and never waits for the strategy to be
 "complete" before doing its job on the buckets that are configured.
 
 ## Alert Engine Rules
