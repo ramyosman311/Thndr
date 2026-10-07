@@ -56,6 +56,7 @@ def part_a() -> str | None:
     check("   JS bundles fetched", len(scripts) > 0, f"{len(scripts)} files")
     for needle in ("API_AUTH_TOKEN", "x-internal-proxy-token", "X-Internal-Proxy-Token", "service_role", "SUPABASE_SERVICE_ROLE"):
         check(f"15. bundle does not contain {needle!r}", needle not in bundle)
+    check("   deployed build contains the login gate code (P0-3D)", "useAuth must be used inside" in bundle)
     m = re.search(r"https://([a-z0-9]{20})\.supabase\.co", bundle)
     check("   bundle has Supabase project URL (login configured)", bool(m), m.group(0) if m else "NOT FOUND -> NEXT_PUBLIC_SUPABASE_URL missing in build")
     anon = re.search(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|sb_publishable_[A-Za-z0-9_-]+", bundle)
@@ -68,8 +69,8 @@ def part_a() -> str | None:
             role = json.loads(base64.urlsafe_b64decode(p)).get("role")
             check("15. bundled key role is 'anon' (not service_role)", role == "anon", f"role={role}")
 
-    st, _, _ = get(SITE + "/api/health")
-    check("   proxy /api/health -> Render", st == 200, f"HTTP {st}")
+    st, body, _ = get(SITE + "/api/health")
+    check("   proxy /api/health -> Render", st == 200, f"HTTP {st} {body[:120]}")
     st, _, _ = get(SITE + "/api/assets")
     check("14. unauthenticated API via Vercel proxy -> 401", st == 401, f"HTTP {st}")
     st, _, _ = get(SITE + "/api/portfolio/config", {"X-Internal-Proxy-Token": "forged-by-browser"})
