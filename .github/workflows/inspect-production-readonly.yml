@@ -1,0 +1,30 @@
+name: Inspect Production (read-only)
+
+# Manual-only, strictly read-only diagnostic (fixed script, READ ONLY transaction).
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type INSPECT'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: github.event.inputs.confirm == 'INSPECT'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Read-only inspection
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: python -m app.ops.inspect_database_readonly
