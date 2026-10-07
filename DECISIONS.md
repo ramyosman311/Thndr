@@ -2519,3 +2519,47 @@ builds, Capacitor sync and config tests pass; the built client bundles contain n
 non-test code are on the global `Asset` table, the verified-JWT user row, and a
 worker re-fetching its own previously listed portfolio. No production database,
 Render/Vercel/Supabase setting, secret or data was touched.
+
+## P0-3D — Web-First Personal Beta (Supabase login + ownership activation)
+
+**Goal.** Get the Web app live for one real user (the owner) with the existing
+portfolio, without weakening P0-3B JWT verification or P0-3C ownership.
+
+**Decision.** (1) Web login is client-side Supabase Auth (email/password) with
+the standard Web session (supabase-js stores and auto-refreshes it; no
+Capacitor secure storage on Web). `AuthGate` renders no application children
+until a session exists, so no portfolio request is made while signed out.
+`lib/api.ts` attaches the access token and retries once after a refresh on a
+401. The Vercel proxy and every backend check are unchanged; the browser only
+ever sees `NEXT_PUBLIC_SUPABASE_URL` and the public anon key
+(`tests/capacitor.test.tsx` still forbids every secret name in client code).
+(2) Ownership activation is an operator tool
+(`backend/app/ops/activate_personal_portfolio.py`, run through the manual
+"Activate Personal Portfolio" workflow), not a migration: it never guesses a
+user or portfolio (exactly one auth user for the e-mail; the single
+`portfolio_configs` row; 0 or 2+ stop the run), writes ownership columns only,
+including `portfolio_config_id` on the NULL child rows because P0-3C scopes
+those tables by their own column (setting only `portfolio_configs.user_id`
+would own the portfolio yet show it empty), and aborts with a rollback if any
+financial table's row count or content differs before/after. (3) Migration
+`e7b2e4551df5` is not required for one user and is deferred until a second
+user exists.
+
+**Explicitly deferred (public-launch items, not Personal-Beta blockers).**
+Authorization of globally-shared data (assets, price configs, FX — any
+authenticated user can still mutate them; with a single owner this equals the
+previous behaviour); the asset→strategy-bucket association redesign;
+Telegram redesign; mobile/Capacitor auth, App Store/Play; public sign-up,
+onboarding, password reset UI, OAuth/magic links, admin roles, billing and
+public-launch hardening. The Capacitor build is unchanged and still builds.
+
+**Financial safety.** No financial semantics, value, transaction, holding,
+snapshot, target or emergency configuration is touched; Target ≠ Maximum ≠
+Allow New Buy, Emergency Cash handling and Snapshot ≠ Transaction are
+unaffected.
+
+**Verification.** Frontend 146 → 160 tests (auth gate, login failure message,
+logout, JWT attachment, 401 refresh-once), backend 710 → 719 (activation tool
+against a real PostgreSQL incl. 0/2+ portfolios, ambiguous user, foreign
+owner, drift abort, idempotency, and the activated user reading the portfolio
+through the real API).

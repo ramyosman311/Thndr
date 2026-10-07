@@ -140,7 +140,7 @@ describe("Frontend source never references backend-only secrets", () => {
     }
   });
 
-  it("only ever reads NEXT_PUBLIC_API_BASE_URL from process.env outside server-only route handlers", () => {
+  it("only ever reads the public NEXT_PUBLIC_* config from process.env outside server-only route handlers", () => {
     const root = process.cwd();
     const files = [
       ...sourceFiles(join(root, "app")),
@@ -155,7 +155,12 @@ describe("Frontend source never references backend-only secrets", () => {
       envReads.push(...matches);
     }
     const unique = [...new Set(envReads)];
-    expect(unique).toEqual(["process.env.NEXT_PUBLIC_API_BASE_URL"]);
+    // Supabase URL + anon key are public by design (P0-3D); nothing secret.
+    expect(unique.sort()).toEqual([
+      "process.env.NEXT_PUBLIC_API_BASE_URL",
+      "process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY",
+      "process.env.NEXT_PUBLIC_SUPABASE_URL",
+    ]);
   });
 
   it("keeps API_AUTH_TOKEN reads confined to a server-only route handler", () => {

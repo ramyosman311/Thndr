@@ -45,6 +45,8 @@ import type {
   WatchlistUpdateRequest,
 } from "@/types/api";
 
+import { getAccessToken, refreshAccessToken } from "@/lib/supabase";
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 
 export type ApiErrorKind = "not_configured" | "validation" | "conflict" | "not_found" | "server" | "network";
@@ -75,17 +77,30 @@ export function kindForStatus(status: number): ApiErrorKind {
   return "server";
 }
 
+async function send(path: string, init: RequestInit | undefined, token: string | null): Promise<Response> {
+  return fetch(`${API_BASE_URL}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      // The user's Supabase JWT. The backend verifies it and derives who the
+      // caller is -- nothing else (never a shared secret) is sent from here.
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...init?.headers,
+    },
+    cache: "no-store",
+  });
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...init?.headers,
-      },
-      cache: "no-store",
-    });
+    response = await send(path, init, await getAccessToken());
+    if (response.status === 401) {
+      // The token may have expired/been rotated between reading it and the
+      // server checking it: refresh once and retry before giving up.
+      const refreshed = await refreshAccessToken();
+      if (refreshed) response = await send(path, init, refreshed);
+    }
   } catch {
     throw new ApiError("network", null, "تعذّر الوصول إلى الخادم. تحقق من الاتصال بالشبكة.");
   }

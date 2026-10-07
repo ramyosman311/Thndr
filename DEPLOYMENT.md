@@ -138,7 +138,9 @@ commit a real `.env`. Full inventory and what each controls:
 | `ALLOW_SEED_IN_PRODUCTION` | unset | Leave unset in real production — only set to `1` deliberately, e.g. seeding a pre-launch demo instance |
 | `NEXT_PUBLIC_API_BASE_URL` | unset (relative `/api`) | **Web/PWA (Vercel): leave unset** — P0-2's server-side proxy (`frontend/app/api/[...path]/route.ts`) handles routing to the backend; a build-time-baked absolute HTTPS URL is still required for the Capacitor build specifically — see "Web Deployment" and "Capacitor Production Configuration" |
 | `BACKEND_API_URL` | unset (falls back to `http://127.0.0.1:8000/api`) | Vercel (frontend), server-side only, never `NEXT_PUBLIC_` — the backend base URL the proxy forwards to. See "Authentication" below |
-| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | unset | Reserved — no code path reads these today (see `.env.example`'s comment); do not set real values without a corresponding feature that uses them |
+| `SUPABASE_URL` | unset | Render: the project URL; required (P0-3B) — JWT issuer and JWKS are derived from it |
+| `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` | unset | Vercel (P0-3D): the Web login's public project URL and anon key. Public by design; never put a secret in a `NEXT_PUBLIC_` variable |
+| `SUPABASE_SERVICE_ROLE_KEY` | unset | Reserved — no code path reads these today (see `.env.example`'s comment); do not set real values without a corresponding feature that uses them |
 
 ## Local Development
 
@@ -398,20 +400,44 @@ attached (once, at router-mounting level — never per-route).
   - Vercel's `NEXT_PUBLIC_API_BASE_URL` should be unset for the web/PWA
     build — the frontend already defaults to relative `/api`, which is
     what routes through the proxy.
-- **Rollout consequences of P0-3C (read before deploying)**:
-  1. The frontend has no login yet, so a deployed P0-3C backend answers
-     every non-health request `401` until a login/session phase forwards a
-     real Supabase JWT. Health checks are unaffected.
-  2. Every pre-existing row has no owner (`user_id`/`portfolio_config_id`
-     are NULL) and is therefore invisible to every authenticated request —
-     intentionally; nothing is adopted by whoever calls first. A verified,
-     human-approved backfill is a separate, later step (it is not part of
-     any migration or code here).
-  3. Migration `e7b2e4551df5` (per-portfolio uniqueness) is schema-only and
-     safe against existing rows, but must be applied (Actions → "Migrate
-     Production Database") before any user writes a holding/watchlist
-     entry: until then the old global one-per-asset constraints are still
-     in force.
+- **Web login (P0-3D).** The Web app signs in with Supabase Auth
+  (email/password, `@supabase/supabase-js`, standard Web session with
+  automatic refresh). `frontend/components/auth-gate.tsx` mounts nothing of
+  the app until a session exists, so no protected request is made while
+  signed out; `frontend/lib/api.ts` sends `Authorization: Bearer <access
+  token>` on every call (one refresh-and-retry on a 401); the Vercel proxy and
+  Render verification are unchanged. Sign-up, password reset, OAuth and magic
+  links are deliberately not built (create users in the Supabase Dashboard).
+  Required Vercel variables (all public by design, never secrets):
+  `NEXT_PUBLIC_SUPABASE_URL` (the project URL) and `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+  (the project's anon/publishable key). **The Supabase project must issue
+  asymmetrically signed tokens** (Dashboard → Project Settings → JWT Keys →
+  use the current/ECC or RSA signing key, not the legacy HS256 secret): the
+  backend verifies only RS256/ES256 via the project's JWKS, so a legacy-secret
+  project would 401 every request after a successful login.
+- **Rollout facts for P0-3C/D**:
+  1. Pre-existing rows have no owner (`user_id`/`portfolio_config_id` are NULL)
+     and are invisible to every authenticated request — intentionally. They
+     become visible only through the verified activation below.
+  2. **Personal-Beta activation (Actions → "Activate Personal Portfolio").**
+     Inputs: the Supabase user's e-mail and `mode`. `inspect` (default) is a
+     rolled-back dry run that prints the auth user UUID, every portfolio with
+     its record counts, and read-only smoke checks (JWKS keys present,
+     backend health, protected route without JWT → 401). `apply` commits. It
+     refuses to guess: the user must match exactly one `auth.users` row, the
+     portfolio must be the **only** `portfolio_configs` row (0 → exit 3, 2+ →
+     exit 4 with the candidates listed), and a portfolio owned by another user
+     is never reassigned. It writes ownership columns only
+     (`portfolio_configs.user_id`, plus `portfolio_config_id` on the NULL rows
+     of holdings/transactions/watchlist/alert_rules/notifications, which are
+     scoped by their own column), never deletes or recreates a row, and
+     fingerprints every financial table before/after in the same transaction,
+     rolling back on any difference.
+  3. Migration `e7b2e4551df5` (per-portfolio uniqueness) is **not required**
+     for a single-user Personal Beta (the old global one-per-asset constraints
+     are equivalent with one owner and no code path depends on the new ones).
+     It is schema-only and safe, and **must be applied (Actions → "Migrate
+     Production Database") before a second user exists.**
   4. The EOD snapshot worker skips unowned portfolios and exits non-zero
      when no owned portfolio exists; the Telegram worker only acts on owned,
      opted-in portfolios.
@@ -558,6 +584,9 @@ to the real backend and attaches the shared auth token itself (see
 
 - `BACKEND_API_URL` and `API_AUTH_TOKEN` (server-side, never
   `NEXT_PUBLIC_`) — see "Authentication" above for exact values.
+- `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` (P0-3D) —
+  the Web login. Without them the app shows "login not configured" and
+  fetches nothing. Changing them requires a redeploy (they are build-time).
 - `NEXT_PUBLIC_API_BASE_URL` — leave unset. The frontend already
   defaults to the relative `/api` path, which is what routes through the
   proxy above.

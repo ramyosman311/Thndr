@@ -8,6 +8,7 @@ import { NotificationBell } from "@/components/notification-bell";
 import { BottomNav, TopNav } from "@/components/nav";
 import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
 import { OfflineBanner } from "@/components/offline-banner";
+import { AuthGate, LogoutButton } from "@/components/auth-gate";
 
 const cairo = Cairo({
   variable: "--font-cairo",
@@ -41,6 +42,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="ar" dir="rtl" suppressHydrationWarning className={`${cairo.variable} h-full`}>
       <body className="min-h-full antialiased">
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+          <AuthGate>
           <div className="flex min-h-full flex-col">
             <header className="safe-top safe-x sticky top-0 z-30 border-b border-border bg-card/95 backdrop-blur">
               <div className="mx-auto flex max-w-4xl items-center justify-between gap-3 px-4 py-3">
@@ -54,6 +56,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   <TopNav />
                   <NotificationBell />
                   <ThemeToggle />
+                  <LogoutButton />
                 </div>
               </div>
             </header>
@@ -65,6 +68,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <BottomNav />
             <ServiceWorkerRegistration />
           </div>
+          </AuthGate>
         </ThemeProvider>
       </body>
     </html>

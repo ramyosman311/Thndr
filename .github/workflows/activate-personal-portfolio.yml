@@ -1,0 +1,104 @@
+name: Activate Personal Portfolio
+
+# Manual-only (P0-3D). Maps the single existing, previously-unowned production
+# portfolio to the operator's Supabase Auth user, and prints read-only smoke
+# checks of the production auth chain. Runs on a GitHub runner because the
+# production database needs a real PostgreSQL connection (see
+# migrate-production.yml for why Claude Code sessions cannot make one).
+#
+# Safety:
+#   - mode "inspect" (default) is a rolled-back dry run: it executes the same
+#     verified steps and writes nothing. mode "apply" commits.
+#   - The tool (backend/app/ops/activate_personal_portfolio.py) never guesses:
+#     the user must match exactly one auth.users e-mail, the portfolio must be
+#     the ONLY portfolio_configs row, and a portfolio owned by someone else is
+#     never reassigned. It changes ownership columns only and aborts if any
+#     financial table's content differs before/after.
+#   - The connection string lives only in the PRODUCTION_DATABASE_URL secret.
+
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: 'E-mail of the Supabase Auth user who owns the portfolio'
+        required: true
+      mode:
+        description: 'inspect (dry run, default) or apply (commit)'
+        required: true
+        default: inspect
+        type: choice
+        options: [inspect, apply]
+
+permissions:
+  contents: read
+
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ownership activation (${{ github.event.inputs.mode }})
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          ACTIVATE_EMAIL: ${{ github.event.inputs.email }}
+          ACTIVATE_MODE: ${{ github.event.inputs.mode }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::PRODUCTION_DATABASE_URL secret is not set."
+            exit 1
+          fi
+          flag=""
+          if [ "$ACTIVATE_MODE" = "apply" ]; then flag="--apply"; fi
+          python -m app.ops.activate_personal_portfolio --email "$ACTIVATE_EMAIL" $flag
+
+      - name: Production auth-chain smoke checks (read-only)
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          python - <<'PY'
+          import json, os, re, urllib.request, urllib.error
+          from urllib.parse import urlsplit
+
+          def get(url):
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "mizan-smoke"}), timeout=30) as r:
+                      return r.status, r.read()
+              except urllib.error.HTTPError as e:
+                  return e.code, e.read()
+              except Exception as e:
+                  return f"ERR {e.__class__.__name__}", b""
+
+          parts = urlsplit(os.environ["DATABASE_URL"].replace("+asyncpg", ""))
+          ref = None
+          m = re.match(r"postgres\.([a-z0-9]+)$", parts.username or "")
+          if m:
+              ref = m.group(1)
+          else:
+              m = re.match(r"db\.([a-z0-9]+)\.supabase\.co$", parts.hostname or "")
+              ref = m.group(1) if m else None
+          if ref:
+              print(f"supabase project url: https://{ref}.supabase.co  (anon key / JWT keys are not secret; project ref is public)")
+              status, body = get(f"https://{ref}.supabase.co/auth/v1/.well-known/jwks.json")
+              algs = []
+              if status == 200:
+                  algs = [f"{k.get('kty')}/{k.get('alg')}" for k in json.loads(body).get("keys", [])]
+              print(f"JWKS: HTTP {status}, signing keys: {algs or 'NONE (backend verifies only RS256/ES256 -> enable asymmetric JWT Signing Keys in Supabase)'}")
+          else:
+              print("could not derive supabase project ref from DATABASE_URL")
+
+          base = "https://mizan-backend-5e7b.onrender.com/api"
+          print("backend /health:", get(f"{base}/health")[0])
+          print("backend /assets without JWT (must be 401):", get(f"{base}/assets")[0])
+          PY
