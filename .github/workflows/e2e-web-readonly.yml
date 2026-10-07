@@ -1,0 +1,33 @@
+name: E2E Web (read-only)
+
+# Manual-only, strictly read-only production verification (GET requests and a
+# Supabase sign-in; creates no data). Part B needs the repository secret
+# E2E_PASSWORD (the owner's login password) -- without it only the
+# credential-free checks run. The password is never printed.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type VERIFY'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    if: github.event.inputs.confirm == 'VERIFY'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install playwright && python -m playwright install --with-deps chromium
+      - name: Verify
+        env:
+          E2E_SITE: https://mizan-frontend-six.vercel.app
+          E2E_EMAIL: Ramyosman@msn.com
+          E2E_EXPECTED_UUID: 90909381-786d-4095-8499-f991bbd66050
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+        run: python backend/app/ops/e2e_web_readonly.py
