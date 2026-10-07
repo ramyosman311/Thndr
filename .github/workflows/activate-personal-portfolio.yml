@@ -78,7 +78,7 @@ jobs:
               except urllib.error.HTTPError as e:
                   return e.code, e.read()
               except Exception as e:
-                  return f"ERR {e.__class__.__name__}", b""
+                  return f"ERR {e.__class__.__name__}: {getattr(e, 'reason', e)}", b""
 
           parts = urlsplit(os.environ["DATABASE_URL"].replace("+asyncpg", ""))
           ref = None
@@ -100,5 +100,9 @@ jobs:
 
           base = "https://mizan-backend-5e7b.onrender.com/api"
           print("backend /health:", get(f"{base}/health")[0])
+          print("backend /health/ready (checks the database):", get(f"{base}/health/ready")[0])
+          if ref:
+              print("supabase auth /health:", get(f"https://{ref}.supabase.co/auth/v1/health")[0])
+              print("supabase REST root:", get(f"https://{ref}.supabase.co/rest/v1/")[0])
           print("backend /assets without JWT (must be 401):", get(f"{base}/assets")[0])
           PY
